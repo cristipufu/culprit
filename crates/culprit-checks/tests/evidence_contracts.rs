@@ -600,3 +600,29 @@ fn legacy_payloads_establish_their_read_but_empty_or_failed_sources_do_not() {
     s.sources.push(SourceOutcome { source: "missing_indexes".into(), state: SourceState::Empty, reason: None });
     assert!(matches!(assess(&[missing], &s), CheckEvidence::Available));
 }
+
+#[test]
+fn failed_statement_detail_sources_prevent_clean_assessments() {
+    use culprit_core::source_id;
+    for (measure, source) in [
+        (QueryMeasure::Failures, source_id::QUERY_COSTS),
+        (QueryMeasure::Failures, source_id::QUERY_ERRORS),
+        (QueryMeasure::Planning, source_id::QUERY_COSTS),
+        (QueryMeasure::Jit, source_id::QUERY_COSTS),
+        (QueryMeasure::LogBytes, source_id::QUERY_COSTS),
+        (QueryMeasure::Grants, source_id::GRANTS),
+        (QueryMeasure::Histograms, source_id::HISTOGRAMS),
+    ] {
+        let mut s = snapshot();
+        s.histograms = Some(Vec::new());
+        s.sources = vec![SourceOutcome {
+            source: source.into(),
+            state: SourceState::Partial,
+            reason: Some("Statement detail query timed out.".into()),
+        }];
+        assert!(
+            matches!(assess(&[Requirement::Query(measure)], &s), CheckEvidence::Insufficient(_)),
+            "{measure:?} with failed {source}"
+        );
+    }
+}

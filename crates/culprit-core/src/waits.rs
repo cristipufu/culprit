@@ -134,6 +134,46 @@ pub enum SignalStatus {
     Bad,
 }
 
+/// Canonical pressure signal keys shared between engine collectors and check contracts.
+pub mod signal_id {
+    pub const MEMORY_GRANTS_PENDING: &str = "memory-grants-pending";
+    pub const GRANT_WAIT_MS: &str = "grant-wait-ms";
+    pub const ROW_LOCK_AVG: &str = "row-lock-avg";
+    pub const ROW_LOCK_WAITS: &str = "row-lock-waits";
+    pub const ROW_LOCK_TIME: &str = "row-lock-time";
+    pub const CHECKPOINTS: &str = "checkpoints";
+    pub const CHECKPOINTS_REQUESTED: &str = "checkpoints-requested";
+    pub const COMPILES_PER_BATCH: &str = "compiles-per-batch";
+    pub const RECOMPILES_PER_BATCH: &str = "recompiles-per-batch";
+    pub const BATCH_REQUESTS: &str = "batch-requests";
+    pub const DATABASE_COMPILES: &str = "database-compiles";
+    pub const DATABASE_COMPILE_TIME: &str = "database-compile-time";
+    pub const CONNECTIONS: &str = "connections";
+    pub const MAX_USED_CONNECTIONS: &str = "max-used-connections";
+    pub const MAX_USED_CONNECTIONS_AGO: &str = "max-used-connections-ago";
+    pub const NEW_CONNECTIONS: &str = "new-connections";
+    pub const SESSION_LENGTH: &str = "session-length";
+    pub const SESSIONS_ABANDONED: &str = "sessions-abandoned";
+    pub const POOLED_REUSE: &str = "pooled-reuse";
+    pub const THREAD_CACHE_MISSES: &str = "thread-cache-misses";
+    pub const WORKERS_WAITING: &str = "workers-waiting";
+    pub const THREADPOOL_WAITING: &str = "threadpool-waiting";
+    pub const THREADPOOL_WAIT_MS: &str = "threadpool-wait-ms";
+    pub const THREADPOOL_WAITS: &str = "threadpool-waits";
+    pub const OLDEST_TRANSACTION: &str = "oldest-transaction";
+    pub const VERSION_STORE: &str = "version-store";
+    pub const HISTORY_LENGTH: &str = "history-length";
+    pub const CACHE_HIT: &str = "cache-hit";
+    pub const BUFFER_POOL_HIT: &str = "buffer-pool-hit";
+    pub const BUFFER_POOL_READS: &str = "buffer-pool-reads";
+    pub const TMP_DISK_TABLES: &str = "tmp-disk-tables";
+    pub const TEMP_BYTES: &str = "temp-bytes";
+    pub const PAGE_LIFE: &str = "page-life";
+    pub const DATA_IO: &str = "data-io";
+    pub const MEMORY_USE: &str = "memory-use";
+    pub const SIGNAL_WAIT: &str = "signal-wait";
+}
+
 /// One health number, with the threshold stated in words so nobody has to know it by heart.
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
 #[ts(export)]

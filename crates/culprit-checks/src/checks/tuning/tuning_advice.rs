@@ -18,7 +18,11 @@ pub fn tuning_advice_info() -> CheckInfo {
     }
 }
 
-check!(TuningAdviceCheck: tuning_advice_info, tuning_advice, &[Evidence::SourceWithLegacy("tuning", Observation::Tuning)]);
+check!(
+    TuningAdviceCheck: tuning_advice_info,
+    tuning_advice,
+    &[Evidence::SourceWithLegacy(culprit_core::source_id::TUNING, Observation::Tuning)]
+);
 
 /// A day or more between `last` and the end of the scan's data, as (seconds, `last`).
 pub(super) fn quiet_since<'a>(snapshot: &Snapshot, last: Option<&'a str>) -> Option<(f64, &'a str)> {

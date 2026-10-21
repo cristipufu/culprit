@@ -6,7 +6,7 @@ pub fn cluster_health_info() -> CheckInfo {
 }
 check!(
     ClusterHealthCheck: cluster_health_info, cluster_health,
-    &[Evidence::Observed(Observation::Cluster, &["cluster_health"])]
+    &[Evidence::Observed(Observation::Cluster, &[culprit_core::source_id::CLUSTER_HEALTH])]
 );
 pub fn cluster_health(s: &Snapshot) -> Vec<Finding> {
     let Some(c) = s.operations.cluster.as_ref() else { return vec![] };

@@ -261,15 +261,21 @@ fn connection_signals(status: &HashMap<String, f64>) -> Vec<Signal> {
         let connections = (attempts - get("Aborted_connects").unwrap_or(0.0)).max(0.0);
         let rate = connections / uptime;
         out.push(
-            Signal::new("new-connections", "New connections", rate, SignalUnit::PerSecond, SignalScope::SinceStartup)
-                .graded("under 5 a second: pooled connections are opened once", 5.0, 25.0, true),
+            Signal::new(
+                culprit_core::signal_id::NEW_CONNECTIONS,
+                "New connections",
+                rate,
+                SignalUnit::PerSecond,
+                SignalScope::SinceStartup,
+            )
+            .graded("under 5 a second: pooled connections are opened once", 5.0, 25.0, true),
         );
         if let Some(created) = get("Threads_created")
             && connections >= 1_000.0
         {
             out.push(
                 Signal::new(
-                    "thread-cache-misses",
+                    culprit_core::signal_id::THREAD_CACHE_MISSES,
                     "Connections that needed a new thread",
                     created / connections * 100.0,
                     SignalUnit::Percent,

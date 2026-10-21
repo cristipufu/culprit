@@ -16,18 +16,21 @@ pub fn compile_pressure_info() -> CheckInfo {
 
 check!(
     CompilePressureCheck: compile_pressure_info, compile_pressure,
-    &[Evidence::Pressure { signal: Some("compiles-per-batch"), timed_files: false, complete: false }]
+    &[Evidence::Pressure { signal: Some(culprit_core::signal_id::COMPILES_PER_BATCH), timed_files: false, complete: false }]
 );
 
 pub fn compile_pressure(snapshot: &Snapshot) -> Vec<Finding> {
-    let Some(compiles) = pressure(snapshot).and_then(|p| p.signal("compiles-per-batch")) else { return Vec::new() };
+    let Some(compiles) = pressure(snapshot).and_then(|p| p.signal(culprit_core::signal_id::COMPILES_PER_BATCH)) else {
+        return Vec::new();
+    };
     // Shared counters alone establish no compilation problem here; retained only as context when this database's own literal families make inspection worthwhile. Query Store supplies the database's measured compile costs.
     if snapshot.server.on(culprit_core::Platform::AzureSqlDatabase) || snapshot.query_families.is_empty() {
         return Vec::new();
     }
     let ratio = compiles.value;
     // The load behind the ratio, averaged over at least an hour since the start.
-    let (Some(batches), Some(_)) = (signal(snapshot, "batch-requests"), counter_hours(snapshot)) else {
+    let (Some(batches), Some(_)) = (signal(snapshot, culprit_core::signal_id::BATCH_REQUESTS), counter_hours(snapshot))
+    else {
         return Vec::new();
     };
     if ratio < 15.0 || batches < 5.0 {
@@ -61,7 +64,7 @@ pub fn compile_pressure(snapshot: &Snapshot) -> Vec<Finding> {
         Metric::new("Compiles per 100 batches", ratio, Unit::Count),
         Metric::new("Compiles per minute", per_min, Unit::Count),
     ];
-    if let Some(recompiles) = signal(snapshot, "recompiles-per-batch").filter(|r| *r > 0.0) {
+    if let Some(recompiles) = signal(snapshot, culprit_core::signal_id::RECOMPILES_PER_BATCH).filter(|r| *r > 0.0) {
         f.metrics.push(Metric::new("Recompiles per 100 batches", recompiles, Unit::Count));
     }
     f.fix = Some(Fix {

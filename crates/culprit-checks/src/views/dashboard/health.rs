@@ -76,7 +76,8 @@ pub(super) fn health(report: &Report) -> Tile {
     if let Some(tx) = p.oldest_transaction.as_ref() {
         let assessed = report.findings.iter().find(|f| f.check == "held-cleanup" && f.is_actionable());
         let tx_status = assessed.map(|f| severity_status(f.severity)).unwrap_or(TileStatus::Info);
-        let mut item = TileItem::new(ItemKind::Signal, "oldest-transaction", "Oldest open transaction");
+        let mut item =
+            TileItem::new(ItemKind::Signal, culprit_core::signal_id::OLDEST_TRANSACTION, "Oldest open transaction");
         item.value = Some(format!(
             "{}{}",
             format::duration(tx.seconds * 1000.0),

@@ -25,7 +25,11 @@ pub fn lock_escalations_info() -> CheckInfo {
     }
 }
 
-check!(LockEscalationsCheck: lock_escalations_info, lock_escalations, &[Evidence::Source("index contention")]);
+check!(
+    LockEscalationsCheck: lock_escalations_info,
+    lock_escalations,
+    &[Evidence::Source(culprit_core::source_id::INDEX_CONTENTION)]
+);
 
 #[derive(Default)]
 pub(super) struct TableEscalations {

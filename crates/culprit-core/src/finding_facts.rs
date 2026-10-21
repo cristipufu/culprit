@@ -91,10 +91,13 @@ impl PlanBaseline {
         let Some(w) = snapshot.workload.as_ref().filter(|w| w.kind() == Some(crate::WorkloadKind::QueryStore)) else {
             return unknown();
         };
-        if let Some(reason) = snapshot.source_problem(&["query_store"]) {
+        if let Some(reason) = snapshot.source_problem(&[crate::source_id::QUERY_STORE]) {
             return Some(reason);
         }
-        if snapshot.source_outcome("query_store").is_some_and(|o| o.state == crate::SourceState::NotApplicable) {
+        if snapshot
+            .source_outcome(crate::source_id::QUERY_STORE)
+            .is_some_and(|o| o.state == crate::SourceState::NotApplicable)
+        {
             return unknown();
         }
         let Some(q) = w.queries.iter().find(|q| q.id == self.query) else { return unknown() };

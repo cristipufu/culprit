@@ -16,17 +16,19 @@ pub fn row_lock_waits_info() -> CheckInfo {
 
 check!(
     RowLockWaitsCheck: row_lock_waits_info, row_lock_waits,
-    &[Evidence::Pressure { signal: Some("row-lock-avg"), timed_files: false, complete: true }]
+    &[Evidence::Pressure { signal: Some(culprit_core::signal_id::ROW_LOCK_AVG), timed_files: false, complete: true }]
 );
 
 pub fn row_lock_waits(snapshot: &Snapshot) -> Vec<Finding> {
-    let Some(avg_ms) = signal(snapshot, "row-lock-avg") else { return Vec::new() };
+    let Some(avg_ms) = signal(snapshot, culprit_core::signal_id::ROW_LOCK_AVG) else { return Vec::new() };
     // A rate needs at least an hour of counters.
     let Some(hours) = counter_hours(snapshot) else { return Vec::new() };
-    let Some(waits) = pressure(snapshot).and_then(|p| p.signal("row-lock-waits")) else { return Vec::new() };
+    let Some(waits) = pressure(snapshot).and_then(|p| p.signal(culprit_core::signal_id::ROW_LOCK_WAITS)) else {
+        return Vec::new();
+    };
     let count = if waits.unit == SignalUnit::PerHour { waits.value * hours } else { waits.value };
     // The total wait time; scans before Culprit kept it are rebuilt from the count and the average.
-    let total_ms = signal(snapshot, "row-lock-time").unwrap_or(count * avg_ms);
+    let total_ms = signal(snapshot, culprit_core::signal_id::ROW_LOCK_TIME).unwrap_or(count * avg_ms);
     let per_hour_ms = total_ms / hours;
     // What it costs is time, not how many waits: 61 waits of half a second an hour is half a minute.
     if per_hour_ms < MINUTE_MS {

@@ -16,7 +16,7 @@ pub fn memory_queue_info() -> CheckInfo {
 
 check!(
     MemoryQueueCheck: memory_queue_info, memory_queue,
-    &[Evidence::Pressure { signal: Some("memory-grants-pending"), timed_files: false, complete: true }]
+    &[Evidence::Pressure { signal: Some(culprit_core::signal_id::MEMORY_GRANTS_PENDING), timed_files: false, complete: true }]
 );
 
 pub fn memory_queue(snapshot: &Snapshot) -> Vec<Finding> {
@@ -29,11 +29,11 @@ pub fn memory_queue(snapshot: &Snapshot) -> Vec<Finding> {
     let history = share >= 0.05 && memory_per_hour.is_some_and(|m| m >= MINUTE_MS);
     // Memory grants alone (RESOURCE_SEMAPHORE), from the wait totals since the server started. The Memory category
     // also holds allocation waits (CMEMTHREAD, MEMORY_ALLOCATION_EXT), which no grant change helps.
-    let grant_ms = signal(snapshot, "grant-wait-ms").unwrap_or(0.0);
+    let grant_ms = signal(snapshot, culprit_core::signal_id::GRANT_WAIT_MS).unwrap_or(0.0);
     let grants_per_hour = counter_hours(snapshot).map(|h| grant_ms / h);
     let instance = !snapshot.server.on(culprit_core::Platform::AzureSqlDatabase);
     let grants = !instance && grants_per_hour.is_some_and(|g| g >= MINUTE_MS);
-    let pending = signal(snapshot, "memory-grants-pending").unwrap_or(0.0);
+    let pending = signal(snapshot, culprit_core::signal_id::MEMORY_GRANTS_PENDING).unwrap_or(0.0);
     // Instance-wide grant/allocation totals cannot establish queueing in this database.
     if instance && !windowed && pending <= 0.0 {
         return Vec::new();

@@ -5,7 +5,7 @@ pub fn multixact_age_info() -> CheckInfo {
 }
 check!(
     MultixactAgeCheck: multixact_age_info, multixact_age,
-    &[Evidence::Observed(Observation::Multixacts, &["multixacts"])]
+    &[Evidence::Observed(Observation::Multixacts, &[culprit_core::source_id::MULTIXACTS])]
 );
 pub fn multixact_age(s: &Snapshot) -> Vec<Finding> {
     let Some(age) = s

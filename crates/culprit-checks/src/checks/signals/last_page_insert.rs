@@ -14,7 +14,11 @@ pub fn last_page_insert_info() -> CheckInfo {
     }
 }
 
-check!(LastPageInsertCheck: last_page_insert_info, last_page_insert, &[Evidence::IndexCatalog, Evidence::Source("index contention")]);
+check!(
+    LastPageInsertCheck: last_page_insert_info,
+    last_page_insert,
+    &[Evidence::IndexCatalog, Evidence::Source(culprit_core::source_id::INDEX_CONTENTION)]
+);
 
 pub fn last_page_insert(snapshot: &Snapshot) -> Vec<Finding> {
     snapshot

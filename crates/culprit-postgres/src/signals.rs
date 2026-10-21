@@ -493,13 +493,19 @@ fn session_signals(
     let mut out = Vec::new();
     if let Some(rate) = rate {
         out.push(
-            Signal::new("new-connections", "New connections", rate, SignalUnit::PerSecond, SignalScope::SinceStartup)
-                .graded("under 1 a second: pooled connections are opened once", 2.0, 10.0, true),
+            Signal::new(
+                culprit_core::signal_id::NEW_CONNECTIONS,
+                "New connections",
+                rate,
+                SignalUnit::PerSecond,
+                SignalScope::SinceStartup,
+            )
+            .graded("under 1 a second: pooled connections are opened once", 2.0, 10.0, true),
         );
     }
     if let Some(ms) = session_ms {
         let length = Signal::new(
-            "session-length",
+            culprit_core::signal_id::SESSION_LENGTH,
             "Average session length",
             ms / sessions / 1000.0,
             SignalUnit::Seconds,
@@ -520,7 +526,7 @@ fn session_signals(
     if let Some(abandoned) = abandoned {
         out.push(
             Signal::new(
-                "sessions-abandoned",
+                culprit_core::signal_id::SESSIONS_ABANDONED,
                 "Sessions the client abandoned",
                 abandoned / sessions * 100.0,
                 SignalUnit::Percent,

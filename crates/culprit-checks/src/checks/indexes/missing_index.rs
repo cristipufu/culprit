@@ -17,7 +17,11 @@ pub fn missing_index_info() -> CheckInfo {
     }
 }
 
-check!(MissingIndexCheck: missing_index_info, missing_index, &[Evidence::IndexCatalog, Evidence::SourceWithLegacy("missing_indexes", Observation::MissingIndexes)]);
+check!(
+    MissingIndexCheck: missing_index_info,
+    missing_index,
+    &[Evidence::IndexCatalog, Evidence::SourceWithLegacy(culprit_core::source_id::MISSING_INDEXES, Observation::MissingIndexes)]
+);
 
 pub(crate) struct Candidate {
     pub(crate) schema: String,

@@ -1,7 +1,7 @@
 //! Declarative requirements for a negative check result. Partial evidence can still produce findings;
 //! it cannot establish that an unobserved problem is absent. Requirements live beside each check.
 
-use culprit_core::{CheckEvidence, Snapshot, SourceState};
+use culprit_core::{CheckEvidence, Snapshot, SourceState, source_id};
 
 /// Facts a source can contribute, independent of any check's identifier.
 #[derive(Clone, Copy, Debug)]
@@ -79,7 +79,10 @@ pub fn source_failed(s: &Snapshot, names: &[&str]) -> Option<String> {
 }
 
 pub fn index_catalog(s: &Snapshot) -> Option<String> {
-    source_failed(s, &["tables", "indexes", "foreign_keys", "columns", "catalog"])
+    source_failed(
+        s,
+        &[source_id::TABLES, source_id::INDEXES, source_id::FOREIGN_KEYS, source_id::COLUMNS, source_id::CATALOG],
+    )
 }
 
 pub fn assess(requirements: &[Requirement<'_>], s: &Snapshot) -> CheckEvidence {
@@ -180,7 +183,7 @@ impl Requirement<'_> {
                 .map(|reason| Unavailable(format!("Current schema evidence was incomplete: {reason}")))
                 .unwrap_or(Available),
             Self::ForeignKeys if s.foreign_keys.is_empty() => {
-                if ["foreign_keys", "catalog"].iter().any(|name| {
+                if [source_id::FOREIGN_KEYS, source_id::CATALOG].iter().any(|name| {
                     s.source_outcome(name).is_some_and(|o| {
                         matches!(o.state, SourceState::Collected | SourceState::Empty | SourceState::NotApplicable)
                     })
@@ -200,11 +203,11 @@ impl Requirement<'_> {
             Self::Query(measure) => query(*measure, s),
             Self::Tables(measure) => tables(*measure, s),
             Self::Statistics => {
-                if let Some(reason) = source_failed(s, &["statistics", "tables"]) {
+                if let Some(reason) = source_failed(s, &[source_id::STATISTICS, source_id::TABLES]) {
                     return Unavailable(reason);
                 }
                 if !s.statistics.is_empty()
-                    || s.source_outcome("statistics").is_some_and(|o| matches!(o.state, SourceState::Collected | SourceState::Empty))
+                    || s.source_outcome(source_id::STATISTICS).is_some_and(|o| matches!(o.state, SourceState::Collected | SourceState::Empty))
                     || (!s.tables.is_empty() && s.tables.iter().all(|t| t.modifications_since_analyze.is_some()))
                 {
                     Available
@@ -245,10 +248,19 @@ impl Requirement<'_> {
             Self::Settings if s.settings.is_empty() => insufficient("No settings were collected."),
             Self::Deadlocks if s.deadlocks.is_none() => insufficient("No deadlock evidence was collected."),
             Self::Settings => source_failed(s, &[
-                "settings", "advice settings", "server variables", "tables", "catalog", "statistics",
-                "workload", "global status", "performance counters", "plan cache use", "resource use",
+                source_id::SETTINGS,
+                source_id::ADVICE_SETTINGS,
+                source_id::SERVER_VARIABLES,
+                source_id::TABLES,
+                source_id::CATALOG,
+                source_id::STATISTICS,
+                source_id::WORKLOAD,
+                source_id::GLOBAL_STATUS,
+                source_id::PERFORMANCE_COUNTERS,
+                source_id::PLAN_CACHE_USE,
+                source_id::RESOURCE_USE,
             ]).map(Insufficient).unwrap_or(Available),
-            Self::Deadlocks => source_failed(s, &["deadlocks"]).map(Unavailable).unwrap_or_else(|| {
+            Self::Deadlocks => source_failed(s, &[source_id::DEADLOCKS]).map(Unavailable).unwrap_or_else(|| {
                 let d = s.deadlocks.as_ref().unwrap();
                 if d.counted.is_some() || d.note.is_some() {
                     insufficient("A cumulative counter or a limited deadlock sample cannot verify the absence of this deadlock pattern.")
@@ -286,17 +298,23 @@ fn query(measure: QueryMeasure, s: &Snapshot) -> CheckEvidence {
         return insufficient("A comparable baseline and later workload are needed to assess regressions.");
     }
     let source = match w.kind() {
-        Some(culprit_core::WorkloadKind::QueryStore) => "query_store",
-        Some(culprit_core::WorkloadKind::PlanCache) => "plan_cache",
-        Some(culprit_core::WorkloadKind::QueryLog) => "query_log",
-        _ => "workload",
+        Some(culprit_core::WorkloadKind::QueryStore) => source_id::QUERY_STORE,
+        Some(culprit_core::WorkloadKind::PlanCache) => source_id::PLAN_CACHE,
+        Some(culprit_core::WorkloadKind::QueryLog) => source_id::QUERY_LOG,
+        _ => source_id::WORKLOAD,
     };
     if let Some(reason) = source_failed(s, &[source]) {
         return Insufficient(reason);
     }
-    if matches!(measure, QueryMeasure::Waits(_))
-        && let Some(reason) = source_failed(s, &["query_waits"])
-    {
+    let detail_sources: &[&str] = match measure {
+        QueryMeasure::Waits(_) => &[source_id::QUERY_WAITS],
+        QueryMeasure::Failures => &[source_id::QUERY_COSTS, source_id::QUERY_ERRORS],
+        QueryMeasure::Planning | QueryMeasure::Jit | QueryMeasure::LogBytes => &[source_id::QUERY_COSTS],
+        QueryMeasure::Grants => &[source_id::GRANTS],
+        QueryMeasure::Histograms => &[source_id::HISTOGRAMS],
+        _ => &[],
+    };
+    if let Some(reason) = source_failed(s, detail_sources) {
         return Insufficient(reason);
     }
     let assessed: Vec<_> = w
@@ -361,11 +379,11 @@ fn query(measure: QueryMeasure, s: &Snapshot) -> CheckEvidence {
 
 fn tables(measure: TableMeasure, s: &Snapshot) -> CheckEvidence {
     use CheckEvidence::*;
-    if let Some(reason) = source_failed(s, &["tables", "catalog"]) {
+    if let Some(reason) = source_failed(s, &[source_id::TABLES, source_id::CATALOG]) {
         return Unavailable(reason);
     }
     let storage = matches!(measure, TableMeasure::Bloat | TableMeasure::HotUpdates);
-    if storage && let Some(reason) = source_failed(s, &["table storage"]) {
+    if storage && let Some(reason) = source_failed(s, &[source_id::TABLE_STORAGE]) {
         return Unavailable(reason);
     }
     let complete = !s.tables.is_empty()
@@ -383,7 +401,9 @@ fn tables(measure: TableMeasure, s: &Snapshot) -> CheckEvidence {
         });
     if complete
         || (s.tables.is_empty()
-            && ["tables", "catalog"].iter().any(|n| s.source_outcome(n).is_some_and(|o| o.state == SourceState::Empty)))
+            && [source_id::TABLES, source_id::CATALOG]
+                .iter()
+                .any(|n| s.source_outcome(n).is_some_and(|o| o.state == SourceState::Empty)))
     {
         Available
     } else {

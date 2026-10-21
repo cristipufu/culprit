@@ -579,11 +579,11 @@ fn buffer_pool(snapshot: &Snapshot) -> Option<Finding> {
     }
     counter_days_for_rate(snapshot)?;
     let pressure = snapshot.pressure.as_ref()?;
-    let hit = pressure.signal("buffer-pool-hit").map(|s| s.value)?;
+    let hit = pressure.signal(culprit_core::signal_id::BUFFER_POOL_HIT).map(|s| s.value)?;
     if hit >= 99.0 {
         return None;
     }
-    let reads = pressure.signal("buffer-pool-reads").map(|s| s.value);
+    let reads = pressure.signal(culprit_core::signal_id::BUFFER_POOL_READS).map(|s| s.value);
     // Medium needs both a poor hit rate and real disk reads behind it (50 pages a second, about 0.8 MB/s).
     let severity = Severity::Low; // Both counters cover all databases; neither measures this database's delays.
     let name = snapshot.server.name();

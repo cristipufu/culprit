@@ -89,7 +89,7 @@ pub async fn collect(client: &Client, probe: &Probe) -> (Pressure, Coverage) {
         if hit + read > 0.0 {
             p.signals.push(
                 Signal::new(
-                    "cache-hit",
+                    culprit_core::signal_id::CACHE_HIT,
                     // shared_buffers only: a read the operating system's cache serves counts as a miss here.
                     "Reads served from shared_buffers",
                     hit / (hit + read) * 100.0,
@@ -104,7 +104,7 @@ pub async fn collect(client: &Client, probe: &Probe) -> (Pressure, Coverage) {
             // Over an hour of known counting: a rate, graded.
             Some(h) if h >= 1.0 => p.signals.push(
                 Signal::new(
-                    "temp-bytes",
+                    culprit_core::signal_id::TEMP_BYTES,
                     "Temporary files written, per hour",
                     temp / h,
                     SignalUnit::Bytes,
@@ -119,14 +119,14 @@ pub async fn collect(client: &Client, probe: &Probe) -> (Pressure, Coverage) {
             ),
             // Under an hour, or since an unknown time: the total, which no rate threshold applies to.
             Some(_) => p.signals.push(Signal::new(
-                "temp-bytes",
+                culprit_core::signal_id::TEMP_BYTES,
                 "Temporary files written since reset",
                 temp,
                 SignalUnit::Bytes,
                 SignalScope::SinceStartup,
             )),
             None => p.signals.push(Signal::new(
-                "temp-bytes",
+                culprit_core::signal_id::TEMP_BYTES,
                 "Temporary files written since statistics began",
                 temp,
                 SignalUnit::Bytes,
@@ -175,7 +175,7 @@ pub async fn collect(client: &Client, probe: &Probe) -> (Pressure, Coverage) {
         let (timed, requested) = (r.number("timed").unwrap_or(0.0), r.number("requested").unwrap_or(0.0));
         if timed + requested > 0.0 {
             p.signals.push(Signal::new(
-                "checkpoints",
+                culprit_core::signal_id::CHECKPOINTS,
                 "Checkpoints",
                 timed + requested,
                 SignalUnit::Count,
@@ -183,7 +183,7 @@ pub async fn collect(client: &Client, probe: &Probe) -> (Pressure, Coverage) {
             ));
             p.signals.push(
                 Signal::new(
-                    "checkpoints-requested",
+                    culprit_core::signal_id::CHECKPOINTS_REQUESTED,
                     "Checkpoints forced early",
                     requested / (timed + requested) * 100.0,
                     SignalUnit::Percent,
@@ -209,8 +209,14 @@ pub async fn collect(client: &Client, probe: &Probe) -> (Pressure, Coverage) {
         && let (Some(used), Some(max)) = (r.number("used"), r.number("max").filter(|m| *m > 0.0))
     {
         p.signals.push(
-            Signal::new("connections", "Connections in use", used / max * 100.0, SignalUnit::Percent, SignalScope::Now)
-                .graded("under 80% of max_connections is healthy", 80.0, 90.0, true),
+            Signal::new(
+                culprit_core::signal_id::CONNECTIONS,
+                "Connections in use",
+                used / max * 100.0,
+                SignalUnit::Percent,
+                SignalScope::Now,
+            )
+            .graded("under 80% of max_connections is healthy", 80.0, 90.0, true),
         );
     }
     if probe.privileged
@@ -219,7 +225,7 @@ pub async fn collect(client: &Client, probe: &Probe) -> (Pressure, Coverage) {
         if t.holder != Some(CleanupHolder::ReplicationSlot) {
             p.signals.push(
                 Signal::new(
-                    "oldest-transaction",
+                    culprit_core::signal_id::OLDEST_TRANSACTION,
                     "Oldest transaction holding cleanup",
                     t.seconds,
                     SignalUnit::Seconds,

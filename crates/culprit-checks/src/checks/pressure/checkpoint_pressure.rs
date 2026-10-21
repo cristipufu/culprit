@@ -18,12 +18,14 @@ pub fn checkpoint_pressure_info() -> CheckInfo {
 
 check!(
     CheckpointPressureCheck: checkpoint_pressure_info, checkpoint_pressure,
-    &[Evidence::Pressure { signal: Some("checkpoints-requested"), timed_files: false, complete: true }]
+    &[Evidence::Pressure { signal: Some(culprit_core::signal_id::CHECKPOINTS_REQUESTED), timed_files: false, complete: true }]
 );
 
 pub fn checkpoint_pressure(snapshot: &Snapshot) -> Vec<Finding> {
-    let (Some(requested), Some(total)) = (signal(snapshot, "checkpoints-requested"), signal(snapshot, "checkpoints"))
-    else {
+    let (Some(requested), Some(total)) = (
+        signal(snapshot, culprit_core::signal_id::CHECKPOINTS_REQUESTED),
+        signal(snapshot, culprit_core::signal_id::CHECKPOINTS),
+    ) else {
         return Vec::new();
     };
     if requested < 30.0 || total < 10.0 || snapshot.server.platform().is_some_and(|p| p.applies_wal_in_storage()) {

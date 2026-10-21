@@ -16,7 +16,7 @@ pub fn worker_pressure_info() -> CheckInfo {
 
 check!(
     WorkerPressureCheck: worker_pressure_info, worker_pressure,
-    &[Evidence::Pressure { signal: Some("connections"), timed_files: false, complete: true }]
+    &[Evidence::Pressure { signal: Some(culprit_core::signal_id::CONNECTIONS), timed_files: false, complete: true }]
 );
 
 pub fn worker_pressure(snapshot: &Snapshot) -> Vec<Finding> {
@@ -25,15 +25,15 @@ pub fn worker_pressure(snapshot: &Snapshot) -> Vec<Finding> {
         Engine::Sqlite => Vec::new(),
         Engine::Mssql => {
             let waiting = pressure(snapshot)
-                .and_then(|p| p.signal("threadpool-waiting"))
+                .and_then(|p| p.signal(culprit_core::signal_id::THREADPOOL_WAITING))
                 .filter(|s| s.label.contains("in this database"))
                 .map(|s| s.value)
                 .unwrap_or(0.0);
             let hours = counter_hours(snapshot);
             // The total since the start; scans before Culprit kept it stored an hourly average instead.
-            let total = signal(snapshot, "threadpool-wait-ms").or_else(|| {
+            let total = signal(snapshot, culprit_core::signal_id::THREADPOOL_WAIT_MS).or_else(|| {
                 let p = pressure(snapshot)?;
-                let s = p.signal("threadpool-waits")?;
+                let s = p.signal(culprit_core::signal_id::THREADPOOL_WAITS)?;
                 Some(s.value * p.uptime_hours.unwrap_or(1.0).max(1.0))
             });
             // An average since the start says how much, not when: one bad hour days ago averages the same as a
@@ -125,14 +125,14 @@ pub fn worker_pressure(snapshot: &Snapshot) -> Vec<Finding> {
             vec![f]
         }
         Engine::Postgres | Engine::Mysql => {
-            let Some(used) = signal(snapshot, "connections") else { return Vec::new() };
-            let peak = signal(snapshot, "max-used-connections");
+            let Some(used) = signal(snapshot, culprit_core::signal_id::CONNECTIONS) else { return Vec::new() };
+            let peak = signal(snapshot, culprit_core::signal_id::MAX_USED_CONNECTIONS);
             let hit_limit = peak.is_some_and(|v| v >= 100.0);
             if used < 85.0 && !hit_limit {
                 return Vec::new();
             }
             // When the busiest moment was (MySQL 5.7.5+ keeps it); without it, only that it happened since the start.
-            let peak_ago = signal(snapshot, "max-used-connections-ago");
+            let peak_ago = signal(snapshot, culprit_core::signal_id::MAX_USED_CONNECTIONS_AGO);
             let when = match peak_ago {
                 Some(s) => format!("{} ago", format::duration(s * 1000.0)),
                 None => uptime_phrase(snapshot),

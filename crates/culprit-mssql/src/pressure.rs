@@ -201,7 +201,7 @@ fn counter_signals(c: &HashMap<String, f64>, uptime: Option<f64>, azure: bool) -
     let compiles = compilations - recompiles;
     if let Some(hours) = uptime.filter(|_| batches > 0.0) {
         let rate = Signal::new(
-            "batch-requests",
+            culprit_core::signal_id::BATCH_REQUESTS,
             &label("Batch requests"),
             batches / (hours * 3600.0),
             SignalUnit::PerSecond,
@@ -211,7 +211,7 @@ fn counter_signals(c: &HashMap<String, f64>, uptime: Option<f64>, azure: bool) -
     }
     if batches > 0.0 {
         let ratio = Signal::new(
-            "compiles-per-batch",
+            culprit_core::signal_id::COMPILES_PER_BATCH,
             &label("Plans compiled"),
             compiles / batches * 100.0,
             SignalUnit::Percent,
@@ -227,7 +227,7 @@ fn counter_signals(c: &HashMap<String, f64>, uptime: Option<f64>, azure: bool) -
             Signal { healthy: Some("too few batches to judge; under 10% is healthy under load".into()), ..ratio }
         });
         let recompiled = Signal::new(
-            "recompiles-per-batch",
+            culprit_core::signal_id::RECOMPILES_PER_BATCH,
             &label("Plans recompiled"),
             recompiles / batches * 100.0,
             SignalUnit::Percent,
@@ -236,8 +236,13 @@ fn counter_signals(c: &HashMap<String, f64>, uptime: Option<f64>, azure: bool) -
         signals.push(if azure { Signal { healthy: Some(SHARED.into()), ..recompiled } } else { recompiled });
     }
     if let Some(ple) = c.get("Page life expectancy") {
-        let life =
-            Signal::new("page-life", &label("Page life expectancy"), *ple, SignalUnit::Seconds, SignalScope::Now);
+        let life = Signal::new(
+            culprit_core::signal_id::PAGE_LIFE,
+            &label("Page life expectancy"),
+            *ple,
+            SignalUnit::Seconds,
+            SignalScope::Now,
+        );
         signals.push(if azure {
             Signal { healthy: Some(SHARED.into()), ..life }
         } else {
@@ -261,11 +266,23 @@ fn resource_signals(data_io: f64, data_io_peak: f64, memory: f64) -> Vec<Signal>
             healthy: Some(format!(
                 "Average use of this database's I/O limit; peak {data_io_peak:.1}%. The individual resource samples establish whether pressure was sustained."
             )),
-            ..Signal::new("data-io", "Storage I/O of its limit", data_io, SignalUnit::Percent, SignalScope::LastHour)
+            ..Signal::new(
+                culprit_core::signal_id::DATA_IO,
+                "Storage I/O of its limit",
+                data_io,
+                SignalUnit::Percent,
+                SignalScope::LastHour,
+            )
         },
         Signal {
             healthy: Some("of its memory limit; a full cache is normal, so it isn't graded".into()),
-            ..Signal::new("memory-use", "Memory in use", memory, SignalUnit::Percent, SignalScope::LastHour)
+            ..Signal::new(
+                culprit_core::signal_id::MEMORY_USE,
+                "Memory in use",
+                memory,
+                SignalUnit::Percent,
+                SignalScope::LastHour,
+            )
         },
     ]
 }
@@ -303,8 +320,14 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
     {
         let pending = rows.first().map(|r| r.f64_or_zero("pending")).unwrap_or(0.0);
         p.signals.push(
-            Signal::new("memory-grants-pending", "Waiting for memory", pending, SignalUnit::Count, SignalScope::Now)
-                .graded("0 is healthy", 1.0, 5.0, true),
+            Signal::new(
+                culprit_core::signal_id::MEMORY_GRANTS_PENDING,
+                "Waiting for memory",
+                pending,
+                SignalUnit::Count,
+                SignalScope::Now,
+            )
+            .graded("0 is healthy", 1.0, 5.0, true),
         );
     }
     if let Some(totals) =
@@ -320,7 +343,7 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
         // Totals since the start: one bad hour days ago and a steady trickle average to the same rate, so checks
         // say how much and since when instead of an hourly rate.
         p.signals.push(Signal::new(
-            "threadpool-wait-ms",
+            culprit_core::signal_id::THREADPOOL_WAIT_MS,
             if azure { "Waiting for workers since start" } else { "Waiting for workers since start (whole instance)" },
             threadpool,
             SignalUnit::Milliseconds,
@@ -329,7 +352,7 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
         // Memory grants alone; the Memory category also holds allocation waits (CMEMTHREAD) and compile memory.
         let grants = totals.get("RESOURCE_SEMAPHORE").map(|t| t.0).unwrap_or(0.0);
         p.signals.push(Signal::new(
-            "grant-wait-ms",
+            culprit_core::signal_id::GRANT_WAIT_MS,
             if azure {
                 "Waiting for memory grants since start"
             } else {
@@ -342,7 +365,7 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
         if let Some(hours) = uptime {
             p.signals.push(
                 Signal::new(
-                    "threadpool-waits",
+                    culprit_core::signal_id::THREADPOOL_WAITS,
                     if hours >= 1.0 { "Waiting for workers, per hour" } else { "Waiting for workers since start" },
                     // Under an hour of uptime, report the total rather than extrapolate an hourly rate.
                     threadpool / hours.max(1.0),
@@ -357,7 +380,7 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
         let waiting = rows.first().map(|r| r.f64_or_zero("waiting")).unwrap_or(0.0);
         p.signals.push(
             Signal::new(
-                "threadpool-waiting",
+                culprit_core::signal_id::THREADPOOL_WAITING,
                 "Requests in this database without a worker",
                 waiting,
                 SignalUnit::Count,
@@ -388,7 +411,14 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
     };
     if let Some(bytes) = version_store {
         p.signals.push(
-            Signal::new("version-store", "Version store", bytes, SignalUnit::Bytes, SignalScope::Now).graded(
+            Signal::new(
+                culprit_core::signal_id::VERSION_STORE,
+                "Version store",
+                bytes,
+                SignalUnit::Bytes,
+                SignalScope::Now,
+            )
+            .graded(
                 "small, and shrinking when transactions end",
                 1024.0 * 1024.0 * 1024.0,
                 10.0 * 1024.0 * 1024.0 * 1024.0,
@@ -421,7 +451,7 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
         if let Some(t) = &p.oldest_transaction {
             p.signals.push(
                 Signal::new(
-                    "oldest-transaction",
+                    culprit_core::signal_id::OLDEST_TRANSACTION,
                     "Oldest open transaction",
                     t.seconds,
                     SignalUnit::Seconds,
@@ -532,7 +562,13 @@ pub(crate) async fn sample(client: &mut MsClient, azure: bool, seconds: u32) -> 
 fn scheduling_share(signal: f64, wait: f64, scope: SignalScope) -> Signal {
     Signal {
         healthy: Some("Share of recorded waiting spent ready to run before being scheduled. This is not CPU utilization; the ratio alone does not establish CPU pressure.".into()),
-        ..Signal::new("signal-wait", "Scheduling share of recorded waits", signal / wait * 100.0, SignalUnit::Percent, scope)
+        ..Signal::new(
+            culprit_core::signal_id::SIGNAL_WAIT,
+            "Scheduling share of recorded waits",
+            signal / wait * 100.0,
+            SignalUnit::Percent,
+            scope,
+        )
     }
 }
 

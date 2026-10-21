@@ -5,7 +5,7 @@ pub fn sequence_capacity_info() -> CheckInfo {
 }
 check!(
     SequenceCapacityCheck: sequence_capacity_info, sequence_capacity,
-    &[Evidence::Observed(Observation::Sequences, &["sequence_capacity"])]
+    &[Evidence::Observed(Observation::Sequences, &[culprit_core::source_id::SEQUENCE_CAPACITY])]
 );
 pub fn sequence_capacity(s: &Snapshot) -> Vec<Finding> {
     s.operations.sequences.iter().filter_map(|seq| {

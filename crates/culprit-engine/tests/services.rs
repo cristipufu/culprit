@@ -264,3 +264,32 @@ async fn event_services_keep_identical_aliases_in_separate_workspace_stores() {
     std::fs::remove_dir_all(dir_a).unwrap();
     std::fs::remove_dir_all(dir_b).unwrap();
 }
+
+#[test]
+fn all_provider_sources_are_registered_in_the_canonical_source_contract() {
+    use culprit_core::{same_source, source_id};
+    for (i, a) in source_id::ALL.iter().enumerate() {
+        for b in &source_id::ALL[i + 1..] {
+            assert!(!same_source(a, b), "duplicate canonical source id: {a} vs {b}");
+        }
+    }
+    let provider_sources: &[&[culprit_core::Source]] = &[
+        #[cfg(feature = "postgres")]
+        culprit_postgres::sources::ALL,
+        #[cfg(feature = "mysql")]
+        culprit_mysql::sources::ALL,
+        #[cfg(feature = "mssql")]
+        culprit_mssql::sources::ALL,
+        #[cfg(feature = "sqlite")]
+        culprit_sqlite::sources::ALL,
+    ];
+    for list in provider_sources {
+        for source in *list {
+            assert!(
+                source_id::ALL.iter().any(|canonical| same_source(canonical, source.name)),
+                "provider source {:?} is missing from culprit_core::source_id::ALL",
+                source.name
+            );
+        }
+    }
+}

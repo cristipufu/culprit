@@ -97,7 +97,7 @@ WHERE q.is_internal_query = 0 AND q.is_clouddb_internal_query = 0 AND t.query_sq
         Signal {
             healthy: Some(context.clone()),
             ..Signal::new(
-                "database-compiles",
+                culprit_core::signal_id::DATABASE_COMPILES,
                 "Compiles recorded",
                 compiles,
                 SignalUnit::Count,
@@ -107,7 +107,7 @@ WHERE q.is_internal_query = 0 AND q.is_clouddb_internal_query = 0 AND t.query_sq
         Signal {
             healthy: Some(context),
             ..Signal::new(
-                "database-compile-time",
+                culprit_core::signal_id::DATABASE_COMPILE_TIME,
                 "Compilation time",
                 ms,
                 SignalUnit::Milliseconds,
@@ -431,7 +431,7 @@ fn login_signals(logins: Option<f64>, resets: Option<f64>, uptime_s: Option<f64>
     if let (Some(logins), Some(seconds)) = (logins, uptime_s) {
         out.push(grade(
             Signal::new(
-                "new-connections",
+                culprit_core::signal_id::NEW_CONNECTIONS,
                 &label("New connections"),
                 logins / seconds,
                 SignalUnit::PerSecond,
@@ -447,7 +447,7 @@ fn login_signals(logins: Option<f64>, resets: Option<f64>, uptime_s: Option<f64>
         {
             out.push(grade(
                 Signal::new(
-                    "pooled-reuse",
+                    culprit_core::signal_id::POOLED_REUSE,
                     &label("Connections served from a pool"),
                     resets / (logins + resets) * 100.0,
                     SignalUnit::Percent,

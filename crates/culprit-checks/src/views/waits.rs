@@ -270,7 +270,7 @@ fn detail(snapshot: &Snapshot, category: &WaitCategory, contributors: &[(&QueryS
 }
 
 fn pending_grants(snapshot: &Snapshot) -> Option<String> {
-    let pending = snapshot.pressure.as_ref()?.signal("memory-grants-pending")?.value;
+    let pending = snapshot.pressure.as_ref()?.signal(culprit_core::signal_id::MEMORY_GRANTS_PENDING)?.value;
     (pending > 0.0).then(|| format!("{} queries were waiting for memory when the scan ran.", format::count(pending)))
 }
 

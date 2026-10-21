@@ -31,8 +31,141 @@ pub struct SourceOutcome {
     pub reason: Option<String>,
 }
 
-fn same_source(a: &str, b: &str) -> bool {
-    a.replace(' ', "_") == b.replace(' ', "_")
+/// Canonical built-in source identifiers shared between engine collectors and check evidence contracts.
+/// External providers may still record custom source names.
+pub mod source_id {
+    pub const CATALOG: &str = "catalog";
+    pub const TABLES: &str = "tables";
+    pub const INDEXES: &str = "indexes";
+    pub const COLUMNS: &str = "columns";
+    pub const FOREIGN_KEYS: &str = "foreign_keys";
+    pub const STATISTICS: &str = "statistics";
+    pub const SIZES: &str = "sizes";
+    pub const TABLE_STORAGE: &str = "table storage";
+    pub const CONSTRAINTS: &str = "constraints";
+
+    pub const WORKLOAD: &str = "workload";
+    pub const QUERY_STORE: &str = "query_store";
+    pub const QUERY_WAITS: &str = "query_waits";
+    pub const PLAN_CACHE: &str = "plan_cache";
+    pub const QUERY_LOG: &str = "query log";
+    pub const QUERY_COSTS: &str = "query costs";
+    pub const QUERY_COMPILATION: &str = "query compilation";
+    pub const QUERY_ERRORS: &str = "query errors";
+    pub const QUERY_FAMILIES: &str = "query_families";
+    pub const PLAN_CACHE_USE: &str = "plan cache use";
+    pub const HISTOGRAMS: &str = "histograms";
+
+    pub const MISSING_INDEXES: &str = "missing_indexes";
+    pub const FORWARDED_FETCHES: &str = "forwarded_fetches";
+    pub const TUNING: &str = "tuning";
+    pub const INDEX_CONTENTION: &str = "index contention";
+    pub const LIVE_LOCKS: &str = "live_locks";
+    pub const METADATA_LOCKS: &str = "metadata_locks";
+
+    pub const SETTINGS: &str = "settings";
+    pub const ADVICE_SETTINGS: &str = "advice settings";
+    pub const SERVER_VARIABLES: &str = "server variables";
+    pub const WAITS: &str = "waits";
+    pub const WAIT_TOTALS: &str = "wait totals";
+    pub const GLOBAL_STATUS: &str = "global status";
+    pub const PERFORMANCE_COUNTERS: &str = "performance counters";
+    pub const DATABASE_STATS: &str = "database statistics";
+    pub const RESOURCES: &str = "resources";
+    pub const RESOURCE_USE: &str = "resource use";
+    pub const CHECKPOINTS: &str = "checkpoints";
+    pub const OPEN_TRANSACTIONS: &str = "open transactions";
+    pub const CLEANUP_SLOTS: &str = "cleanup slots";
+    pub const CLEANUP_PREPARED: &str = "cleanup prepared";
+    pub const PENDING_GRANTS: &str = "memory grants";
+    pub const GRANTS: &str = "memory grants per query";
+    pub const FILE_LATENCY: &str = "file latency";
+    pub const SESSIONS: &str = "sessions";
+    pub const CONNECTIONS: &str = "connections";
+    pub const LOGINS: &str = "logins";
+    pub const REPLICATION: &str = "replication";
+    pub const SIGNALS: &str = "signals";
+
+    pub const LOG_CAPACITY: &str = "log_capacity";
+    pub const FILE_CAPACITY: &str = "file_capacity";
+    pub const TEMP_CAPACITY: &str = "temp_capacity";
+    pub const SEQUENCE_CAPACITY: &str = "sequence_capacity";
+    pub const MULTIXACTS: &str = "multixacts";
+    pub const ARCHIVER: &str = "archiver";
+    pub const SUBSCRIPTION_ERRORS: &str = "subscription_errors";
+    pub const STANDBY_CONFLICTS: &str = "standby_conflicts";
+    pub const REDO_PRESSURE: &str = "redo_pressure";
+    pub const CLUSTER_HEALTH: &str = "cluster_health";
+    pub const WAL_FILE: &str = "wal_file";
+    pub const DEADLOCKS: &str = "deadlocks";
+
+    pub const ALL: &[&str] = &[
+        CATALOG,
+        TABLES,
+        INDEXES,
+        COLUMNS,
+        FOREIGN_KEYS,
+        STATISTICS,
+        SIZES,
+        TABLE_STORAGE,
+        CONSTRAINTS,
+        WORKLOAD,
+        QUERY_STORE,
+        QUERY_WAITS,
+        PLAN_CACHE,
+        QUERY_LOG,
+        QUERY_COSTS,
+        QUERY_COMPILATION,
+        QUERY_ERRORS,
+        QUERY_FAMILIES,
+        PLAN_CACHE_USE,
+        HISTOGRAMS,
+        MISSING_INDEXES,
+        FORWARDED_FETCHES,
+        TUNING,
+        INDEX_CONTENTION,
+        LIVE_LOCKS,
+        METADATA_LOCKS,
+        SETTINGS,
+        ADVICE_SETTINGS,
+        SERVER_VARIABLES,
+        WAITS,
+        WAIT_TOTALS,
+        GLOBAL_STATUS,
+        PERFORMANCE_COUNTERS,
+        DATABASE_STATS,
+        RESOURCES,
+        RESOURCE_USE,
+        CHECKPOINTS,
+        OPEN_TRANSACTIONS,
+        CLEANUP_SLOTS,
+        CLEANUP_PREPARED,
+        PENDING_GRANTS,
+        GRANTS,
+        FILE_LATENCY,
+        SESSIONS,
+        CONNECTIONS,
+        LOGINS,
+        REPLICATION,
+        SIGNALS,
+        LOG_CAPACITY,
+        FILE_CAPACITY,
+        TEMP_CAPACITY,
+        SEQUENCE_CAPACITY,
+        MULTIXACTS,
+        ARCHIVER,
+        SUBSCRIPTION_ERRORS,
+        STANDBY_CONFLICTS,
+        REDO_PRESSURE,
+        CLUSTER_HEALTH,
+        WAL_FILE,
+        DEADLOCKS,
+    ];
+}
+
+pub fn same_source(a: &str, b: &str) -> bool {
+    let normalize = |byte: u8| if byte == b' ' { b'_' } else { byte.to_ascii_lowercase() };
+    a.len() == b.len() && a.bytes().map(normalize).eq(b.bytes().map(normalize))
 }
 
 impl SourceOutcome {

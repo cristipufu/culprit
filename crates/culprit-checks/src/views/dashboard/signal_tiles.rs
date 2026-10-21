@@ -11,7 +11,10 @@ pub(super) fn worst_finding<'a>(report: &'a Report, check: &str) -> Option<&'a F
 
 /// A collector's note, when it explains why a tile has nothing to show.
 pub(super) fn collector_note(s: &Snapshot, names: &[&str]) -> Option<String> {
-    s.notes.iter().find(|n| names.contains(&n.collector.as_str())).map(|n| n.message.clone())
+    s.notes
+        .iter()
+        .find(|n| names.iter().any(|name| culprit_core::same_source(name, &n.collector)))
+        .map(|n| n.message.clone())
 }
 
 pub(super) fn file_name(s: &Snapshot, f: &FileIo) -> String {
@@ -61,7 +64,7 @@ pub(super) fn storage(report: &Report) -> Tile {
             _ => "This scan has no storage timings.".to_string(),
         };
         let mut t = Tile::new(TileKey::Storage, TileStatus::Unavailable, why);
-        t.detail = collector_note(s, &["storage", "files", "signals"]);
+        t.detail = collector_note(s, &[culprit_core::source_id::FILE_LATENCY, "storage", "files", "signals"]);
         return t;
     }
     // Enough operations for an average to mean something: the floor the slow-storage check uses.
@@ -174,8 +177,8 @@ pub(super) fn signal_item(sig: &Signal) -> TileItem {
 pub(super) fn connections(report: &Report) -> Tile {
     let s = &report.snapshot;
     let p = s.pressure.as_ref();
-    let rate = p.and_then(|p| p.signal("new-connections"));
-    let used = p.and_then(|p| p.signal("connections"));
+    let rate = p.and_then(|p| p.signal(culprit_core::signal_id::NEW_CONNECTIONS));
+    let used = p.and_then(|p| p.signal(culprit_core::signal_id::CONNECTIONS));
     if rate.is_none() && used.is_none() {
         let why = match s.server.engine {
             Engine::Postgres if !culprit_core::version_at_least(&s.server.version, [14, 0, 0]) => {
@@ -185,7 +188,10 @@ pub(super) fn connections(report: &Report) -> Tile {
             _ => "This scan has no connection counters.".to_string(),
         };
         let mut t = Tile::new(TileKey::Connections, TileStatus::Unavailable, why);
-        t.detail = collector_note(s, &["connections", "logins", "sessions"]);
+        t.detail = collector_note(
+            s,
+            &[culprit_core::source_id::CONNECTIONS, culprit_core::source_id::LOGINS, culprit_core::source_id::SESSIONS],
+        );
         return t;
     }
     let (status, takeaway) = match worst_finding(report, "connection-churn") {
@@ -225,7 +231,12 @@ pub(super) fn connections(report: &Report) -> Tile {
         }
         t.items.push(item);
     }
-    for key in ["session-length", "pooled-reuse", "thread-cache-misses", "sessions-abandoned"] {
+    for key in [
+        culprit_core::signal_id::SESSION_LENGTH,
+        culprit_core::signal_id::POOLED_REUSE,
+        culprit_core::signal_id::THREAD_CACHE_MISSES,
+        culprit_core::signal_id::SESSIONS_ABANDONED,
+    ] {
         if let Some(sig) = p.and_then(|p| p.signal(key)) {
             t.items.push(signal_item(sig));
         }
@@ -248,7 +259,7 @@ pub(super) fn replication(report: &Report) -> Tile {
     let family = family(&s.server);
     let replicas = s.pressure.as_ref().map(|p| p.replicas.as_slice()).unwrap_or_default();
     if replicas.is_empty() {
-        if let Some(note) = collector_note(s, &["replication"]) {
+        if let Some(note) = collector_note(s, &[culprit_core::source_id::REPLICATION]) {
             let mut t = Tile::new(
                 TileKey::Replication,
                 TileStatus::Unavailable,
@@ -497,7 +508,7 @@ pub(super) fn statistics(report: &Report) -> Tile {
             let mut t = Tile::new(TileKey::Statistics, status, takeaway);
             // The slow query log only has statements over long_query_time: say so where its numbers are summarized.
             if w.kind() == Some(culprit_core::WorkloadKind::SlowLog) {
-                t.detail = s.notes.iter().find(|n| n.collector == "workload").map(|n| n.message.clone());
+                t.detail = collector_note(s, &[culprit_core::source_id::WORKLOAD]);
             }
             t.metrics = vec![
                 TileMetric::new("queries", "Queries", Some(w.query_count), format::count(w.query_count)),

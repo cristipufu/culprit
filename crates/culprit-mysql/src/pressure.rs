@@ -187,7 +187,7 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Coverage) {
         {
             p.signals.push(
                 Signal::new(
-                    "buffer-pool-hit",
+                    culprit_core::signal_id::BUFFER_POOL_HIT,
                     "Reads served from memory",
                     (1.0 - reads / requests) * 100.0,
                     SignalUnit::Percent,
@@ -198,7 +198,7 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Coverage) {
             // How much reading from disk that miss rate is: a 98% hit rate can be 1 read a second or 10,000.
             if let Some(u) = uptime_s {
                 p.signals.push(Signal::new(
-                    "buffer-pool-reads",
+                    culprit_core::signal_id::BUFFER_POOL_READS,
                     "Pages read from disk",
                     reads / u,
                     SignalUnit::PerSecond,
@@ -211,7 +211,7 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Coverage) {
         {
             p.signals.push(
                 Signal::new(
-                    "tmp-disk-tables",
+                    culprit_core::signal_id::TMP_DISK_TABLES,
                     "Temporary tables on disk",
                     disk / all * 100.0,
                     SignalUnit::Percent,
@@ -247,12 +247,18 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Coverage) {
             } else {
                 ("Row-lock waits since start", waits, SignalUnit::Count)
             };
-            p.signals.push(Signal::new("row-lock-waits", label, value, unit, SignalScope::SinceStartup));
+            p.signals.push(Signal::new(
+                culprit_core::signal_id::ROW_LOCK_WAITS,
+                label,
+                value,
+                unit,
+                SignalScope::SinceStartup,
+            ));
         }
         // The whole server's time waiting for row locks since it started (every database's).
         if let Some(total) = get("Innodb_row_lock_time") {
             p.signals.push(Signal::new(
-                "row-lock-time",
+                culprit_core::signal_id::ROW_LOCK_TIME,
                 "Time waiting for row locks since start (whole server)",
                 total,
                 SignalUnit::Milliseconds,
@@ -262,7 +268,7 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Coverage) {
         if let Some(avg) = get("Innodb_row_lock_time_avg") {
             p.signals.push(
                 Signal::new(
-                    "row-lock-avg",
+                    culprit_core::signal_id::ROW_LOCK_AVG,
                     "Average row-lock wait",
                     avg,
                     SignalUnit::Milliseconds,
@@ -279,7 +285,7 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Coverage) {
             if let Some(used) = get("Threads_connected").map(|u| (u - own).max(0.0)) {
                 p.signals.push(
                     Signal::new(
-                        "connections",
+                        culprit_core::signal_id::CONNECTIONS,
                         "Connections in use",
                         used / max * 100.0,
                         SignalUnit::Percent,
@@ -291,7 +297,7 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Coverage) {
             if let Some(peak) = get("Max_used_connections") {
                 p.signals.push(
                     Signal::new(
-                        "max-used-connections",
+                        culprit_core::signal_id::MAX_USED_CONNECTIONS,
                         "Busiest moment",
                         peak / max * 100.0,
                         SignalUnit::Percent,
@@ -301,7 +307,7 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Coverage) {
                 );
                 if let Some(ago) = peak_connections_ago(conn).await {
                     p.signals.push(Signal::new(
-                        "max-used-connections-ago",
+                        culprit_core::signal_id::MAX_USED_CONNECTIONS_AGO,
                         "Since the busiest moment",
                         ago,
                         SignalUnit::Seconds,
@@ -324,7 +330,7 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Coverage) {
     if let Some(h) = history {
         p.signals.push(
             Signal::new(
-                "history-length",
+                culprit_core::signal_id::HISTORY_LENGTH,
                 "Undo logs not yet purged (whole server)",
                 h,
                 SignalUnit::Count,
@@ -361,7 +367,7 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Coverage) {
         });
         p.signals.push(
             Signal::new(
-                "oldest-transaction",
+                culprit_core::signal_id::OLDEST_TRANSACTION,
                 "Oldest transaction to inspect for locks or a retained read view",
                 seconds,
                 SignalUnit::Seconds,

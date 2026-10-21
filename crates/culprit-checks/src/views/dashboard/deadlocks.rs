@@ -12,8 +12,8 @@ pub(super) fn deadlocks(report: &Report) -> Tile {
             format!("{} has no deadlocks to read.", s.server.engine)
         };
         let mut t = Tile::new(TileKey::Deadlocks, TileStatus::Unavailable, headline);
-        t.detail = Some(match s.notes.iter().find(|n| n.collector == "deadlocks") {
-            Some(note) => note.message.clone(),
+        t.detail = Some(match collector_note(s, &[culprit_core::source_id::DEADLOCKS]) {
+            Some(note) => note,
             None if !s.server.engine.has_server() => {
                 format!("{} records no deadlocks: one writer at a time holds the file.", s.server.engine)
             }

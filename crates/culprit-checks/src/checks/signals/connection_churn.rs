@@ -21,7 +21,7 @@ check!(
 
 pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(p) = snapshot.pressure.as_ref() else { return Vec::new() };
-    let Some(rate) = p.signal("new-connections").map(|s| s.value) else { return Vec::new() };
+    let Some(rate) = p.signal(culprit_core::signal_id::NEW_CONNECTIONS).map(|s| s.value) else { return Vec::new() };
     if p.uptime_hours.is_none_or(|h| h < 1.0) {
         return Vec::new();
     }
@@ -37,8 +37,9 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
     }
     // A large pool can legitimately open many long-lived sessions. Neither a rate nor a thread-cache miss ratio
     // establishes one connection per request. Known long-lived sessions / frequent pooled resets contradict it.
-    if (engine == Engine::Postgres && p.signal("session-length").is_some_and(|s| s.value >= 60.0))
-        || (engine == Engine::Mssql && p.signal("pooled-reuse").is_some_and(|s| s.value >= 90.0))
+    if (engine == Engine::Postgres
+        && p.signal(culprit_core::signal_id::SESSION_LENGTH).is_some_and(|s| s.value >= 60.0))
+        || (engine == Engine::Mssql && p.signal(culprit_core::signal_id::POOLED_REUSE).is_some_and(|s| s.value >= 90.0))
     {
         return Vec::new();
     }
@@ -59,7 +60,7 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
     let detail = match engine {
         Engine::Sqlite => "SQLite has no connections to pool: each one opens the file.".to_string(),
         Engine::Postgres => {
-            let length = p.signal("session-length").map(|s| s.value);
+            let length = p.signal(culprit_core::signal_id::SESSION_LENGTH).map(|s| s.value);
             format!(
                 "Each new PostgreSQL connection starts a server process and pays for TLS and authentication: milliseconds of CPU and a few MB of memory before the first query.{}",
                 length
@@ -67,14 +68,14 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
                     .unwrap_or_default()
             )
         }
-        Engine::Mssql => match p.signal("pooled-reuse").map(|s| s.value) {
+        Engine::Mssql => match p.signal(culprit_core::signal_id::POOLED_REUSE).map(|s| s.value) {
             Some(pct) => format!(
                 "SQL Server recorded {:.0}% resets compared with resets plus new logins; pools can also reuse connections without a reset, so this does not identify all pool use.",
                 pct
             ),
             None => "Every login pays for TLS, authentication and session setup.".into(),
         },
-        Engine::Mysql => match p.signal("thread-cache-misses").map(|s| s.value) {
+        Engine::Mysql => match p.signal(culprit_core::signal_id::THREAD_CACHE_MISSES).map(|s| s.value) {
             Some(pct) => format!("{:.0}% of them needed a new thread because the thread cache was empty.", pct),
             None => "Every connection pays for TLS, authentication and a thread.".into(),
         },
@@ -93,7 +94,10 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
     // A count of the whole server's connections is shared: said, with what it counts, but not graded on this
     // database (CLAUDE.md: mark shared counters and don't grade them). PostgreSQL's is this database's own.
     let shared = engine != Engine::Postgres;
-    f.severity = if !shared && rate >= limit * 5.0 && p.signal("session-length").is_some_and(|s| s.value <= 1.0) {
+    f.severity = if !shared
+        && rate >= limit * 5.0
+        && p.signal(culprit_core::signal_id::SESSION_LENGTH).is_some_and(|s| s.value <= 1.0)
+    {
         Severity::Medium
     } else {
         Severity::Low

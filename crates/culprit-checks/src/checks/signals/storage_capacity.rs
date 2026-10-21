@@ -7,7 +7,14 @@ pub fn storage_capacity_info() -> CheckInfo {
 }
 check!(
     StorageCapacityCheck: storage_capacity_info, storage_capacity,
-    &[Evidence::Observed(Observation::Spaces, &["log_capacity", "file_capacity", "temp_capacity"])]
+    &[Evidence::Observed(
+        Observation::Spaces,
+        &[
+            culprit_core::source_id::LOG_CAPACITY,
+            culprit_core::source_id::FILE_CAPACITY,
+            culprit_core::source_id::TEMP_CAPACITY,
+        ],
+    )]
 );
 
 pub fn storage_capacity(s: &Snapshot) -> Vec<Finding> {

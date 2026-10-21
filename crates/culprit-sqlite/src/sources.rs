@@ -3,22 +3,23 @@
 //! one source fails the scan; any other that can't be read becomes a note, and the capability it would have delivered
 //! is listed as missing with why.
 
-use culprit_core::{Capability, Source};
-pub const WAL_FILE: Source = Source { name: "wal_file", reads: "WAL sidecar file size (metadata only)", delivers: &[] };
+use culprit_core::{Capability, Source, source_id};
+pub const WAL_FILE: Source =
+    Source { name: source_id::WAL_FILE, reads: "WAL sidecar file size (metadata only)", delivers: &[] };
 
 /// sqlite_schema and the table, column, index and foreign key pragmas.
 pub const CATALOG: Source =
-    Source { name: "catalog", reads: "the file's catalog", delivers: &[Capability::TableStats] };
+    Source { name: source_id::CATALOG, reads: "the file's catalog", delivers: &[Capability::TableStats] };
 /// sqlite_stat1: the planner's row counts and index selectivity, where ANALYZE has run.
 pub const PLANNER_STATISTICS: Source =
-    Source { name: "statistics", reads: "planner statistics", delivers: &[Capability::Statistics] };
+    Source { name: source_id::STATISTICS, reads: "planner statistics", delivers: &[Capability::Statistics] };
 /// dbstat: every page of the file, for sizes and counted rows, read whole only within a time and size budget.
-pub const SIZES: Source = Source { name: "sizes", reads: "table and index sizes", delivers: &[] };
+pub const SIZES: Source = Source { name: source_id::SIZES, reads: "table and index sizes", delivers: &[] };
 /// The pragmas that shape how the file is read and written (journal mode, page size, foreign keys…).
-pub const SETTINGS: Source = Source { name: "settings", reads: "file settings", delivers: &[] };
+pub const SETTINGS: Source = Source { name: source_id::SETTINGS, reads: "file settings", delivers: &[] };
 /// The application's own log of its statements (Rails, Django, EF Core, Ecto, JSON lines), read by `culprit-querylog`.
 pub const QUERY_LOG: Source =
-    Source { name: "query log", reads: "the application's query log", delivers: &[Capability::QueryLog] };
+    Source { name: source_id::QUERY_LOG, reads: "the application's query log", delivers: &[Capability::QueryLog] };
 
 /// Every source above, for listings (`culprit sources`).
 pub const ALL: &[Source] = &[CATALOG, PLANNER_STATISTICS, SIZES, SETTINGS, QUERY_LOG, WAL_FILE];

@@ -7,7 +7,15 @@ pub fn operational_errors_info() -> CheckInfo {
 }
 check!(
     OperationalErrorsCheck: operational_errors_info, operational_errors,
-    &[Evidence::Observed(Observation::OperationalCounters, &["archiver", "subscription_errors", "standby_conflicts", "redo_pressure"])]
+    &[Evidence::Observed(
+        Observation::OperationalCounters,
+        &[
+            culprit_core::source_id::ARCHIVER,
+            culprit_core::source_id::SUBSCRIPTION_ERRORS,
+            culprit_core::source_id::STANDBY_CONFLICTS,
+            culprit_core::source_id::REDO_PRESSURE,
+        ],
+    )]
 );
 pub fn operational_errors(s: &Snapshot) -> Vec<Finding> {
     s.operations.counters.iter().filter_map(|c| {
