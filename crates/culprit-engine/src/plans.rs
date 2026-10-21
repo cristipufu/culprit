@@ -6,7 +6,9 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use culprit_core::{Error, Plan, PlanKind, PlanNode, Result};
+#[cfg(any(feature = "postgres", feature = "mysql"))]
+use culprit_core::PlanKind;
+use culprit_core::{Error, Plan, PlanNode, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use ts_rs::TS;
@@ -177,9 +179,8 @@ struct Catalog<'a> {
 
 /// `saved` read again by its engine's parser; `entry` is the pg_stat_statements entry it was planned for.
 fn reparse(saved: &Plan, entry: Option<&str>, catalog: &Catalog) -> Option<(Plan, bool)> {
-    let _ = (entry, catalog.tables, catalog.indexes);
-    let database = catalog.database;
-    let (mut plan, parsed_native) = match saved.engine {
+    let _ = (entry, catalog.database, catalog.tables, catalog.indexes);
+    let reparsed: Option<(Plan, bool)> = match saved.engine {
         #[cfg(feature = "mssql")]
         culprit_core::Engine::Mssql => culprit_mssql::plan_xml::reparse(saved).map(|p| (p, true)),
         #[cfg(feature = "postgres")]
@@ -195,11 +196,12 @@ fn reparse(saved: &Plan, entry: Option<&str>, catalog: &Catalog) -> Option<(Plan
         }
         #[cfg(feature = "mysql")]
         culprit_core::Engine::Mysql => {
-            culprit_mysql::plan_json::reparse(saved, Some(database).filter(|d| !d.is_empty())).map(|p| (p, true))
+            culprit_mysql::plan_json::reparse(saved, Some(catalog.database).filter(|d| !d.is_empty()))
+                .map(|p| (p, true))
         }
         _ => None,
-    }
-    .filter(|(plan, _)| plan.engine == saved.engine)?;
+    };
+    let (mut plan, parsed_native) = reparsed.filter(|(plan, _)| plan.engine == saved.engine)?;
     plan.kind = saved.kind;
     plan.statement = saved.statement.clone();
     plan.insights = None;

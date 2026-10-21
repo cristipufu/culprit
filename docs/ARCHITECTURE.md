@@ -28,6 +28,27 @@ with a fixture.
 | `culprit-engine` | Connections and secrets, the provider registry, scans, saved reports and the history between scans. |
 | `culprit-cli`, `culprit-mcp`, `app/` | Surfaces: the same report, worded for a terminal, a coding agent, a window. |
 
+### Workspace services
+
+`Workspace` keeps the public API and owns its configured stores, checks, authentication and provider factories.
+It constructs borrowed services from those dependencies for each operation, so replacing a secret store or provider
+factory applies to subsequent calls without maintaining a second copy of configuration:
+
+- `connection.rs::Connections` owns connection metadata, imports/discovery, credential and token resolution, certificates
+  and provider creation. It receives the stores, authentication handler and provider factories explicitly.
+- `scan.rs::Scan` owns one operation's clock, history enrichment, analysis handoff and persistence. Its clock starts
+  before provider authentication; the façade supplies the primary snapshot and handles rejected credentials. The
+  remaining operation receives a provider, report directory and checks, and consumes its scan context once.
+- `reporting.rs::Reports` owns saved-file replay, exact report/window selection, history, digest and advisor views.
+  It receives paths and checks, with no provider or secret store, so offline reads cannot open a database.
+- `execution.rs::Execution` combines connection resolution and report context for plans, live reads, queries and
+  session actions. Read-only, server-parser, production and confirmation guards stay at this boundary.
+- `event_context.rs::Events` combines the same dependencies for period comparisons, marks, historical events and
+  cloud context. Each operation uses that workspace's report directory and the requested period.
+
+Services do not hold a `Workspace` or call the façade to perform their work. Existing modules continue to own storage,
+provider registration, cloud transport and pure analysis; services compose them without duplicating their rules.
+
 ## 1. Sources: what a provider reads
 
 A provider (`culprit_core::Provider`, one per engine, chosen in `culprit-engine/src/registry.rs`) collects a snapshot
@@ -90,6 +111,18 @@ Rules every source follows:
   userstat turned on. The collector dates what it can see (`IndexStat::counters_since`) and the scans add what they saw
   (`culprit-engine/src/history.rs::date_new_indexes`); absence waits a week from then.
 
+### Provider collection boundaries
+
+PostgreSQL and MySQL/MariaDB keep collection responsibilities in separate modules. `probe.rs` establishes server
+identity, capabilities and source availability. `catalog.rs` reads tables, indexes, columns, foreign keys, usage and
+settings. `workload.rs` reads statement counters, families or digests, slow-log fallback and safe plan capture, returning
+an explicit `CollectedWorkload` to its caller. `collect.rs` owns concurrent source orchestration, coverage accounting
+and snapshot assembly. Individual source errors still become notes and unavailable capabilities in that one place.
+
+PostgreSQL's native parser owns generic-plan and normalized-statement annotations in `plan_json.rs`, so reparsing a
+saved plan does not depend on collection orchestration. Shared identifier quoting stays with the SQL protocol helpers
+in `rows.rs`. The public provider traits and PostgreSQL's SQL helper exports retain their original interfaces.
+
 ### Platforms: where a database runs
 
 A managed service changes how Culprit reads and advises (no superuser, settings in a parameter group, the cloud's own
@@ -128,7 +161,7 @@ applies to every engine is written once. Types the UI shows derive `ts_rs::TS`; 
 culprit-engine` regenerates `app/src/gen`.
 
 A saved scan is read as this version would read it. Whenever one is loaded (`culprit analyze`, the latest report the
-app, CLI, MCP and exports show, the index advisor, the digest), `Workspace::reread` parses each plan again from the text
+app, CLI, MCP and exports show, the index advisor, the digest), the saved-report service (`reporting.rs`) parses each plan again from the text
 it was captured as (`culprit_engine::plans::reparse_saved`, through each provider's `reparse`: `plan_json::reparse` on
 PostgreSQL and MySQL, `plan_xml::reparse` on SQL Server) and runs the pipeline again, so a parser or check fix reaches
 the scans saved before it. What the scan added that the text doesn't hold stays as saved (the statement it planned, the

@@ -79,6 +79,15 @@ pub fn parse_array(text: &str) -> Vec<String> {
     inner.split(',').map(|s| s.trim().trim_matches('"').to_string()).collect()
 }
 
+pub fn quote_ident(name: &str) -> String {
+    let plain = name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if plain {
+        return name.to_string();
+    }
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,5 +96,12 @@ mod tests {
     fn arrays_parse() {
         assert_eq!(parse_array("{12,34}"), vec!["12", "34"]);
         assert!(parse_array("{}").is_empty());
+    }
+
+    #[test]
+    fn identifiers_quote_only_when_needed() {
+        assert_eq!(quote_ident("app_user"), "app_user");
+        assert_eq!(quote_ident("AppUser"), "\"AppUser\"");
+        assert_eq!(quote_ident("we\"ird"), "\"we\"\"ird\"");
     }
 }

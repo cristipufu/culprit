@@ -11,8 +11,8 @@ use culprit_core::{
 };
 use mysql_async::{Conn, Value};
 
-use crate::collect::Probe;
 use crate::connect::{Connector, Scope};
+use crate::probe::Probe;
 use crate::rows::{Rec, query, query_with};
 use crate::sources;
 

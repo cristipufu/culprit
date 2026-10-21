@@ -13,6 +13,7 @@ mod plan_view;
 mod plans;
 mod plugin;
 mod provenance;
+mod services;
 mod share;
 mod table_growth;
 

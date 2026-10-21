@@ -145,7 +145,7 @@ pub async fn own_text(client: &Client, query_id: &str) -> Result<Option<String>>
     let sql = format!(
         "SELECT query FROM {}.pg_stat_statements
           WHERE queryid = $1 AND pg_catalog.pg_get_userbyid(userid) = session_user AND current_user = session_user LIMIT 1",
-        crate::collect::quote_ident(&schema)
+        crate::rows::quote_ident(&schema)
     );
     Ok(on_catalog(client, &sql, &[&id]).await?.and_then(|r| r.try_get::<_, String>("query").ok()))
 }

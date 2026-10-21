@@ -12,7 +12,7 @@ use culprit_core::{
 };
 use tokio_postgres::Client;
 
-use crate::collect::{Probe, StatementsAccess};
+use crate::probe::{Probe, StatementsAccess};
 use crate::rows::{Row, iso, query, query_one};
 use crate::sources;
 
@@ -332,8 +332,8 @@ async fn advice_settings(client: &Client) -> culprit_core::Result<Vec<Setting>> 
             let unit = r.text("unit");
             Setting {
                 name: r.string("name"),
-                value: crate::collect::pretty_setting(&r.string("setting"), unit.as_deref()),
-                default_value: r.text("boot_val").map(|v| crate::collect::pretty_setting(&v, unit.as_deref())),
+                value: crate::catalog::pretty_setting(&r.string("setting"), unit.as_deref()),
+                default_value: r.text("boot_val").map(|v| crate::catalog::pretty_setting(&v, unit.as_deref())),
                 scope: "server".into(),
             }
         })

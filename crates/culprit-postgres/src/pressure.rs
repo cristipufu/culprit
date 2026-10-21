@@ -10,7 +10,7 @@ use culprit_core::{
 };
 use tokio_postgres::Client;
 
-use crate::collect::Probe;
+use crate::probe::Probe;
 use crate::rows::{query, query_one};
 use crate::sources;
 

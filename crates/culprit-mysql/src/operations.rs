@@ -1,6 +1,6 @@
 use crate::{
-    collect::Probe,
     connect::Flavor,
+    probe::Probe,
     rows::{query, query_with},
     sources, vars,
 };

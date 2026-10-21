@@ -52,6 +52,8 @@ jobs:
       # The desktop app crate needs the frontend build and, on Linux, WebKitGTK; the `app` job covers it.
       - name: Clippy
         run: cargo clippy --locked --workspace --exclude culprit-app --all-targets -- -D warnings
+      - name: Engine without bundled providers
+        run: cargo clippy --locked -p culprit-engine --no-default-features -- -D warnings
       - name: Test
         run: cargo test --locked --workspace --exclude culprit-app
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2

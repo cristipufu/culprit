@@ -1,6 +1,7 @@
 //! MySQL and MariaDB provider for Culprit: read-only snapshots from performance_schema, information_schema and the
 //! slow query log table, plans via EXPLAIN (and MariaDB's ANALYZE), live sessions with lock waits.
 
+mod catalog;
 mod collect;
 mod connect;
 pub mod deadlocks;
@@ -11,6 +12,7 @@ pub mod plan_json;
 pub mod plan_maria;
 pub mod plan_tree;
 mod pressure;
+mod probe;
 mod progress;
 mod recorded;
 mod rows;
@@ -19,6 +21,7 @@ mod signals;
 mod slowlog;
 pub mod sources;
 mod vars;
+mod workload;
 
 use std::time::Instant;
 
@@ -182,7 +185,7 @@ impl Provider for MysqlProvider {
 
     async fn probe(&self) -> Result<ServerInfo> {
         let mut conn = self.connector.connect(Scope::Server).await?;
-        let probe = collect::probe(&mut conn, &self.connector).await?;
+        let probe = probe::probe(&mut conn, &self.connector).await?;
         let _ = conn.disconnect().await;
         Ok(probe.server_info())
     }
@@ -257,7 +260,7 @@ impl Provider for MysqlProvider {
         recent: &culprit_core::changes::Period,
     ) -> Result<Option<culprit_core::changes::PeriodData>> {
         let mut conn = self.connector.connect(Scope::Server).await?;
-        let probe = collect::probe(&mut conn, &self.connector).await?;
+        let probe = probe::probe(&mut conn, &self.connector).await?;
         if probe.performance_schema || !probe.slow_log_table() {
             let _ = conn.disconnect().await;
             return Ok(None);

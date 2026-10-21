@@ -5,7 +5,7 @@ use culprit_core::operations::{OperationalCounter, OperationalCounterKind};
 use culprit_core::{
     AnalysisOrigin, AuthKind, BaselinePurpose, CollectionProvenance, ComponentVersion, ContentionBaseline,
     CountBaseline, DatabaseIdentity, Engine, Error, EscalationBaseline, ExplainMode, FileScope, IndexContention,
-    LiveState, Plan, PlanParsingOutcome, Provider, Result, ResultSet, Setting, SizeBaseline, Snapshot, SnapshotOptions,
+    LiveState, Plan, Provider, Result, ResultSet, Setting, SizeBaseline, Snapshot, SnapshotOptions,
 };
 use culprit_engine::{
     NewConnection, Workspace, reading, reports,
@@ -100,6 +100,8 @@ fn legacy_report_and_bare_snapshot_have_explicit_origins_without_invented_collec
 #[cfg(feature = "mssql")]
 #[test]
 fn parsing_provenance_distinguishes_native_reparse_missing_text_and_retained_plan() {
+    use culprit_core::PlanParsingOutcome;
+
     let home = home("parsing");
     let ws = Workspace::open_in(&home);
     std::fs::create_dir_all(&home).unwrap();

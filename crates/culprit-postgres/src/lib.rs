@@ -1,5 +1,6 @@
 //! Postgres provider for Culprit: read-only snapshots from the statistics views, plans via EXPLAIN, live sessions.
 
+mod catalog;
 mod collect;
 mod connect;
 pub mod deadlocks;
@@ -7,6 +8,7 @@ mod generic;
 mod operations;
 pub mod plan_json;
 mod pressure;
+mod probe;
 mod progress;
 mod recorded;
 mod rows;
@@ -15,6 +17,7 @@ mod signals;
 pub mod sources;
 mod tables;
 mod trust;
+mod workload;
 
 use std::time::Instant;
 
@@ -27,9 +30,9 @@ use serde_json::Value;
 use tokio_postgres::types::Type;
 use tokio_postgres::{Client, SimpleQueryMessage};
 
-pub use collect::{leading_keyword, plannable};
 use connect::{COLLECTOR, Connector, EXECUTION, INTERACTIVE, map_error, sql_state};
 use rows::{iso, parse_array, query, query_one, rows_of, tagged};
+pub use workload::{leading_keyword, plannable};
 
 const CURSOR: &str = "culprit_cursor";
 
@@ -74,7 +77,7 @@ impl Provider for PostgresProvider {
 
     async fn probe(&self) -> Result<ServerInfo> {
         let client = self.connector.connect(COLLECTOR).await?;
-        let probe = collect::probe(&client, &self.connector.host).await?;
+        let probe = probe::probe(&client, &self.connector.host).await?;
         Ok(probe.server_info())
     }
 
