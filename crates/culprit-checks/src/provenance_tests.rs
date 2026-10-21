@@ -116,3 +116,17 @@ fn pure_analysis_is_deterministic_and_shared_evidence_is_redacted() {
     assert!(!serde_json::to_string(&shared).unwrap().contains("PROVENANCE_PRIVATE_VALUE"));
     assert!(planted.queries()[0].text.contains("PROVENANCE_PRIVATE_VALUE"));
 }
+
+#[test]
+fn report_evidence_deduplicates_collected_snapshot_when_identical_to_input() {
+    let original = snapshot();
+    let mut report = crate::analyze(original.clone());
+    report.evidence.as_mut().unwrap().collected = Some(Box::new(original.clone()));
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["evidence"]["collected"], serde_json::Value::String("same-as-input".into()));
+    let roundtrip: Report = serde_json::from_value(json).unwrap();
+    assert_eq!(
+        serde_json::to_value(roundtrip.evidence.as_ref().unwrap().collected.as_ref().unwrap()).unwrap(),
+        serde_json::to_value(&original).unwrap()
+    );
+}

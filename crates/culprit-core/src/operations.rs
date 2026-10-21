@@ -70,6 +70,8 @@ pub enum OperationalCounterKind {
     SubscriptionSyncErrors,
     StandbyConflicts,
     RedoLogWaits,
+    ChecksumFailures,
+    ConnectionFailures,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]

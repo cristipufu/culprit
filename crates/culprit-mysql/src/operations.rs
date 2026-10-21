@@ -10,18 +10,31 @@ use mysql_async::{Conn, Value};
 
 pub async fn collect(conn: &mut Conn, probe: &Probe, snapshot: &mut Snapshot) {
     let mut coverage = Coverage::default();
-    if let Some(status) = coverage.read(&sources::REDO_PRESSURE, vars::status(conn, &["Innodb_log_waits"]).await)
-        && let Some(count) = status.get("Innodb_log_waits")
+    if let Some(status) =
+        coverage.read(&sources::REDO_PRESSURE, vars::status(conn, &["Innodb_log_waits", "Aborted_connects"]).await)
     {
-        snapshot.operations.counters.push(OperationalCounter {
-            kind: OperationalCounterKind::RedoLogWaits,
-            subject: "InnoDB redo buffer (whole server)".into(),
-            scope: FileScope::Server,
-            count: *count,
-            since: probe.started_at.clone(),
-            last_event_at: None,
-            before: None,
-        });
+        if let Some(count) = status.get("Innodb_log_waits") {
+            snapshot.operations.counters.push(OperationalCounter {
+                kind: OperationalCounterKind::RedoLogWaits,
+                subject: "InnoDB redo buffer (whole server)".into(),
+                scope: FileScope::Server,
+                count: *count,
+                since: probe.started_at.clone(),
+                last_event_at: None,
+                before: None,
+            });
+        }
+        if let Some(count) = status.get("Aborted_connects") {
+            snapshot.operations.counters.push(OperationalCounter {
+                kind: OperationalCounterKind::ConnectionFailures,
+                subject: "Client connection handshakes (whole server)".into(),
+                scope: FileScope::Server,
+                count: *count,
+                since: probe.started_at.clone(),
+                last_event_at: None,
+                before: None,
+            });
+        }
     }
     let sql = "SELECT CONCAT(t.TABLE_SCHEMA, '.', t.TABLE_NAME, '.', c.COLUMN_NAME) AS name,
         CONCAT(t.TABLE_SCHEMA, '.', t.TABLE_NAME) AS table_name, CAST(t.AUTO_INCREMENT AS CHAR) AS next_value,

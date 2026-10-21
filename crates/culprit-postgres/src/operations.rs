@@ -95,6 +95,30 @@ pub async fn collect(client: &Client, version: u32, snapshot: &mut Snapshot) {
             }
         }
     }
+    if version >= 120_000 {
+        let checksum_sql = format!(
+            "SELECT checksum_failures::float8 AS count, {} AS since, {} AS last_at
+ FROM pg_stat_database
+ WHERE datname = current_database() AND checksum_failures IS NOT NULL",
+            iso("stats_reset"),
+            iso("checksum_last_failure")
+        );
+        if let Ok(rows) = query(client, &checksum_sql).await {
+            for r in rows {
+                if let Some(count) = r.number("count") {
+                    snapshot.operations.counters.push(OperationalCounter {
+                        kind: Kind::ChecksumFailures,
+                        subject: snapshot.server.database.clone(),
+                        scope: FileScope::Database,
+                        count,
+                        since: r.text("since"),
+                        last_event_at: r.text("last_at"),
+                        before: None,
+                    });
+                }
+            }
+        }
+    }
     if version >= 100_000 {
         let seq = "SELECT s.schemaname || '.' || s.sequencename AS name,
  own.table_name,

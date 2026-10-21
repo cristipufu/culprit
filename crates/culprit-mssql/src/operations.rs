@@ -4,8 +4,13 @@ use crate::{
     probe::Probe,
     sources,
 };
-use culprit_core::operations::{SequenceCapacity, SpacePart, SpaceUsage};
+use culprit_core::operations::{OperationalCounter, OperationalCounterKind, SequenceCapacity, SpacePart, SpaceUsage};
 use culprit_core::{Coverage, FileKind, FileScope, Snapshot};
+
+const SUSPECT_PAGES_SQL: &str = "SELECT CAST(COUNT(*) AS float) AS count,
+ CONVERT(varchar(30), MAX(last_update_date), 127) + 'Z' AS last_at
+ FROM msdb.dbo.suspect_pages
+ WHERE database_id = DB_ID() AND event_type IN (1, 2, 3)";
 
 const LOG_SQL: &str = "SELECT total_log_size_in_bytes AS total, used_log_space_in_bytes AS used,
  (SELECT log_reuse_wait_desc FROM sys.databases WHERE database_id = DB_ID()) AS reuse_wait,
@@ -128,6 +133,21 @@ pub async fn collect(client: &mut MsClient, probe: &Probe, snapshot: &mut Snapsh
                 cycles: r.f64("cycles").is_some_and(|v| v > 0.0),
                 allocated: true,
             });
+        }
+    }
+    if let Ok(rows) = query(client, SUSPECT_PAGES_SQL).await {
+        for r in rows {
+            if let Some(count) = r.f64("count").filter(|c| *c > 0.0) {
+                snapshot.operations.counters.push(OperationalCounter {
+                    kind: OperationalCounterKind::ChecksumFailures,
+                    subject: snapshot.server.database.clone(),
+                    scope: FileScope::Database,
+                    count,
+                    since: snapshot.server.started_at.clone(),
+                    last_event_at: r.str("last_at"),
+                    before: None,
+                });
+            }
         }
     }
     coverage.append_to(snapshot);

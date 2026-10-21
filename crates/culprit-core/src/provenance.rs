@@ -186,10 +186,67 @@ pub struct AnalysisProvenance {
 
 /// Replay inputs are distinct from the prepared snapshot used by views. A collection is retained only when the
 /// caller actually supplied the provider's picture before history enrichment; an ordinary snapshot isn't one.
-#[derive(Serialize, Deserialize, TS, Clone, Debug)]
+/// When the collected snapshot is identical to `input`, serialization writes `"same-as-input"` instead of duplicating
+/// the full snapshot payload on disk, and deserialization restores `Some(input.clone())`.
+#[derive(TS, Clone, Debug)]
 #[ts(export)]
 pub struct ReportEvidence {
     pub input: Box<Snapshot>,
     pub collected: Option<Box<Snapshot>>,
     pub recorded_changes: Vec<ChangeEvent>,
+}
+
+const SAME_AS_INPUT: &str = "same-as-input";
+
+impl Serialize for ReportEvidence {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("ReportEvidence", 3)?;
+        state.serialize_field("input", &self.input)?;
+        match &self.collected {
+            None => state.serialize_field("collected", &None::<&Snapshot>)?,
+            Some(collected) => {
+                let same = serde_json::to_value(&self.input)
+                    .ok()
+                    .zip(serde_json::to_value(collected).ok())
+                    .is_some_and(|(a, b)| a == b);
+                if same {
+                    state.serialize_field("collected", SAME_AS_INPUT)?;
+                } else {
+                    state.serialize_field("collected", collected)?;
+                }
+            }
+        }
+        state.serialize_field("recorded_changes", &self.recorded_changes)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ReportEvidence {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum CollectedWire {
+            Same(String),
+            Snapshot(Box<Snapshot>),
+        }
+        #[derive(Deserialize)]
+        struct Wire {
+            input: Box<Snapshot>,
+            #[serde(default)]
+            collected: Option<CollectedWire>,
+            #[serde(default)]
+            recorded_changes: Vec<ChangeEvent>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let collected = match wire.collected {
+            None => None,
+            Some(CollectedWire::Same(tag)) if tag == SAME_AS_INPUT => Some(wire.input.clone()),
+            Some(CollectedWire::Same(other)) => {
+                return Err(serde::de::Error::custom(format!("unexpected collected reference: {other}")));
+            }
+            Some(CollectedWire::Snapshot(snapshot)) => Some(snapshot),
+        };
+        Ok(ReportEvidence { input: wire.input, collected, recorded_changes: wire.recorded_changes })
+    }
 }

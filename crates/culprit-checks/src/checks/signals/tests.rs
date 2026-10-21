@@ -891,3 +891,43 @@ fn expiring_range_partition_is_flagged_unless_default_exists() {
     s.tables.push(def);
     assert!(!table_bloat(&s).iter().any(|f| f.id == "table-bloat:expiring-partition:public.events"));
 }
+
+#[test]
+fn checksum_failures_raise_high_database_attention_while_shared_connection_failures_stay_info() {
+    use culprit_core::operations::{OperationalCounter, OperationalCounterKind};
+    use culprit_core::{Actionability, FileScope};
+
+    let mut s = snapshot_with(Engine::Postgres);
+    s.operations.counters = vec![
+        OperationalCounter {
+            kind: OperationalCounterKind::ChecksumFailures,
+            subject: "shop".into(),
+            scope: FileScope::Database,
+            count: 3.0,
+            since: Some("2026-10-01T00:00:00Z".into()),
+            last_event_at: Some("2026-10-21T10:00:00Z".into()),
+            before: None,
+        },
+        OperationalCounter {
+            kind: OperationalCounterKind::ConnectionFailures,
+            subject: "Client connection handshakes (whole server)".into(),
+            scope: FileScope::Server,
+            count: 420.0,
+            since: Some("2026-10-01T00:00:00Z".into()),
+            last_event_at: None,
+            before: None,
+        },
+    ];
+    let out = operational_errors::operational_errors(&s);
+    let checksum = out.iter().find(|f| f.id == "operational-errors:checksum-failures:shop").expect("checksum finding");
+    assert_eq!(checksum.severity, Severity::High);
+    assert_eq!(checksum.actionability, Actionability::NeedsAttention);
+    assert!(checksum.summary.contains("immediate investigation"), "{}", checksum.summary);
+
+    let conn = out
+        .iter()
+        .find(|f| f.id.starts_with("operational-errors:connection-failures:"))
+        .expect("connection failures finding");
+    assert_eq!(conn.severity, Severity::Low);
+    assert_eq!(conn.actionability, Actionability::Information);
+}
