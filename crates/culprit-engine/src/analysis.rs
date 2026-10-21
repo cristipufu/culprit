@@ -68,6 +68,9 @@ pub(crate) fn shared(mut input: Input, extra: &[Arc<dyn Check>]) -> Report {
     input.snapshot = culprit_core::redact::redact_snapshot(&input.snapshot);
     input.collected = None;
     input.recorded_changes.clear();
+    for reference in &mut input.baselines {
+        culprit_core::redact::redact_baseline(reference);
+    }
     run(input, extra, parsing)
 }
 

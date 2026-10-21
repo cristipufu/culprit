@@ -14,7 +14,7 @@ pub fn table_bloat_info() -> CheckInfo {
     }
 }
 
-check!(TableBloatCheck: table_bloat_info, table_bloat, &[Evidence::Unknown]);
+check!(TableBloatCheck: table_bloat_info, table_bloat, &[Evidence::Tables(crate::evidence::TableMeasure::Bloat)]);
 
 pub(super) fn table_heap_bytes(t: &TableStat) -> Option<f64> {
     t.data_bytes.or(t.total_bytes).filter(|b| *b > 0.0)

@@ -52,6 +52,19 @@ pub const SERVER_VARIABLES: Source = Source { name: "server variables", reads: "
 /// SHOW REPLICA STATUS (or SLAVE STATUS) and Group Replication.
 pub const REPLICATION: Source = Source { name: "replication", reads: "replica status", delivers: &[] };
 
+pub const MISC: &[Source] = &[SETTINGS, WAITS, GLOBAL_STATUS, OPEN_TRANSACTIONS];
+pub const SIGNAL_READS: &[Source] = &[
+    QUERY_ERRORS,
+    HISTOGRAMS,
+    FILE_LATENCY,
+    CONNECTIONS,
+    SERVER_VARIABLES,
+    REPLICATION,
+    REDO_PRESSURE,
+    CLUSTER_HEALTH,
+    SEQUENCE_CAPACITY,
+];
+
 /// Every source above, for listings (`culprit sources`).
 pub const ALL: &[Source] = &[
     REDO_PRESSURE,

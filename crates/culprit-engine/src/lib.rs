@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 pub use agent::{AgentAccess, ApprovalOutcome, ApprovalRequest, AuditEntry, AuditOutcome};
-pub use culprit_checks::agent_brief;
+pub use culprit_checks::{agent_brief, index_advice};
 pub use discover::{Cloud, DiscoveredDatabase};
 pub use import::{ImportCandidate, ImportSource};
 pub use marks::Mark;

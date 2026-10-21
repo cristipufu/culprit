@@ -73,6 +73,49 @@ use super::*;
 use crate::model::Properties;
 
 #[test]
+fn separately_opened_plans_receive_the_same_catalog_facts_as_snapshot_plans() {
+    for engine in [Engine::Mssql, Engine::Mysql] {
+        let mut snapshot: crate::Snapshot =
+            serde_json::from_str(include_str!("../../../../fixtures/mssql-demo.json")).unwrap();
+        snapshot.server.engine = engine;
+        let index = snapshot
+            .indexes
+            .iter_mut()
+            .find(|i| i.table == "orders" && i.columns.first().is_some_and(|c| c == "status"))
+            .unwrap();
+        index.kind = "BTREE".into();
+        let index_name = index.name.clone();
+        snapshot.columns.iter_mut().find(|c| c.table == "orders" && c.name == "status").unwrap().data_type =
+            "nvarchar(64)".into();
+        let mut root = node(400, "Index Scan", NodeKind::Scan);
+        root.object = Some("shop.orders".into());
+        root.index = Some(index_name.clone());
+        root.predicate = Some("CONVERT_IMPLICIT(nvarchar(64),[shop].[orders].[status],0)=[@p1]".into());
+        root.props.insert("possible_keys".into(), index_name);
+        let mut standalone = plan(engine, root);
+        standalone.statement = Some("SELECT status FROM shop.orders WHERE status = @p1".into());
+        let w = snapshot.workload.as_mut().unwrap();
+        w.queries.truncate(1);
+        w.queries[0].text = standalone.statement.clone().unwrap();
+        w.queries[0].last_seen = None;
+        w.queries[0].plan = Some(standalone.clone());
+        mark_plan(&mut standalone, &snapshot);
+        mark_snapshot(&mut snapshot);
+        mark_snapshot_keys(&mut snapshot);
+        mark_snapshot_index_kinds(&mut snapshot);
+        let captured = snapshot.queries()[0].plan.as_ref().unwrap();
+        assert_eq!(standalone.root.facts(), captured.root.facts());
+        assert_eq!(standalone.facts(), captured.facts());
+        assert_eq!(standalone.root.facts().index_method.as_deref(), Some("btree"));
+        if engine == Engine::Mssql {
+            assert!(!standalone.facts().changed_columns.is_empty());
+        } else {
+            assert!(standalone.root.facts().possible_index_columns.is_some());
+        }
+    }
+}
+
+#[test]
 fn lookup_advice_keeps_native_output_names_and_ignores_stale_display_columns() {
     let mut lookup = node(1, "Key Lookup", NodeKind::Lookup);
     lookup.object = Some("app.orders".into());

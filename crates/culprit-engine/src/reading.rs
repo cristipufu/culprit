@@ -23,12 +23,15 @@ pub fn open(path: &Path) -> Result<Report> {
     if let Some(dir) = path.parent() {
         reports::rebase_on_scans(dir, &mut input.snapshot);
     }
-    Ok(for_reading(crate::analysis::reread(input, &[])))
+    Ok(crate::analysis::reread(input, &[]))
 }
 
-/// A report as the app shows it: plans marked against the snapshot's catalog, each with its insights.
+/// Refresh presentation on a legacy or externally assembled report without replacing its findings. Reports returned
+/// by Workspace or `open` already have this presentation; clients render those directly.
 pub fn for_reading(mut report: Report) -> Report {
     culprit_core::insights::mark_snapshot(&mut report.snapshot);
+    culprit_core::insights::mark_snapshot_keys(&mut report.snapshot);
+    culprit_core::insights::mark_snapshot_index_kinds(&mut report.snapshot);
     culprit_checks::annotate_plans(&mut report.snapshot);
     report
 }

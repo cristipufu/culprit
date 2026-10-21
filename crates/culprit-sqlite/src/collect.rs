@@ -555,6 +555,7 @@ fn read_indexes(
         let filter = if partial { sql.as_deref().and_then(partial_filter) } else { None };
         let primary = origin == "pk";
         out.push(IndexStat {
+            filter_facts: None,
             schema: "main".into(),
             table: table.into(),
             name: name.clone(),

@@ -25,7 +25,7 @@ pub fn memory_grant(snapshot: &Snapshot) -> Vec<Finding> {
     let queueing = pending >= 5.0 || grant_waits.is_some_and(|g| g >= MINUTE_MS);
     // Recent runs that use a fair part of their grant (memory grant feedback shrank it) are fixed already.
     let still_oversized = |g: &&GrantStat| match (g.last_granted_kb, g.last_used_kb) {
-        (Some(granted), Some(used)) if granted > 0.0 => granted >= 50.0 * MB && used <= granted * 0.25,
+        (Some(granted), Some(used)) if granted >= 0.0 => granted >= 50.0 * MB && used <= granted * 0.25,
         _ => true,
     };
     let mut findings: Vec<Finding> = p

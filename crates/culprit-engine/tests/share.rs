@@ -105,7 +105,7 @@ fn leaks(out: &str, literal: &str) -> bool {
 fn exports_redact_literals_in_every_format_and_engine() {
     let options = ExportOptions::default();
     for (engine, a, b) in pairs() {
-        let raw: String = [&a, &b].iter().filter_map(|p| p.raw.clone()).collect();
+        let raw: String = [&a, &b].iter().filter_map(|p| p.raw.as_deref()).collect();
         let present: Vec<&str> = literals(engine).iter().copied().filter(|l| leaks(&raw, l)).collect();
         assert!(!present.is_empty(), "{engine:?}: the fixtures should hold a literal to redact");
         let diff = plan_diff_named(&a, "A", &b, "B");
@@ -248,6 +248,9 @@ fn verification_reads_fixed_still_present_and_new_for_every_engine() {
         assert!(before.findings.len() >= 2, "{file}");
         let mut after = before.clone();
         let gone = after.findings.remove(0);
+        let assessed = after.assessments.iter_mut().find(|a| a.check == gone.check).unwrap();
+        assessed.status = culprit_core::CheckStatus::Assessed;
+        assessed.reason = None;
         let mut added = after.findings[0].clone();
         added.id = "missing-index:shop.brand_new(col)".into();
         added.title = "A new finding".into();

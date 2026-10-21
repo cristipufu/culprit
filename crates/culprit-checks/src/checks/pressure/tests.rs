@@ -439,3 +439,13 @@ fn row_lock_waits_are_graded_on_time_and_said_to_be_server_wide() {
     s.pressure.as_mut().unwrap().uptime_hours = Some(0.5);
     assert!(row_lock_waits(&s).is_empty());
 }
+
+#[test]
+fn measured_zero_query_waits_do_not_shorten_the_clock_of_server_memory_waits() {
+    let mut s = crate::waits::snapshot_with(Engine::Mssql);
+    s.pressure.get_or_insert_default().uptime_hours = Some(100.0);
+    s.workload.as_mut().unwrap().window_hours = 1.0;
+    s.workload.as_mut().unwrap().queries[0].waits =
+        vec![culprit_core::WaitStat { category: "Lock".into(), wait_type: None, wait_ms: 0.0, tasks: None }];
+    assert_eq!(waits_window(&s), (Some(100.0), false));
+}

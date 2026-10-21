@@ -72,10 +72,14 @@ impl Reports<'_> {
             }
             Ok(input)
         };
+        let history = match (name, report) {
+            (Some(name), None) => reports::list(&self.paths.reports_dir(name))?,
+            _ => Vec::new(),
+        };
         let mut current = match (report, name) {
             (Some(path), _) => load_file(path)?,
             (None, Some(name)) => {
-                let latest = reports::list(&self.paths.reports_dir(name))?.into_iter().next().ok_or_else(|| {
+                let latest = history.first().ok_or_else(|| {
                     Error::not_found(format!("No saved report for '{name}'"))
                         .with_hint(format!("Run `culprit scan {name}` first"))
                 })?;
@@ -105,7 +109,6 @@ impl Reports<'_> {
         let previous = match (since, name, report) {
             (Some(path), _, _) => Some(recheck(load_file(path)?)),
             (None, Some(name), None) => {
-                let history = reports::list(&self.paths.reports_dir(name))?;
                 let window = history.first().and_then(|r| r.window());
                 match history.iter().skip(1).find(|r| r.window() == window) {
                     Some(summary) => Some(recheck(load(name, &summary.id)?)),
@@ -195,7 +198,8 @@ impl Reports<'_> {
 /// redacted snapshot (see [`Reports::digest`]).
 fn with_details(report: &Report, mut digest: culprit_core::Digest) -> culprit_core::Digest {
     for item in &mut digest.top {
-        item.detail = report.findings.iter().find(|f| f.id == item.id).map(|f| export::finding_detail(report, f));
+        item.detail =
+            report.findings.iter().find(|f| f.id == item.id).map(|f| export::finding_detail_shared(report, f));
     }
     digest
 }

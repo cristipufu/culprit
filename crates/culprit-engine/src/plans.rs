@@ -112,7 +112,7 @@ pub fn parse_plan(input: &str) -> Result<Plan> {
     }
     .map_err(unreadable)?;
     if format != PlanFormat::Culprit {
-        plan.raw = Some(block.to_string());
+        plan.raw = Some(block.into());
     }
     culprit_core::insights::annotate(&mut plan);
     culprit_checks::present_plan(&mut plan, None);
@@ -149,11 +149,16 @@ pub(crate) fn reparse_saved_traced(snapshot: &mut culprit_core::Snapshot) -> Vec
         if let Some((fresh, parsed_native)) = reparse(saved, entry, &catalog) {
             if parsed_native {
                 outcome = PlanParsingOutcome::Reparsed;
+                // This is a derived estimate from the old parser, never an independent measurement.
+                if let Some(costs) = &mut q.costs {
+                    costs.row_bytes = None;
+                }
             }
             q.plan = Some(fresh);
         }
         trace.push(PlanParsingProvenance { query: q.id.clone(), engine, parser: parser_version(engine), outcome });
     }
+    culprit_core::signals::fill_row_bytes(&mut workload.queries);
     trace
 }
 
@@ -409,10 +414,13 @@ fn showplan(text: &str) -> Result<Plan> {
     #[cfg(feature = "mssql")]
     {
         // Text pasted from a UTF-16 file keeps its declaration; the string is UTF-8 by now.
-        let head = text.len().min(120);
+        let head = text.floor_char_boundary(120);
         let fixed;
         let text = if text[..head].contains("encoding=\"utf-16\"") {
             fixed = text.replacen("encoding=\"utf-16\"", "encoding=\"utf-8\"", 1);
+            fixed.as_str()
+        } else if text[..head].contains("encoding='utf-16'") {
+            fixed = text.replacen("encoding='utf-16'", "encoding='utf-8'", 1);
             fixed.as_str()
         } else {
             text

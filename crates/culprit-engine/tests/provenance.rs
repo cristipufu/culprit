@@ -275,6 +275,56 @@ fn point(host: &str, at: &str, id: &str, runs: f64) -> Snapshot {
 }
 
 #[test]
+fn replay_builds_an_initial_scan_timeline_and_replaces_only_the_history_it_used() {
+    let home = home("initial-timeline");
+    let old = point("first.invalid", "2026-10-10T00:00:00Z", "20261010T000000.000Z", 10.0);
+    let mut current = point("first.invalid", "2026-10-11T00:00:00Z", "20261011T000000.000Z", 20.0);
+    reports::save(&home, &culprit_checks::analyze(old.clone())).unwrap();
+    assert!(current.workload.as_ref().unwrap().timeline.is_none());
+    reports::rebuild_timeline(&home, &mut current);
+    let w = current.workload.as_ref().unwrap();
+    assert_eq!(w.timeline.as_ref().unwrap().time_ms.iter().sum::<f64>(), 100.0);
+    let refs = w.history_inputs.clone();
+    reports::rebuild_timeline(&home, &mut current);
+    assert_eq!(current.workload.as_ref().unwrap().history_inputs, refs);
+    assert_eq!(refs.iter().filter(|r| r.purpose == BaselinePurpose::WorkloadTrend).count(), 1);
+    // Pruning the old artifact does not erase measurements already retained with a historical scan.
+    current.sizes_before = SizeBaseline::from_scan(&old);
+    let retained = current.sizes_before.clone();
+    std::fs::remove_dir_all(&home).unwrap();
+    reports::rebase_on_scans(&home, &mut current);
+    assert_eq!(current.sizes_before, retained);
+    assert!(current.workload.as_ref().unwrap().timeline.is_some());
+    assert_eq!(current.workload.as_ref().unwrap().history_inputs, refs);
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn replay_refreshes_row_size_estimates_and_forgets_them_when_the_new_plan_has_no_width() {
+    let home = home("row-width");
+    std::fs::create_dir_all(&home).unwrap();
+    let ws = Workspace::open_in(&home);
+    let native = include_str!("plans/pg-index.json");
+    let plan = culprit_engine::parse_plan(native).unwrap();
+    let expected = culprit_core::signals::plan_row_bytes(&plan).expect("fixture width");
+    let mut s = point("first.invalid", "2026-10-11T00:00:00Z", "20261011T000000.000Z", 20.0);
+    let q = &mut s.workload.as_mut().unwrap().queries[0];
+    q.plan = Some(plan);
+    q.plan.as_mut().unwrap().root.facts_mut().estimated_row_bytes = Some(1.0);
+    q.costs.get_or_insert_default().row_bytes = Some(1.0);
+    let path = home.join("native.json");
+    std::fs::write(&path, serde_json::to_vec(&s).unwrap()).unwrap();
+    let replayed = ws.analyze_file(&path).unwrap();
+    assert_eq!(replayed.snapshot.queries()[0].costs.as_ref().unwrap().row_bytes, Some(expected));
+    let mut value: serde_json::Value = serde_json::from_str(native).unwrap();
+    value[0]["Plan"].as_object_mut().unwrap().remove("Plan Width");
+    s.workload.as_mut().unwrap().queries[0].plan.as_mut().unwrap().raw = Some(value.to_string().into());
+    std::fs::write(&path, serde_json::to_vec(&s).unwrap()).unwrap();
+    assert_eq!(ws.analyze_file(&path).unwrap().snapshot.queries()[0].costs.as_ref().unwrap().row_bytes, None);
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
 fn workload_history_keeps_distinct_ids_with_the_same_rounded_time_and_excludes_other_endpoints() {
     let at = "2026-10-10T00:00:00Z";
     let first = point("first.invalid", at, "20261010T000000.001Z", 1.0);

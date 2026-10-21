@@ -126,22 +126,30 @@ async fn attach_costs(
     };
     for q in queries.iter_mut() {
         let Some(r) = rows.get(&q.id) else { continue };
-        let mut costs = q.costs.take().unwrap_or_default();
-        // Zero planning time means track_planning is off, not free planning.
-        let plans = r.number("plans").filter(|n| *n > 0.0);
-        costs.plans = plans;
-        costs.plan_ms = plans.and(r.number("plan_ms"));
-        costs.log_bytes = r.number("wal_bytes").filter(|b| *b > 0.0);
-        costs.log_share = match (costs.log_bytes, total_wal) {
-            (Some(own), Some(all)) => Some((own / all).min(1.0)),
-            _ => None,
-        };
-        costs.log_full_pages = costs.log_bytes.and(r.number("wal_fpi"));
-        costs.jit_functions = r.number("jit_functions").filter(|n| *n > 0.0);
-        costs.jit_ms = costs.jit_functions.and(r.number("jit_ms"));
+        let costs = statement_costs(q.costs.take().unwrap_or_default(), |name| r.number(name), total_wal);
         q.costs = (!costs.is_empty()).then_some(costs);
     }
     Ok(())
+}
+
+// Preserve measured zeroes: no JIT or WAL is evidence too. Missing columns on older versions stay unknown.
+fn statement_costs(
+    mut costs: culprit_core::QueryCosts,
+    number: impl Fn(&str) -> Option<f64>,
+    total_wal: Option<f64>,
+) -> culprit_core::QueryCosts {
+    // Zero plans means track_planning is off, not free planning.
+    costs.plans = number("plans").filter(|n| *n > 0.0);
+    costs.plan_ms = costs.plans.and(number("plan_ms"));
+    costs.log_bytes = number("wal_bytes");
+    costs.log_share = match (costs.log_bytes, total_wal) {
+        (Some(own), Some(all)) if all > 0.0 => Some((own / all).min(1.0)),
+        _ => None,
+    };
+    costs.log_full_pages = costs.log_bytes.and(number("wal_fpi"));
+    costs.jit_functions = number("jit_functions");
+    costs.jit_ms = costs.jit_functions.and(number("jit_ms"));
+    costs
 }
 
 // ── per table ──────────────────────────────────────────────────────────────────────────────────────
@@ -663,6 +671,22 @@ fn slots_sql(version_num: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn measured_zero_costs_survive_but_unsupported_costs_remain_unknown() {
+        let costs = statement_costs(Default::default(), |_| Some(0.0), Some(500.0));
+        assert_eq!(costs.log_bytes, Some(0.0));
+        assert_eq!(costs.log_share, Some(0.0));
+        assert_eq!(costs.log_full_pages, Some(0.0));
+        assert_eq!(costs.jit_functions, Some(0.0));
+        assert_eq!(costs.jit_ms, Some(0.0));
+        assert_eq!(costs.plan_ms, None, "disabled planning instrumentation is still unknown");
+        assert!(!costs.is_empty());
+        let unavailable = statement_costs(costs, |_| None, None);
+        assert!(unavailable.is_empty(), "a missing column must not inherit an older measurement");
+        let no_wal = statement_costs(Default::default(), |_| Some(0.0), Some(0.0));
+        assert_eq!(no_wal.log_share, None, "zero total WAL has no defined share");
+    }
 
     fn column(typlen: f64, align: f64, avg_width: f64) -> Option<ColumnLayout> {
         Some(ColumnLayout { typlen, align, avg_width, null_frac: 0.0 })

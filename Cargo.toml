@@ -31,8 +31,9 @@ ring = "0.17.14"
 mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust", "default-rustls-ring"] }
 roxmltree = "0.21.1"
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-serde = { version = "1.0.229", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = "1.0.152"
+sha2 = "0.11.0"
 thiserror = "2.0.21"
 tiberius = { version = "0.13.0", default-features = false, features = ["tds73", "rustls"] }
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "time", "process", "sync"] }

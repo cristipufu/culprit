@@ -1490,14 +1490,20 @@ pub fn mark_snapshot(snapshot: &mut Snapshot) {
 }
 
 /// [`mark_snapshot`]'s catalog marks on one plan fetched apart from a scan (a stored plan opened from a report): the
-/// indexes on each table it scans, and on SQL Server the parallelism settings. Not [`TABLE_GONE`], which needs to know
-/// that the statement stopped running.
+/// indexes on each table it scans, changed column types, possible keys, index kinds and parallelism settings.
+/// Not [`TABLE_GONE`], which needs to know that the statement stopped running.
 pub fn mark_plan(plan: &mut Plan, snapshot: &Snapshot) {
+    if let Some(statement) = plan.statement.clone() {
+        mark_query(plan, &statement);
+    }
+    mark_changed_columns(plan, &snapshot.columns);
     mark_partitions(&mut plan.root, &partition_parents(&snapshot.tables));
     mark_table_indexes(&mut plan.root, &scanned_table_indexes(snapshot), false);
     if plan.engine == Engine::Mssql {
         mark_parallel_settings(plan, &parallel_settings(snapshot));
     }
+    mark_possible_keys(plan, &snapshot.indexes);
+    mark_index_kinds(&mut plan.root, &snapshot.indexes, None);
 }
 
 fn partition_parents(tables: &[crate::TableStat]) -> HashMap<String, Option<String>> {

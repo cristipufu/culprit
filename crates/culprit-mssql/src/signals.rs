@@ -45,6 +45,22 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe, options: &Snap
         pressure.signals.extend(compiles.unwrap_or_default());
     }
     if probe.can_read_dmvs() {
+        let hashes: Vec<String> = snapshot
+            .workload
+            .as_ref()
+            .into_iter()
+            .flat_map(|w| &w.queries)
+            .filter_map(|q| q.query_hash.clone())
+            .collect();
+        if !hashes.is_empty()
+            && let Some(grants) =
+                sources::read(&mut coverage, &sources::GRANTS, crate::pressure::grants(client, &hashes).await, grant)
+        {
+            for grant in grants {
+                pressure.grants.retain(|g| g.query_hash != grant.query_hash);
+                pressure.grants.push(grant);
+            }
+        }
         let azure = probe.is_azure_sql_database();
         if let Some(files) = sources::read(&mut coverage, &sources::FILE_LATENCY, files(client, azure).await, grant) {
             pressure.files = files;
@@ -174,7 +190,7 @@ WHERE q.query_id IN ({list})
             costs.aborted = Some(aborted);
             costs.failed = Some(r.f64_or_zero("failed"));
             costs.aborted_mean_ms = (aborted > 0.0).then(|| r.f64_or_zero("aborted_ms") / aborted);
-            costs.log_bytes = r.f64("log_bytes").filter(|b| *b > 0.0);
+            costs.log_bytes = r.f64("log_bytes");
             costs.log_share = match (costs.log_bytes, total_log) {
                 (Some(own), Some(all)) if all > 0.0 => Some((own / all).min(1.0)),
                 _ => None,

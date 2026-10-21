@@ -2,13 +2,13 @@
   "assessments": [
     {
       "check": "duplicate-index",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Duplicate and redundant indexes"
     },
     {
       "check": "unindexed-fk",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Foreign keys without an index"
     },
@@ -44,7 +44,7 @@
     },
     {
       "check": "config",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Configuration"
     },

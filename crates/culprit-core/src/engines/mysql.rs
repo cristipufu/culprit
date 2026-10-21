@@ -7,6 +7,11 @@ use crate::model::Capability;
 pub(super) struct Mysql;
 
 impl EngineSpec for Mysql {
+    fn deadlock_limitation(&self) -> Option<&'static str> {
+        Some(
+            "InnoDB keeps only its most recent deadlock. Turn on innodb_print_all_deadlocks to write every one to the error log.",
+        )
+    }
     fn inactive_index_state(&self, server: &ServerInfo) -> crate::IndexState {
         if server.is_mariadb() { crate::IndexState::Ignored } else { crate::IndexState::Invisible }
     }

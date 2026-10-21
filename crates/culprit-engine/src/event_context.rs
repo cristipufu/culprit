@@ -49,7 +49,13 @@ impl Events<'_> {
                 // Query Store periods run up to now; what the database dated since the last scan isn't saved yet.
                 let last_scan =
                     latest.as_ref().map(|r| r.snapshot.taken_at.clone()).unwrap_or_else(|| recent.start.clone());
-                let live = provider.recorded_changes(&last_scan).await.unwrap_or_default();
+                let live = match self.connections.forget_rejected(name, provider.recorded_changes(&last_scan).await) {
+                    Ok(events) => events,
+                    Err(error) => {
+                        out.notes.push(format!("Database change events were unavailable: {}", error.message));
+                        Vec::new()
+                    }
+                };
                 self.add_context(&info, &mut out, request.cloud, live).await;
                 return Ok(out);
             }

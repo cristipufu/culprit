@@ -664,6 +664,7 @@ mod tests {
         s.workload.as_mut().unwrap().total_time_ms = total;
         let pkey = s.indexes.iter().find(|i| i.name == "order_items_pkey").cloned().expect("demo index");
         s.indexes.push(culprit_core::IndexStat {
+            filter_facts: None,
             name: "order_items_order_product_key".into(),
             columns: vec!["order_id".into(), "product_id".into()],
             is_primary_key: false,

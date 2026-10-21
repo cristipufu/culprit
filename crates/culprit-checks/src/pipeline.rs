@@ -346,6 +346,7 @@ impl Pipeline {
                 title: info.title.clone(),
                 status: culprit_core::CheckStatus::Assessed,
                 reason: None,
+                assessed_queries: Vec::new(),
             };
             if !missing.is_empty() {
                 assessment.status = culprit_core::CheckStatus::Unavailable;
@@ -378,6 +379,13 @@ impl Pipeline {
                 CheckEvidence::Insufficient(reason) => {
                     assessment.status = CheckStatus::InsufficientEvidence;
                     assessment.reason = Some(reason);
+                }
+                CheckEvidence::Queries { assessed, reason } => {
+                    if reason.is_some() {
+                        assessment.status = CheckStatus::InsufficientEvidence;
+                    }
+                    assessment.reason = reason;
+                    assessment.assessed_queries = assessed;
                 }
                 CheckEvidence::NotApplicable(reason) => {
                     assessment.status = CheckStatus::NotApplicable;

@@ -14,7 +14,7 @@ pub fn lock_time_info() -> CheckInfo {
     }
 }
 
-check!(LockTimeCheck: lock_time_info, lock_time, &[Evidence::Query(QueryMeasure::Waits)]);
+check!(LockTimeCheck: lock_time_info, lock_time, &[Evidence::Query(QueryMeasure::Waits("Lock"))]);
 
 /// Lock waits a day that make a statement's waiting High, or Medium: half an hour and five minutes.
 pub(super) const LOCK_HIGH_MS_PER_DAY: f64 = 30.0 * 60_000.0;

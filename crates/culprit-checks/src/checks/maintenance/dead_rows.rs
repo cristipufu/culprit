@@ -14,7 +14,7 @@ pub fn dead_rows_info() -> CheckInfo {
     }
 }
 
-check!(DeadRowsCheck: dead_rows_info, dead_rows, &[Evidence::Unknown]);
+check!(DeadRowsCheck: dead_rows_info, dead_rows, &[Evidence::Tables(crate::evidence::TableMeasure::DeadRows), Evidence::Settings]);
 
 /// When autovacuum vacuums `t`: its own storage parameters, else the server's settings, else PostgreSQL's defaults
 /// (50 rows + 20% of the table). `None` when autovacuum is off for it (or for the server).

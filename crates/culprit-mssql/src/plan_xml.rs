@@ -195,7 +195,7 @@ pub fn parse_statement(xml: &str, query_hash: Option<&str>) -> Result<Plan> {
         warnings,
         index_hints: index_hints(query_plan),
         props,
-        raw: Some(xml.to_string()),
+        raw: Some(xml.into()),
         insights: None,
     };
     plan.compute_self_costs();

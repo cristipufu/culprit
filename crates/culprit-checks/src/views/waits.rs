@@ -128,7 +128,7 @@ fn scope_and_source(snapshot: &Snapshot) -> (WaitScope, String) {
     let engine = snapshot.server.engine;
     let window = snapshot.workload.as_ref().map(|w| span(w.measurement_hours())).unwrap_or_default();
     let uptime = snapshot.pressure.as_ref().and_then(|p| p.uptime_hours).map(span);
-    let attributed = app_queries(snapshot).any(|q| !q.waits.is_empty());
+    let attributed = app_queries(snapshot).any(|q| q.waits.iter().any(|w| w.wait_ms > 0.0));
     match engine {
         Engine::Sqlite => (WaitScope::SinceStartup, "SQLite keeps no waits".into()),
         Engine::Mssql if attributed => (WaitScope::Window, format!("Query Store, last {window}")),
@@ -331,6 +331,16 @@ mod tests {
 
     fn wait(category: &str, wait_type: &str, ms: f64) -> WaitStat {
         WaitStat { category: category.into(), wait_type: Some(wait_type.into()), wait_ms: ms, tasks: None }
+    }
+
+    #[test]
+    fn zero_statement_waits_do_not_relabel_server_totals_as_a_query_store_window() {
+        let mut snapshot = snapshot_with(Engine::Mssql);
+        snapshot.waits = vec![wait("Memory", "RESOURCE_SEMAPHORE", 600_000.0)];
+        snapshot.workload.as_mut().unwrap().queries[0].waits = vec![wait("Lock", "Lock", 0.0)];
+        let report = explain(&snapshot).unwrap();
+        assert_eq!(report.scope, WaitScope::SinceStartup);
+        assert!(report.source.starts_with("Server totals"));
     }
 
     #[test]

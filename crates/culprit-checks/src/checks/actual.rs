@@ -24,7 +24,7 @@ pub fn last_actual_plans_info() -> CheckInfo {
     }
 }
 
-check!(LastActualPlansCheck: last_actual_plans_info, last_actual_plans, &[Evidence::Unknown]);
+check!(LastActualPlansCheck: last_actual_plans_info, last_actual_plans, &[Evidence::Settings, Evidence::Query(crate::evidence::QueryMeasure::Work)]);
 
 fn off(snapshot: &Snapshot, name: &str) -> bool {
     snapshot.setting(name).is_some_and(|s| matches!(s.value.trim(), "0" | "OFF" | "off" | "false"))

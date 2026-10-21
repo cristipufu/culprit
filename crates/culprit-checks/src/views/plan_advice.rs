@@ -163,11 +163,23 @@ fn lookup_advice(snapshot: &Snapshot, query: &QueryStat, plan: &Plan, i: &mut Pl
     let Some(lookup) = i.nodes.first().and_then(|id| nodes.iter().find(|n| n.id == *id)) else { return };
     let Some((schema, table)) = lookup.object.as_deref().and_then(split_object) else { return };
     let mut include: Vec<String> = lookup
-        .props
-        .get("OutputList")
-        .into_iter()
-        .flat_map(|s| s.split(", "))
-        .map(|s| s.rsplit('.').next().unwrap_or(s).trim_matches(['[', ']', '"']).to_string())
+        .facts()
+        .output_columns
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|s| {
+            let column = s.trim_matches(['[', ']', '"']);
+            if snapshot.columns.iter().any(|c| {
+                c.schema.eq_ignore_ascii_case(&schema)
+                    && c.table.eq_ignore_ascii_case(&table)
+                    && c.name.eq_ignore_ascii_case(column)
+            }) {
+                column.to_string()
+            } else {
+                s.rsplit('.').next().unwrap_or(s).trim_matches(['[', ']', '"']).to_string()
+            }
+        })
         .filter(|s| !s.is_empty() && !s.starts_with("Expr"))
         .collect();
     let note = drop_large_includes(snapshot, &schema, &table, &mut include);
@@ -203,7 +215,7 @@ fn lookup_advice(snapshot: &Snapshot, query: &QueryStat, plan: &Plan, i: &mut Pl
                     ix.schema.eq_ignore_ascii_case(&schema)
                         && ix.table.eq_ignore_ascii_case(&table)
                         && ix.name.eq_ignore_ascii_case(name.trim_matches(['[', ']', '"']))
-                        && ix.filter.as_deref().is_none_or(|f| fits_filter(&table, f, &[query]))
+                        && fits_index_filter(ix, &[query])
                 })
             });
         if let Some(index) = index
@@ -429,5 +441,49 @@ mod tests {
         assert_eq!(c.table_rows, Some(2_000_000.0));
         assert!(c.reason.contains("1.0M") && c.reason.contains("2.0M"), "{}", c.reason);
         assert!(!c.verify.iter().any(|v| v.contains("becomes a seek") || v.contains("share of database time drops")));
+    }
+
+    #[test]
+    fn lookup_projection_uses_typed_columns_and_legacy_lists_only_when_facts_are_absent() {
+        let original: Snapshot = serde_json::from_str(include_str!("../../../../fixtures/mssql-demo.json")).unwrap();
+        let mut s = workload(Engine::Mssql, 24.0, 500.0);
+        let mut index = original.indexes.iter().find(|i| i.table == "orders" && !i.is_clustered).unwrap().clone();
+        index.columns = vec!["status".into()];
+        index.include.clear();
+        index.filter = None;
+        s.indexes.push(index.clone());
+        let mut dotted = s.columns.iter().find(|c| c.table == "orders" && c.name == "customer_id").unwrap().clone();
+        dotted.name = "name.with.dot".into();
+        s.columns.push(dotted);
+        let q = &s.queries()[0];
+        let mut plan = q.plan.clone().unwrap();
+        let mut insight = query_plan_insights(&s, q, &plan).items[0].clone();
+        let mut seek = plan.root.clone();
+        seek.id = 401;
+        seek.index = Some(index.name);
+        plan.root.children.push(seek);
+        plan.root.id = 400;
+        plan.root.kind = NodeKind::Lookup;
+        plan.root.op = "Key Lookup".into();
+        insight.nodes = vec![400, 401];
+        for (facts, legacy, expected) in [
+            (Some(vec!["customer_id".into()]), "stale_not_a_column", Some("[customer_id]")),
+            (Some(vec!["name.with.dot".into()]), "stale_not_a_column", Some("[name.with.dot]")),
+            (Some(vec!["[name.with.dot]".into()]), "stale_not_a_column", Some("[name.with.dot]")),
+            (None, "customer_id,created_at", Some("[customer_id]")),
+            (Some(Vec::new()), "customer_id", None),
+        ] {
+            plan.root.facts =
+                facts.map(|output| culprit_core::PlanNodeFacts { output_columns: Some(output), ..Default::default() });
+            plan.root.props.insert("OutputList".into(), legacy.into());
+            let mut finding = insight.clone();
+            lookup_advice(&s, q, &plan, &mut finding);
+            match expected {
+                Some(column) => {
+                    assert!(finding.fix_sql.as_deref().is_some_and(|sql| sql.contains(column)), "{finding:?}")
+                }
+                None => assert!(finding.fix_sql.is_none()),
+            }
+        }
     }
 }

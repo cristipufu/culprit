@@ -51,6 +51,10 @@ pub const SESSIONS: Source = Source { name: "sessions", reads: "session statisti
 /// Replicas, this server's own lag as a standby, and replication slots (10+).
 pub const REPLICATION: Source = Source { name: "replication", reads: "replication", delivers: &[] };
 
+/// Sources sharing the auxiliary connection. A session failure accounts for all of them.
+pub const MISC: &[Source] =
+    &[SETTINGS, DATABASE_STATS, CHECKPOINTS, OPEN_TRANSACTIONS, CLEANUP_SLOTS, CLEANUP_PREPARED];
+
 /// Every source above, for listings (`culprit sources`).
 pub const ALL: &[Source] = &[
     MULTIXACTS,

@@ -14,7 +14,7 @@ pub fn filtered_scan_info() -> CheckInfo {
     }
 }
 
-check!(FilteredScanCheck: filtered_scan_info, filtered_scan, &[Evidence::IndexCatalog, Evidence::Unknown]);
+check!(FilteredScanCheck: filtered_scan_info, filtered_scan, &[Evidence::IndexCatalog, Evidence::Query(crate::evidence::QueryMeasure::Plans)]);
 
 pub(crate) struct ScanGroup<'a> {
     pub(crate) schema: String,

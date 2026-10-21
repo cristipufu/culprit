@@ -17,6 +17,8 @@ use crate::conn::{is_permission_error, map_error};
 /// Query Store's runtime statistics, plans and waits per query, by interval.
 pub const QUERY_STORE: Source =
     Source { name: "query_store", reads: "Query Store", delivers: &[Capability::QueryStore] };
+/// Query Store wait categories over the selected workload window, including known zeroes.
+pub const QUERY_WAITS: Source = Source { name: "query_waits", reads: "Query Store statement waits", delivers: &[] };
 /// sys.dm_exec_query_stats: totals per cached plan, where Query Store is off.
 pub const PLAN_CACHE: Source =
     Source { name: "plan_cache", reads: "plan cache statistics", delivers: &[Capability::PlanCache] };
@@ -74,6 +76,37 @@ pub const FILE_LATENCY: Source = Source { name: "file latency", reads: "file lat
 /// Logins and connection resets, for connection churn.
 pub const LOGINS: Source = Source { name: "logins", reads: "login counters", delivers: &[] };
 
+pub const SCHEMA: &[Source] = &[TABLES, INDEXES, COLUMNS, FOREIGN_KEYS, STATISTICS];
+pub const WORKLOAD: &[Source] = &[QUERY_STORE, QUERY_WAITS, PLAN_CACHE];
+pub const MISC: &[Source] = &[
+    SETTINGS,
+    MISSING_INDEXES,
+    WAITS,
+    RESOURCES,
+    FORWARDED_FETCHES,
+    QUERY_FAMILIES,
+    PLAN_CACHE_USE,
+    TUNING,
+    PERFORMANCE_COUNTERS,
+    RESOURCE_USE,
+    PENDING_GRANTS,
+    WAIT_TOTALS,
+    GRANTS,
+    OPEN_TRANSACTIONS,
+];
+pub const SIGNAL_READS: &[Source] = &[
+    QUERY_COSTS,
+    QUERY_COMPILATION,
+    INDEX_CONTENTION,
+    CONSTRAINTS,
+    FILE_LATENCY,
+    LOGINS,
+    LOG_CAPACITY,
+    FILE_CAPACITY,
+    TEMP_CAPACITY,
+    SEQUENCE_CAPACITY,
+];
+
 /// Every source above, for listings (`culprit sources`).
 pub const ALL: &[Source] = &[
     LOG_CAPACITY,
@@ -81,6 +114,7 @@ pub const ALL: &[Source] = &[
     TEMP_CAPACITY,
     SEQUENCE_CAPACITY,
     QUERY_STORE,
+    QUERY_WAITS,
     PLAN_CACHE,
     TABLES,
     INDEXES,

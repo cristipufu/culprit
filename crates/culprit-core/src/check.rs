@@ -9,6 +9,11 @@ pub enum CheckEvidence {
     Available,
     Unavailable(String),
     Insufficient(String),
+    /// These statements were assessed, while other statements lack the required measurements.
+    Queries {
+        assessed: Vec<String>,
+        reason: Option<String>,
+    },
     NotApplicable(String),
 }
 
@@ -30,6 +35,10 @@ pub struct CheckAssessment {
     pub title: String,
     pub status: CheckStatus,
     pub reason: Option<String>,
+    // Statements with complete evidence when the check's overall coverage is incomplete.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub assessed_queries: Vec<String>,
 }
 
 /// A check is a pure function from a snapshot to findings. It never touches a live connection.

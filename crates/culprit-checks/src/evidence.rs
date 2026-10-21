@@ -14,11 +14,14 @@ pub enum Observation {
     OperationalCounters,
     Cluster,
     WalSize,
+    MissingIndexes,
+    Tuning,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum QueryMeasure {
     Work,
+    Plans,
     CapturedPlans,
     Timeline,
     PlanVariants,
@@ -32,7 +35,19 @@ pub enum QueryMeasure {
     Histograms,
     TempWrites,
     Grants,
-    Waits,
+    Waits(&'static str),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TableMeasure {
+    Heap,
+    DeadRows,
+    Xid,
+    Bloat,
+    HotUpdates,
+    RowSize,
+    Scans,
+    Writes,
 }
 
 /// A reusable evidence contract. Custom checks can use the same evaluator in `Check::evidence`.
@@ -40,11 +55,19 @@ pub enum QueryMeasure {
 pub enum Requirement<'a> {
     Observed(Observation, &'a [&'a str]),
     Source(&'a str),
+    /// Explicit outcomes win. Older scans may establish this read through its retained payload.
+    SourceWithLegacy(&'a str, Observation),
     IndexCatalog,
     ForeignKeys,
     IndexHistory,
     Query(QueryMeasure),
-    Pressure { signal: Option<&'a str>, timed_files: bool, complete: bool },
+    Tables(TableMeasure),
+    Statistics,
+    Pressure {
+        signal: Option<&'a str>,
+        timed_files: bool,
+        complete: bool,
+    },
     Settings,
     Deadlocks,
     Unknown,
@@ -73,6 +96,19 @@ pub fn assess(requirements: &[Requirement<'_>], s: &Snapshot) -> CheckEvidence {
             evidence @ CheckEvidence::Insufficient(_) if matches!(result, CheckEvidence::Available) => {
                 result = evidence
             }
+            evidence @ CheckEvidence::Insufficient(_) if matches!(result, CheckEvidence::Queries { .. }) => {
+                result = evidence
+            }
+            CheckEvidence::Queries { assessed, reason } => match &mut result {
+                CheckEvidence::Available => result = CheckEvidence::Queries { assessed, reason },
+                CheckEvidence::Queries { assessed: previous, reason: previous_reason } => {
+                    previous.retain(|q| assessed.contains(q));
+                    if previous_reason.is_none() {
+                        *previous_reason = reason;
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -94,6 +130,8 @@ impl Requirement<'_> {
                     Observation::OperationalCounters => !s.operations.counters.is_empty(),
                     Observation::Cluster => s.operations.cluster.is_some(),
                     Observation::WalSize => s.operations.sqlite.as_ref().is_some_and(|w| w.wal_bytes.is_some()),
+                    Observation::MissingIndexes => !s.missing_indexes.is_empty(),
+                    Observation::Tuning => s.tuning.is_some(),
                 };
                 if let Some(reason) = source_failed(s, sources) {
                     return if known { Insufficient(reason) } else { Unavailable(reason) };
@@ -115,6 +153,11 @@ impl Requirement<'_> {
                 insufficient(
                     "This source was not recorded, was not applicable, or did not expose visible objects. No clean result can be established from its absence.",
                 )
+            }
+            Self::SourceWithLegacy(name, observation) => {
+                if s.sources.is_empty() && source_failed(s, &[*name]).is_none()
+                    && matches!(Self::Observed(*observation, &[]).assess(s), Available)
+                { Available } else { Self::Source(name).assess(s) }
             }
             Self::Source(name) => match s.source_outcome(name) {
                 Some(o) => match o.state {
@@ -155,6 +198,20 @@ impl Requirement<'_> {
             }
             Self::IndexHistory => Available,
             Self::Query(measure) => query(*measure, s),
+            Self::Tables(measure) => tables(*measure, s),
+            Self::Statistics => {
+                if let Some(reason) = source_failed(s, &["statistics", "tables"]) {
+                    return Unavailable(reason);
+                }
+                if !s.statistics.is_empty()
+                    || s.source_outcome("statistics").is_some_and(|o| matches!(o.state, SourceState::Collected | SourceState::Empty))
+                    || (!s.tables.is_empty() && s.tables.iter().all(|t| t.modifications_since_analyze.is_some()))
+                {
+                    Available
+                } else {
+                    insufficient("Statistics update measurements were not collected completely.")
+                }
+            }
             Self::Pressure { signal, timed_files, complete } => {
                 let Some(p) = &s.pressure else {
                     return Unavailable(
@@ -187,9 +244,16 @@ impl Requirement<'_> {
             }
             Self::Settings if s.settings.is_empty() => insufficient("No settings were collected."),
             Self::Deadlocks if s.deadlocks.is_none() => insufficient("No deadlock evidence was collected."),
-            Self::Settings | Self::Deadlocks => {
-                insufficient("The available evidence does not establish complete coverage of this check.")
-            }
+            Self::Settings => source_failed(s, &[
+                "settings", "advice settings", "server variables", "tables", "catalog", "statistics",
+                "workload", "global status", "performance counters", "plan cache use", "resource use",
+            ]).map(Insufficient).unwrap_or(Available),
+            Self::Deadlocks => source_failed(s, &["deadlocks"]).map(Unavailable).unwrap_or_else(|| {
+                let d = s.deadlocks.as_ref().unwrap();
+                if d.counted.is_some() || d.note.is_some() {
+                    insufficient("A cumulative counter or a limited deadlock sample cannot verify the absence of this deadlock pattern.")
+                } else { Available }
+            }),
             Self::Unknown => insufficient("The available evidence does not establish complete coverage of this check."),
             Self::Incomplete(reason) => insufficient(reason),
         }
@@ -221,31 +285,6 @@ fn query(measure: QueryMeasure, s: &Snapshot) -> CheckEvidence {
     if matches!(measure, QueryMeasure::Timeline) && !w.timeline.as_ref().is_some_and(|t| t.len() >= 4) {
         return insufficient("A comparable baseline and later workload are needed to assess regressions.");
     }
-    if matches!(measure, QueryMeasure::PlanVariants) && !w.queries.iter().any(|q| q.plans.len() > 1) {
-        return insufficient("No comparable earlier and later plan variants were recorded.");
-    }
-    let costs = |f: fn(&culprit_core::QueryCosts) -> bool| w.queries.iter().all(|q| q.costs.as_ref().is_some_and(f));
-    let known = match measure {
-        QueryMeasure::Variance => {
-            w.queries.iter().all(|q| q.stddev_time_ms.is_some() && q.max_time_ms.is_some() && q.executions >= 10.0)
-        }
-        QueryMeasure::ParameterSpread => w.queries.iter().all(|q| q.plans.len() > 1 || q.spread.is_some()),
-        QueryMeasure::Failures => costs(|c| c.failed.is_some() || c.aborted.is_some()),
-        QueryMeasure::Planning => costs(|c| c.plan_ms.is_some()),
-        QueryMeasure::Jit => costs(|c| c.jit_ms.is_some()),
-        QueryMeasure::LogBytes => costs(|c| c.log_bytes.is_some()),
-        QueryMeasure::Rows => w.queries.iter().all(|q| q.rows_per_execution().is_some()),
-        QueryMeasure::Histograms => s.histograms.is_some(),
-        QueryMeasure::TempWrites => w.queries.iter().all(|q| {
-            q.temp_writes.is_some() || q.plan.as_ref().is_some_and(|p| p.kind == culprit_core::PlanKind::Actual)
-        }),
-        QueryMeasure::Grants => s.pressure.as_ref().is_some_and(|p| !p.grants.is_empty()),
-        QueryMeasure::Waits => w.queries.iter().any(|q| !q.waits.is_empty()),
-        _ => true,
-    };
-    if !known {
-        return insufficient("This scan did not record the measurements this check needs.");
-    }
     let source = match w.kind() {
         Some(culprit_core::WorkloadKind::QueryStore) => "query_store",
         Some(culprit_core::WorkloadKind::PlanCache) => "plan_cache",
@@ -255,5 +294,99 @@ fn query(measure: QueryMeasure, s: &Snapshot) -> CheckEvidence {
     if let Some(reason) = source_failed(s, &[source]) {
         return Insufficient(reason);
     }
-    Available
+    if matches!(measure, QueryMeasure::Waits(_))
+        && let Some(reason) = source_failed(s, &["query_waits"])
+    {
+        return Insufficient(reason);
+    }
+    let assessed: Vec<_> = w
+        .queries
+        .iter()
+        .filter(|q| {
+            let costs = |f: fn(&culprit_core::QueryCosts) -> bool| q.costs.as_ref().is_some_and(f);
+            match measure {
+                QueryMeasure::PlanVariants => {
+                    q.plans.len() >= 2
+                        && q.plans.iter().all(|p| {
+                            p.executions >= culprit_core::PLAN_VARIANT_MIN_RUNS
+                                && p.mean_time_ms.is_finite()
+                                && p.first_seen.as_deref().and_then(culprit_core::format::epoch_seconds).is_some()
+                                && p.last_seen.as_deref().and_then(culprit_core::format::epoch_seconds).is_some()
+                        })
+                }
+                QueryMeasure::Variance => q.stddev_time_ms.is_some() && q.max_time_ms.is_some() && q.executions >= 50.0,
+                QueryMeasure::ParameterSpread => !q.plans.is_empty() || q.spread.is_some(),
+                QueryMeasure::Failures => costs(|c| c.failed.is_some() || c.aborted.is_some()),
+                QueryMeasure::Planning => costs(|c| c.plan_ms.is_some()),
+                QueryMeasure::Jit => costs(|c| c.jit_ms.is_some()),
+                QueryMeasure::LogBytes => costs(|c| c.log_bytes.is_some()),
+                QueryMeasure::Rows => q.rows_per_execution().is_some(),
+                QueryMeasure::Histograms => s.histograms.is_some(),
+                QueryMeasure::TempWrites => q.temp_writes.is_some(),
+                QueryMeasure::Grants => s.pressure.as_ref().is_some_and(|p| {
+                    p.grants
+                        .iter()
+                        .any(|g| q.query_hash.as_deref() == Some(g.query_hash.as_str()) && g.executions >= 5.0)
+                }),
+                QueryMeasure::Waits(category) => q
+                    .waits
+                    .iter()
+                    .any(|w| w.category.eq_ignore_ascii_case(category) && w.wait_ms.is_finite() && w.wait_ms >= 0.0),
+                QueryMeasure::Plans => q.plan.is_some(),
+                _ => true,
+            }
+        })
+        .map(|q| q.id.clone())
+        .collect();
+    if matches!(measure, QueryMeasure::Work | QueryMeasure::Timeline | QueryMeasure::Histograms)
+        && assessed.len() == w.queries.len()
+    {
+        Available
+    } else if assessed.len() == w.queries.len() {
+        Queries { assessed, reason: None }
+    } else if assessed.is_empty() && matches!(measure, QueryMeasure::PlanVariants) {
+        insufficient("No statement has sufficiently sampled earlier and later plan variants to compare in this window.")
+    } else if assessed.is_empty() {
+        insufficient("This scan did not record the measurements this check needs.")
+    } else {
+        Queries {
+            assessed,
+            reason: Some(
+                "Some statements lack the measurements this check needs; only measured statements were assessed."
+                    .into(),
+            ),
+        }
+    }
+}
+
+fn tables(measure: TableMeasure, s: &Snapshot) -> CheckEvidence {
+    use CheckEvidence::*;
+    if let Some(reason) = source_failed(s, &["tables", "catalog"]) {
+        return Unavailable(reason);
+    }
+    let storage = matches!(measure, TableMeasure::Bloat | TableMeasure::HotUpdates);
+    if storage && let Some(reason) = source_failed(s, &["table storage"]) {
+        return Unavailable(reason);
+    }
+    let complete = !s.tables.is_empty()
+        && s.tables.iter().all(|t| match measure {
+            TableMeasure::Heap => t.is_heap.is_some() && t.rows.is_some(),
+            TableMeasure::DeadRows => t.rows.is_some() && t.dead_rows.is_some(),
+            TableMeasure::Xid => t.xid_age.is_some(),
+            TableMeasure::Bloat => t.storage.as_ref().is_some_and(|v| v.bloat_bytes.is_some()),
+            TableMeasure::HotUpdates => {
+                t.updates.is_some() && t.storage.as_ref().is_some_and(|v| v.hot_updates.is_some())
+            }
+            TableMeasure::RowSize => t.rows.is_some() && t.lob_bytes.is_some() && t.total_bytes.is_some(),
+            TableMeasure::Scans => t.rows.is_some() && t.seq_rows_read.is_some(),
+            TableMeasure::Writes => crate::indexes::measured_writes(s, &t.schema, &t.name).is_some(),
+        });
+    if complete
+        || (s.tables.is_empty()
+            && ["tables", "catalog"].iter().any(|n| s.source_outcome(n).is_some_and(|o| o.state == SourceState::Empty)))
+    {
+        Available
+    } else {
+        Insufficient("Some tables lack the measurements this check needs.".into())
+    }
 }

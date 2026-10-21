@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 pub use html::{diff_html, finding_html, plan_html, report_html};
+pub(crate) use markdown::finding_detail_shared;
 pub use markdown::{
     diff_markdown, finding_detail, finding_markdown, plan_markdown, report_markdown, verification_markdown,
 };
@@ -127,8 +128,17 @@ pub(crate) fn shared_report(report: &Report) -> Report {
 /// only.
 pub(crate) fn shareable(report: &Report, shared: &Report, finding: &Finding) -> Finding {
     let engine = report.snapshot.server.engine;
-    let source = shared.findings.iter().find(|f| f.id == finding.id).unwrap_or(finding);
-    culprit_core::redact::redact_finding(source, engine)
+    let rechecked = shared.findings.iter().find(|f| f.id == finding.id);
+    let mut redacted = culprit_core::redact::redact_finding(rechecked.unwrap_or(finding), engine);
+    // Rechecked fixes were generated from already redacted evidence. Keep their safe SQL constants and syntax;
+    // masking them again would turn executable settings and diagnostic scripts into placeholder SQL.
+    // A plugin finding the recheck cannot reproduce retains the full fallback redaction, including its fix SQL.
+    if let Some(source) = rechecked
+        && let (Some(fix), Some(original)) = (&mut redacted.fix, &source.fix)
+    {
+        fix.sql = original.sql.clone();
+    }
+    redacted
 }
 
 pub(crate) fn sql_text(text: &str, engine: Engine, options: &ExportOptions) -> String {

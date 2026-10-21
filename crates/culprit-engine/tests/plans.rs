@@ -46,6 +46,19 @@ fn reads_sqlplan_files_saved_as_utf16() {
 }
 
 #[test]
+fn pasted_showplans_allow_unicode_across_the_declaration_probe_boundary() {
+    let text = fixture("mssql-seek.sqlplan");
+    for encoding in ["utf-8", "utf-16"] {
+        for quote in ['\'', '"'] {
+            let prefix = format!("<?xml version=\"1.0\" encoding={quote}{encoding}{quote}?><!--");
+            let plan = format!("{prefix}{}é -->{text}", " ".repeat(119 - prefix.len()));
+            assert!(!plan.is_char_boundary(120));
+            assert_eq!(parse_plan(&plan).unwrap().engine, Engine::Mssql);
+        }
+    }
+}
+
+#[test]
 fn never_resolves_xml_entities() {
     let xml =
         r#"<?xml version="1.0"?><!DOCTYPE p [<!ENTITY e SYSTEM "file:///etc/passwd">]><ShowPlanXML>&e;</ShowPlanXML>"#;

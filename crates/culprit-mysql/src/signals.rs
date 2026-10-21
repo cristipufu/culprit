@@ -22,7 +22,11 @@ const PICOS_PER_MS: f64 = 1_000_000_000.0;
 /// (`crate::sources`): these add detail and lock nothing, so a failure is a note.
 pub async fn collect(connector: &Connector, probe: &Probe, snapshot: &mut Snapshot) {
     let mut coverage = Coverage::default();
-    let Some(mut conn) = coverage.read(&sources::SIGNALS, connector.connect(Scope::Server).await) else {
+    let connection = connector.connect(Scope::Server).await;
+    if let Err(error) = &connection {
+        coverage.sources_failed(sources::SIGNAL_READS, error);
+    }
+    let Some(mut conn) = coverage.read(&sources::SIGNALS, connection) else {
         coverage.append_to(snapshot);
         return;
     };

@@ -15,7 +15,7 @@ pub fn xid_age_info() -> CheckInfo {
     }
 }
 
-check!(XidAgeCheck: xid_age_info, xid_age, &[Evidence::Unknown]);
+check!(XidAgeCheck: xid_age_info, xid_age, &[Evidence::Tables(crate::evidence::TableMeasure::Xid)]);
 
 pub(super) const WRAPAROUND: f64 = 2_000_000_000.0;
 

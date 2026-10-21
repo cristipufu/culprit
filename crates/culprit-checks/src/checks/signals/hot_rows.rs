@@ -14,7 +14,7 @@ pub fn hot_rows_info() -> CheckInfo {
     }
 }
 
-check!(HotRowsCheck: hot_rows_info, hot_rows, &[Evidence::Unknown]);
+check!(HotRowsCheck: hot_rows_info, hot_rows, &[Evidence::Source("index contention")]);
 
 /// Lock waits a day on one table that make hot-rows High: ten minutes. A minute a day of waits a second or longer each
 /// is Medium.

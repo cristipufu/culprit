@@ -2,7 +2,7 @@
   "assessments": [
     {
       "check": "filtered-scan",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "MariaDB counts the whole run of a statement the slow query log writes to its table as lock time, so the lock time of 2 statements is left out as unknown rather than read as waiting.",
       "status": "insufficient-evidence",
       "title": "Scans an index would avoid"
     },
@@ -14,31 +14,31 @@
     },
     {
       "check": "duplicate-index",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Duplicate and redundant indexes"
     },
     {
       "check": "unindexed-fk",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Foreign keys without an index"
     },
     {
       "check": "overlapping-index",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Overlapping indexes"
     },
     {
       "check": "over-indexed",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Many indexes on write-heavy tables"
     },
     {
       "check": "scan-heavy",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Tables read in full over and over"
     },
@@ -80,7 +80,7 @@
     },
     {
       "check": "unstable-query",
-      "reason": "This scan did not record the measurements this check needs.",
+      "reason": "MariaDB counts the whole run of a statement the slow query log writes to its table as lock time, so the lock time of 2 statements is left out as unknown rather than read as waiting.",
       "status": "insufficient-evidence",
       "title": "Unstable queries"
     },
@@ -98,13 +98,13 @@
     },
     {
       "check": "config",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "MariaDB counts the whole run of a statement the slow query log writes to its table as lock time, so the lock time of 2 statements is left out as unknown rather than read as waiting.",
       "status": "insufficient-evidence",
       "title": "Configuration"
     },
     {
       "check": "deadlocks",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "A cumulative counter or a limited deadlock sample cannot verify the absence of this deadlock pattern.",
       "status": "findings",
       "title": "Deadlocks"
     },
@@ -146,7 +146,7 @@
     },
     {
       "check": "failing-query",
-      "reason": "This scan did not record the measurements this check needs.",
+      "reason": "MariaDB counts the whole run of a statement the slow query log writes to its table as lock time, so the lock time of 2 statements is left out as unknown rather than read as waiting.",
       "status": "insufficient-evidence",
       "title": "Queries that fail or time out"
     },
@@ -164,7 +164,7 @@
     },
     {
       "check": "missing-histogram",
-      "reason": "This scan did not record the measurements this check needs.",
+      "reason": "MariaDB counts the whole run of a statement the slow query log writes to its table as lock time, so the lock time of 2 statements is left out as unknown rather than read as waiting.",
       "status": "insufficient-evidence",
       "title": "Filter columns the optimizer has to guess about"
     },

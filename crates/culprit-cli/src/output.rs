@@ -328,7 +328,7 @@ impl Out {
         let path = dir.join(format!("{}.json", report.snapshot.id));
         if self.format == Format::Json {
             if full {
-                return self.json(&json!(report));
+                return self.json(&json!(culprit_engine::reports::display(report)));
             }
             return self.json(&compact_report(report, &path));
         }
@@ -369,7 +369,7 @@ impl Out {
 
     pub fn analyzed(&self, report: &Report) {
         if self.format == Format::Json {
-            return self.json(&json!(report));
+            return self.json(&json!(culprit_engine::reports::display(report)));
         }
         self.findings(report, Severity::Low);
     }

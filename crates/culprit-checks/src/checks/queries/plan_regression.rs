@@ -17,7 +17,7 @@ pub fn plan_regression_info() -> CheckInfo {
 check!(PlanRegressionCheck: plan_regression_info, plan_regression, &[Evidence::Query(QueryMeasure::PlanVariants)]);
 
 /// A plan with this many runs or more counts as one the query used.
-pub(super) const PLAN_MIN_RUNS: f64 = 5.0;
+pub(super) const PLAN_MIN_RUNS: f64 = culprit_core::PLAN_VARIANT_MIN_RUNS;
 /// The faster plan is the baseline only over this many runs, the bar `regression` sets for one: five quick runs in nine
 /// minutes are a moment, not how the query ran.
 const BASELINE_MIN_RUNS: f64 = 20.0;
@@ -90,6 +90,9 @@ pub fn plan_regression(snapshot: &Snapshot) -> Vec<Finding> {
             }
             let mut f = finding("plan-regression", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
             f.facts.plan_change=Some(culprit_core::FindingPlanChange {from:best.id.clone(),to:latest.id.clone()});
+            f.facts.plan_baseline = latest.last_seen.as_ref().map(|last| culprit_core::PlanBaseline {
+                query: q.id.clone(), mean_ms: best.mean_time_ms, observed_until: last.clone(),
+            });
             apply_impact(snapshot, &mut f, &impact);
             // Its time a day since it took over, so a regression that began this morning isn't diluted by the week.
             let since = latest.first_seen.as_deref().and_then(parse_epoch_seconds);

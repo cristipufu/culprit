@@ -16,7 +16,7 @@ pub fn unindexed_fk_info() -> CheckInfo {
 
 check!(
     UnindexedFkCheck: unindexed_fk_info, unindexed_fk,
-    &[Evidence::IndexCatalog, Evidence::ForeignKeys, Evidence::Unknown]
+    &[Evidence::IndexCatalog, Evidence::ForeignKeys]
 );
 
 /// Whether an index can serve the foreign key: it leads with the key columns, isn't disabled, and covers every row the

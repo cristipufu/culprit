@@ -8,6 +8,75 @@ use crate::finding::Finding;
 use crate::model::{Engine, Properties, Snapshot};
 use crate::plan::{Plan, PlanNode};
 
+fn opaque(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    // Preserve our own tokens when a shared artifact is read again.
+    if value.strip_prefix("redacted-").is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())) {
+        value.into()
+    } else {
+        let digest: String = Sha256::digest(value.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
+        format!("redacted-{digest}")
+    }
+}
+
+/// Physical paths are not public finding identifiers. Logical catalog names remain recognizable.
+pub fn shareable_name(value: &str) -> String {
+    if value.contains(['/', '\\']) { opaque(value) } else { value.into() }
+}
+
+/// Keep database labels and equality relationships, without retaining connection endpoints or file paths.
+pub fn redact_identity(identity: &mut crate::DatabaseIdentity) {
+    use crate::DatabaseLocation;
+    match &mut identity.location {
+        DatabaseLocation::Server { host, port, instance } => {
+            if !host.trim().is_empty() {
+                let canonical = host.trim().trim_end_matches('.').to_ascii_lowercase();
+                *host = if canonical.starts_with("redacted-") && *port == 1 {
+                    opaque(&canonical)
+                } else {
+                    opaque(&format!("{canonical}:{port}"))
+                };
+            }
+            if *port != 0 {
+                *port = 1;
+            }
+            *instance = instance.as_deref().map(opaque);
+        }
+        DatabaseLocation::Socket { directory, port } => {
+            if !directory.is_empty() {
+                *directory = if directory.starts_with("redacted-") && *port == 1 {
+                    opaque(directory)
+                } else {
+                    opaque(&format!("{directory}:{port}"))
+                };
+            }
+            if *port != 0 {
+                *port = 1;
+            }
+        }
+        DatabaseLocation::File { path } if !path.is_empty() => *path = opaque(path),
+        _ => {}
+    }
+    identity.incarnation = identity.incarnation.as_deref().map(opaque);
+}
+
+pub fn redact_measurement(measurement: &mut crate::MeasurementContext) {
+    redact_identity(&mut measurement.database);
+}
+
+fn redact_reference(reference: &mut crate::ScanReference) {
+    if let Some(database) = &mut reference.database {
+        redact_identity(database);
+    }
+}
+
+pub fn redact_baseline(reference: &mut crate::BaselineReference) {
+    redact_reference(&mut reference.scan);
+    if let Some(measurement) = &mut reference.measurement {
+        redact_measurement(measurement);
+    }
+}
+
 /// Query hints whose number tunes the plan (`OPTION (MAXDOP 1)`, `FAST 10`), not data: what a plan's reading of the
 /// statement depends on, kept.
 const HINTS_WITH_A_NUMBER: &[&str] = &["MAXDOP", "FAST", "MAXRECURSION", "QUERYTRACEON"];
@@ -125,19 +194,120 @@ fn collapse_parameters(span: String) -> String {
 pub fn redact_snapshot(snapshot: &Snapshot) -> Snapshot {
     let engine = snapshot.server.engine;
     let mut s = snapshot.clone();
+    if let Some(identity) = &mut s.identity {
+        redact_identity(identity);
+    }
+    for note in &mut s.notes {
+        note.message = "Collection details omitted from shared data.".into();
+    }
+    for source in &mut s.sources {
+        if source.reason.is_some() {
+            source.reason = Some("Collection details omitted from shared data.".into());
+        }
+    }
+    for missing in &mut s.server.missing {
+        missing.reason = "This capability was not collected; diagnostic details omitted from shared data.".into();
+        missing.fix = None;
+    }
     for failure in &mut s.operations.log_failures {
         failure.statement = redact_sql(&failure.statement, engine);
     }
     for table in &mut s.tables {
         table.definition = table.definition.as_deref().map(|sql| redact_sql(sql, engine));
     }
+    for index in &mut s.indexes {
+        if index.filter_facts.is_none()
+            && let Some(filter) = &index.filter
+        {
+            index.filter_facts = Some(crate::IndexFilterFacts {
+                fingerprint: opaque(filter),
+                matching_queries: snapshot
+                    .queries()
+                    .iter()
+                    .filter(|q| crate::index_filter::matches(&index.table, filter, &q.text))
+                    .map(|q| q.id.clone())
+                    .collect(),
+                equalities: crate::index_filter::filter_equalities(filter).map(|pairs| {
+                    pairs.into_iter().map(|(column, value)| (column, redact_sql(&value, engine))).collect()
+                }),
+            });
+        }
+        if let Some(facts) = &mut index.filter_facts {
+            facts.fingerprint = opaque(&facts.fingerprint);
+            if let Some(equalities) = &mut facts.equalities {
+                for (_, value) in equalities {
+                    *value = redact_sql(value, engine);
+                }
+            }
+        }
+        index.filter = index.filter.as_deref().map(|sql| redact_sql(sql, engine));
+        index.definition = index.definition.as_deref().map(|sql| redact_sql(sql, engine));
+    }
+    for column in &mut s.columns {
+        column.default = column.default.as_deref().map(|sql| redact_sql(sql, engine));
+    }
+    for reference in s
+        .escalations_before
+        .iter_mut()
+        .filter_map(|b| b.reference.as_mut())
+        .chain(s.contention_before.iter_mut().filter_map(|b| b.reference.as_mut()))
+        .chain(s.sizes_before.iter_mut().filter_map(|b| b.reference.as_mut()))
+        .chain(s.evictions_before.iter_mut().filter_map(|b| b.reference.as_mut()))
+        .chain(s.operations.counters.iter_mut().filter_map(|c| c.before.as_mut()).filter_map(|b| b.reference.as_mut()))
+        .chain(s.operations.sqlite.iter_mut().filter_map(|c| c.before.as_mut()).filter_map(|b| b.reference.as_mut()))
+    {
+        redact_reference(reference);
+    }
+    if let Some(measurement) = s.evictions_before.as_mut().and_then(|b| b.measurement.as_mut()) {
+        redact_measurement(measurement);
+    }
     if let Some(w) = &mut s.workload {
+        if let Some(measurement) = &mut w.measurement {
+            redact_measurement(measurement);
+        }
+        for reference in &mut w.history_inputs {
+            redact_baseline(reference);
+        }
         for q in &mut w.queries {
             q.text = redact_sql(&q.text, engine);
             q.plan = q.plan.as_ref().map(redact_plan);
             for p in &mut q.plans {
                 p.compiled = None;
             }
+        }
+    }
+    if let Some(tuning) = &mut s.tuning {
+        for recommendation in &mut tuning.recommendations {
+            recommendation.script = recommendation.script.as_deref().map(|sql| redact_sql(sql, engine));
+            recommendation.reason = recommendation.reason.as_deref().map(|t| redact_prose(t, engine));
+        }
+        for forced in &mut tuning.forced_plans {
+            forced.last_failure_reason =
+                forced.last_failure_reason.as_deref().map(|_| "Failure details omitted from shared data.".into());
+        }
+        for hint in &mut tuning.hints {
+            hint.hint = redact_sql(&hint.hint, engine);
+            hint.last_failure_reason =
+                hint.last_failure_reason.as_deref().map(|_| "Failure details omitted from shared data.".into());
+        }
+    }
+    if let Some(p) = &mut s.pressure {
+        if let Some(transaction) = &mut p.oldest_transaction {
+            transaction.program = None;
+        }
+        for file in &mut p.files {
+            file.name = shareable_name(&file.name);
+        }
+        for replica in &mut p.replicas {
+            replica.error = replica.error.as_deref().map(|e| {
+                if e.is_empty() { "".into() } else { "Replication error details omitted from shared data.".into() }
+            });
+        }
+    }
+    for space in &mut s.operations.spaces {
+        space.name = shareable_name(&space.name);
+        for part in &mut space.parts {
+            part.name = shareable_name(&part.name);
         }
     }
     for f in &mut s.query_families {
@@ -150,9 +320,19 @@ pub fn redact_snapshot(snapshot: &Snapshot) -> Snapshot {
                 // Who ran it: an Entra login is a person's email address.
                 p.login = None;
                 p.host = None;
+                p.application = None;
             }
             // The headline, explanation and fixes quote the processes: written again from what is left.
             crate::deadlock::classify(engine, d);
+        }
+        if report.note.is_some() {
+            report.note = Some(
+                engine
+                    .spec()
+                    .deadlock_limitation()
+                    .unwrap_or("Deadlock collection was limited; details omitted from shared data.")
+                    .into(),
+            );
         }
     }
     s
@@ -160,11 +340,11 @@ pub fn redact_snapshot(snapshot: &Snapshot) -> Snapshot {
 
 /// A second layer over [`redact_snapshot`], for text from a finding that wasn't checked from a redacted snapshot (a
 /// plug-in check an export can't re-run): its prose redacted with [`redact_prose`], which reads SQL out of prose by
-/// heuristics and so can't be the only layer. The fix's SQL stays as it is: Culprit
-/// writes it from names and ids, never from the workload's values.
+/// heuristics and so can't be the only layer. Fix SQL can also quote catalog predicates or plugin-supplied values.
 pub fn redact_finding(finding: &Finding, engine: Engine) -> Finding {
     let prose = |t: &str| redact_prose(t, engine);
     let mut f = finding.clone();
+    f.title = prose(&f.title);
     f.summary = prose(&f.summary);
     f.caveats = f.caveats.iter().map(|c| prose(c)).collect();
     f.verify = f.verify.iter().map(|v| prose(v)).collect();
@@ -177,6 +357,7 @@ pub fn redact_finding(finding: &Finding, engine: Engine) -> Finding {
     if let Some(fix) = &mut f.fix {
         fix.summary = prose(&fix.summary);
         fix.cost = fix.cost.as_deref().map(prose);
+        fix.sql = fix.sql.as_deref().map(|sql| redact_sql(sql, engine));
     }
     f
 }
@@ -328,6 +509,10 @@ fn redact(text: &str, engine: Engine, numbers: bool) -> String {
 /// SQL Server names columns in plans as `[database].[schema].[table].[column]`. Drop the database part, so an export
 /// doesn't name the database and plans from two environments read the same.
 pub fn strip_database(text: &str) -> String {
+    strip_parts(text, 3)
+}
+
+fn strip_parts(text: &str, keep: usize) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -349,8 +534,8 @@ pub fn strip_database(text: &str) -> String {
                 break;
             }
         }
-        let (from, to) =
-            if parts.len() == 4 { (parts[1].0, parts[3].1) } else { (i, parts.last().map_or(i + 1, |p| p.1)) };
+        let from = if parts.len() > keep { parts[parts.len() - keep].0 } else { i };
+        let to = parts.last().map_or(i + 1, |p| p.1);
         out.extend(&chars[from..to]);
         i = to;
     }
@@ -447,7 +632,20 @@ fn is_measurement(value: &str) -> bool {
 }
 
 fn redact_props(props: &Properties, engine: Engine) -> Properties {
-    props.iter().map(|(k, v)| (k.clone(), if is_measurement(v) { v.clone() } else { redact_sql(v, engine) })).collect()
+    props
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                if is_measurement(v) {
+                    v.clone()
+                } else {
+                    let value = redact_sql(v, engine);
+                    if engine == Engine::Mssql { strip_database(&value) } else { value }
+                },
+            )
+        })
+        .collect()
 }
 
 fn redact_plan_expression(text: &str) -> String {
@@ -500,6 +698,16 @@ pub fn redact_plan(plan: &Plan) -> Plan {
             f.index_method = f.index_method.as_deref().map(|v| redact_strings(v, engine));
             f.aggregate_strategy = f.aggregate_strategy.as_deref().map(|v| redact_strings(v, engine));
             f.conditions = f.conditions.iter().map(|v| text(v, engine)).collect();
+            f.columns_without_statistics = f.columns_without_statistics.iter().map(|v| text(v, engine)).collect();
+            f.output_columns = f.output_columns.as_ref().map(|values| values.iter().map(|v| text(v, engine)).collect());
+            f.user_functions = f
+                .user_functions
+                .iter()
+                .map(|v| {
+                    let value = text(v, engine);
+                    if engine == Engine::Mssql { strip_parts(&value, 2) } else { value }
+                })
+                .collect();
             for c in &mut f.conversions {
                 c.expression = text(&c.expression, engine);
                 if let crate::PlanConversionIssue::Other(v) = &mut c.issue {
@@ -989,5 +1197,148 @@ mod tests {
         for masked in ["106 rows", "M106", "abc", "10M'", "'106M'"] {
             assert!(!is_measurement(masked), "{masked}");
         }
+    }
+
+    #[test]
+    fn endpoint_tokens_are_repeatable_and_never_merge_different_databases() {
+        use crate::{DatabaseIdentity, DatabaseLocation};
+        for location in [
+            DatabaseLocation::Server {
+                host: "private-endpoint.example".into(),
+                port: 5432,
+                instance: Some("private-instance".into()),
+            },
+            DatabaseLocation::Socket { directory: "/private/socket-directory".into(), port: 5432 },
+            DatabaseLocation::File { path: "/Users/private-person/database.sqlite".into() },
+            DatabaseLocation::Unknown,
+        ] {
+            let original = DatabaseIdentity {
+                engine: Engine::Postgres,
+                database: "catalog_label".into(),
+                location,
+                incarnation: Some("private-incarnation".into()),
+            };
+            let mut redacted = original.clone();
+            redact_identity(&mut redacted);
+            let once = redacted.clone();
+            redact_identity(&mut redacted);
+            assert_eq!(once, redacted);
+            assert!(once.comparison(&redacted).allows_comparison());
+            let encoded = serde_json::to_string(&redacted).unwrap();
+            for secret in
+                ["private-endpoint", "private-instance", "private-person", "socket-directory", "private-incarnation"]
+            {
+                assert!(!encoded.contains(secret));
+            }
+            let mut different = original;
+            different.incarnation = Some("another-incarnation".into());
+            redact_identity(&mut different);
+            assert!(!redacted.comparison(&different).allows_comparison());
+        }
+        let mut invalid = DatabaseIdentity::server(Engine::Postgres, "label", "", 0, None);
+        redact_identity(&mut invalid);
+        assert!(!invalid.comparison(&invalid).allows_comparison());
+    }
+
+    #[test]
+    fn sharing_keeps_public_deadlock_limits_without_private_collector_details() {
+        let mut snapshot: Snapshot =
+            serde_json::from_str(include_str!("../../../fixtures/postgres-demo.json")).unwrap();
+        for (engine, public_detail) in [
+            (Engine::Postgres, "server log"),
+            (Engine::Mysql, "most recent deadlock"),
+            (Engine::Mssql, "details omitted"),
+        ] {
+            snapshot.server.engine = engine;
+            snapshot.deadlocks = Some(crate::DeadlockReport {
+                note: Some("Collection failed on private-collector-endpoint".into()),
+                ..Default::default()
+            });
+            let shared = redact_snapshot(&snapshot);
+            let note = shared.deadlocks.as_ref().unwrap().note.as_deref().unwrap();
+            assert!(note.contains(public_detail));
+            assert!(!note.contains("private-collector-endpoint"));
+            assert_eq!(redact_snapshot(&shared).deadlocks.as_ref().unwrap().note.as_deref(), Some(note));
+            snapshot.deadlocks.as_mut().unwrap().note = None;
+            assert!(redact_snapshot(&snapshot).deadlocks.unwrap().note.is_none());
+        }
+    }
+
+    #[test]
+    fn shared_snapshots_scrub_catalog_literals_and_all_retained_endpoint_references() {
+        use crate::{BaselinePurpose, BaselineReference, CountBaseline, ScanReference};
+        let mut snapshot: Snapshot =
+            serde_json::from_str(include_str!("../../../fixtures/postgres-demo.json")).unwrap();
+        snapshot.bind_identity(crate::DatabaseIdentity::server(
+            Engine::Postgres,
+            &snapshot.server.database.clone(),
+            "private-endpoint-canary",
+            5432,
+            None,
+        ));
+        snapshot.ensure_measurement();
+        let reference = Some(ScanReference::of(&snapshot));
+        let measurement = snapshot.workload.as_ref().unwrap().measurement.clone();
+        snapshot.workload.as_mut().unwrap().history_inputs.push(BaselineReference {
+            purpose: BaselinePurpose::WorkloadTrend,
+            scan: reference.clone().unwrap(),
+            measurement: measurement.clone(),
+        });
+        snapshot.escalations_before =
+            Some(crate::EscalationBaseline { reference: reference.clone(), ..Default::default() });
+        snapshot.contention_before =
+            Some(crate::ContentionBaseline { reference: reference.clone(), ..Default::default() });
+        snapshot.evictions_before =
+            Some(CountBaseline { reference: reference.clone(), measurement, ..Default::default() });
+        snapshot.sizes_before = Some(crate::SizeBaseline { reference: reference.clone(), ..Default::default() });
+        snapshot.operations.sqlite = Some(crate::operations::SqliteFileHealth {
+            wal_bytes: Some(100.0),
+            before: Some(crate::operations::CounterReading { at: snapshot.taken_at.clone(), count: 50.0, reference }),
+        });
+        snapshot.indexes[0].filter = Some("tenant = 'literal-value-canary'".into());
+        snapshot.indexes[0].definition =
+            Some("CREATE INDEX ix ON public.orders (id) WHERE tenant = 'literal-value-canary'".into());
+        snapshot.columns[0].default = Some("'literal-value-canary'".into());
+        snapshot.tuning = Some(crate::TuningAdvice {
+            recommendations: vec![crate::TuningRecommendation {
+                script: Some("SELECT 'literal-value-canary'".into()),
+                reason: Some("Value 'literal-value-canary' was observed".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let shared = redact_snapshot(&snapshot);
+        let output = serde_json::to_string(&shared).unwrap();
+        assert!(!output.contains("private-endpoint-canary"));
+        assert!(!output.contains("literal-value-canary"));
+        assert_eq!(shared.server.database, snapshot.server.database, "database labels are intentional digest metadata");
+        assert_eq!(shared.evictions_before.as_ref().unwrap().count, snapshot.evictions_before.as_ref().unwrap().count);
+        assert_eq!(serde_json::to_value(&shared).unwrap(), serde_json::to_value(redact_snapshot(&shared)).unwrap());
+    }
+
+    #[test]
+    fn plan_facts_and_plugin_fix_sql_share_the_same_redaction_boundary() {
+        let mut report: crate::Report =
+            serde_json::from_str(include_str!("../../../fixtures/mssql-demo.report.json")).unwrap();
+        let plan = report.snapshot.workload.as_mut().unwrap().queries.iter_mut().find_map(|q| q.plan.as_mut()).unwrap();
+        let value = "[plan-database-canary].[dbo].[orders].[tenant] = 'literal-value-canary'";
+        plan.props.insert("PlanAffectingConvert".into(), value.into());
+        let facts = plan.root.facts.get_or_insert_default();
+        facts.output_columns = Some(vec![value.into()]);
+        facts.columns_without_statistics = vec![value.into()];
+        facts.user_functions = vec!["[plan-database-canary].[dbo].[function_name]".into()];
+        let redacted = serde_json::to_string(&redact_plan(plan)).unwrap();
+        assert!(!redacted.contains("plan-database-canary"));
+        assert!(!redacted.contains("literal-value-canary"));
+        let finding = &mut report.findings[0];
+        finding.title = "Value 'literal-value-canary'".into();
+        finding.fix = Some(crate::Fix {
+            summary: "Use the predicate".into(),
+            sql: Some("CREATE INDEX ix ON dbo.t (x) WHERE tenant = 'literal-value-canary'".into()),
+            cost: None,
+        });
+        assert!(
+            !serde_json::to_string(&redact_finding(finding, Engine::Mssql)).unwrap().contains("literal-value-canary")
+        );
     }
 }

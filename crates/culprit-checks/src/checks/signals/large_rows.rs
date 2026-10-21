@@ -14,7 +14,7 @@ pub fn large_rows_info() -> CheckInfo {
     }
 }
 
-check!(LargeRowsCheck: large_rows_info, large_rows, &[Evidence::Unknown]);
+check!(LargeRowsCheck: large_rows_info, large_rows, &[Evidence::Tables(crate::evidence::TableMeasure::RowSize)]);
 
 /// A row this big on average is mostly a payload, not a record.
 pub(super) const LARGE_ROW_BYTES: f64 = 16.0 * 1024.0;

@@ -16,7 +16,7 @@ pub fn stale_stats_info() -> CheckInfo {
     }
 }
 
-check!(StaleStatsCheck: stale_stats_info, stale_stats, &[Evidence::Unknown]);
+check!(StaleStatsCheck: stale_stats_info, stale_stats, &[Evidence::Statistics]);
 
 /// The metric counting the changes since the statistics were updated: SQL Server's modification counter and
 /// PostgreSQL's n_mod_since_analyze count changes (a row updated twice is two), not rows.

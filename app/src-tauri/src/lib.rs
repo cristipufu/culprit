@@ -120,9 +120,8 @@ fn add_discovered(ws: Ws, items: Vec<DiscoveredDatabase>) -> Result<Vec<Connecti
 }
 
 /// The UI never shows raw plan XML/JSON, and on busy databases it is most of a report's size; keep it on disk only.
-fn for_ui(report: Report) -> Report {
-    // Reports saved before plans were checked against the catalog: mark them too.
-    let mut report = culprit_engine::reading::for_reading(report);
+fn for_ui(mut report: Report) -> Report {
+    // Workspace scan/read paths have already run the full analysis and plan presentation pipeline.
     // Replay evidence stays with the saved report; the UI only needs the prepared view and its provenance.
     report.evidence = None;
     if let Some(workload) = report.snapshot.workload.as_mut() {

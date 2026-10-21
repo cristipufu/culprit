@@ -10,7 +10,18 @@ use culprit_core::{
 /// list of findings, index advice and deadlock patterns; `top_queries` is how many of the heaviest queries to list.
 pub fn digest(report: &Report, previous: Option<&Report>, top: usize, top_queries: usize) -> Digest {
     let baseline = previous.filter(|p| p.snapshot.report_comparison(&report.snapshot).allows_comparison()).map(|p| {
-        let findings = p.findings.iter().filter(|f| !f.inactive).map(|f| item(f, None)).collect::<Vec<_>>();
+        let findings = p
+            .findings
+            .iter()
+            .filter(|f| !f.inactive)
+            .map(|f| {
+                let mut entry = item(f, None);
+                if p.assessments.is_empty() && f.id.contains(['/', '\\']) {
+                    entry.check = None;
+                }
+                entry
+            })
+            .collect::<Vec<_>>();
         (p.snapshot.taken_at.clone(), findings)
     });
     build(report, baseline, top, top_queries)
@@ -51,6 +62,7 @@ fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: u
                         && f.verification_basis != culprit_core::VerificationBasis::CounterChange
                         && f.count.is_none()
                         && !report.findings.iter().any(|a| a.id == f.id)
+                        && absence_assessed(report, f)
                 })
                 .take(top)
                 .cloned()
@@ -103,6 +115,40 @@ fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: u
         index_advice: Some(index_advice(report, &active, top)),
         deadlocks: Some(deadlocks(report, previous_at.as_deref(), top)),
     }
+}
+
+fn absence_assessed(report: &Report, finding: &DigestFinding) -> bool {
+    // Older exports could use physical paths as ids. Their new private identifiers are not proof of a fix.
+    if finding.check.is_none() && finding.id.contains(['/', '\\']) {
+        return false;
+    }
+    let check = if let Some(check) = finding.check.as_deref() {
+        check
+    } else {
+        // Older digests retain only the stable id. Recover a check only when its registered prefix is unique;
+        // custom check ids and subjects can both contain colons, so splitting at the first colon is insufficient.
+        let registered: std::collections::BTreeSet<_> = report
+            .assessments
+            .iter()
+            .map(|a| a.check.as_str())
+            .chain(report.locked.iter().map(|l| l.check.id.as_str()))
+            .filter(|check| finding.id.strip_prefix(*check).is_some_and(|subject| subject.starts_with(':')))
+            .collect();
+        let mut matches = registered.into_iter();
+        match (matches.next(), matches.next()) {
+            (Some(check), None) => check,
+            (Some(_), Some(_)) => return false,
+            (None, _) => finding.id.split(':').next().unwrap_or(&finding.id),
+        }
+    };
+    report
+        .finding_absence_problem_with_baseline(
+            &finding.id,
+            check,
+            &finding.queries.iter().map(String::as_str).collect::<Vec<_>>(),
+            finding.plan_baseline.as_ref(),
+        )
+        .is_none()
 }
 
 /// A statement this long is cut: enough to recognise it in a chat message, where the label says what it does.
@@ -454,6 +500,9 @@ fn counted_since(now: f64, before: f64) -> f64 {
 
 fn item(f: &Finding, was: Option<Severity>) -> DigestFinding {
     DigestFinding {
+        plan_baseline: f.facts.plan_baseline.clone(),
+        check: Some(f.check.clone()),
+        queries: f.queries.iter().map(|q| q.id.clone()).collect(),
         id: f.id.clone(),
         title: f.title.clone(),
         severity: f.severity,
@@ -797,13 +846,16 @@ mod tests {
 
     #[test]
     fn a_digest_reports_what_is_new_fixed_and_worse_since_the_previous_one() {
-        let now = report();
+        let mut now = report();
         let mut before = now.clone();
         before.snapshot.taken_at = "2026-10-10T06:00:00Z".into();
         let gone = before.findings.remove(0);
         let mut old = now.findings[1].clone();
         old.id = "unused-index:shop.old_table".into();
         before.findings.push(old.clone());
+        let assessed = now.assessments.iter_mut().find(|a| a.check == "unused-index").unwrap();
+        assessed.status = culprit_core::CheckStatus::Assessed;
+        assessed.reason = None;
         // A finding that is medium or high now was low before.
         let rising = before.findings.iter().position(|f| f.is_actionable() && f.severity > Severity::Low).expect("one");
         before.findings[rising].severity = Severity::Low;
@@ -816,5 +868,47 @@ mod tests {
         assert_eq!(changes.worse.len(), 1);
         assert_eq!(changes.worse[0].id, rising);
         assert_eq!(changes.worse[0].was, Some(Severity::Low));
+    }
+
+    #[test]
+    fn saved_digests_keep_check_identity_and_legacy_ambiguous_ids_never_guess_it() {
+        let mut before = report();
+        before.findings.truncate(1);
+        let f = &mut before.findings[0];
+        f.id = "team:policy:one".into();
+        f.check = "team:policy".into();
+        f.verification_basis = culprit_core::VerificationBasis::Rescan;
+        let previous = digest(&before, None, 100, 0);
+        assert_eq!(previous.findings[0].check.as_deref(), Some("team:policy"));
+        let mut legacy = previous.clone();
+        for f in &mut legacy.findings {
+            f.check = None;
+        }
+        let legacy: Digest = serde_json::from_value(serde_json::to_value(legacy).unwrap()).unwrap();
+        let mut after = before.clone();
+        after.findings.clear();
+        after.assessments = vec![
+            culprit_core::CheckAssessment {
+                check: "team".into(),
+                title: String::new(),
+                status: culprit_core::CheckStatus::Assessed,
+                reason: None,
+                assessed_queries: Vec::new(),
+            },
+            culprit_core::CheckAssessment {
+                check: "team:policy".into(),
+                title: String::new(),
+                status: culprit_core::CheckStatus::Unavailable,
+                reason: Some("The policy source was unavailable.".into()),
+                assessed_queries: Vec::new(),
+            },
+        ];
+        for baseline in [&previous, &legacy] {
+            assert!(digest_since(&after, baseline, 100, 0).since.unwrap().fixed.is_empty());
+        }
+        after.assessments[1].status = culprit_core::CheckStatus::Assessed;
+        after.assessments[1].reason = None;
+        assert_eq!(digest_since(&after, &previous, 100, 0).since.unwrap().fixed.len(), 1);
+        assert!(digest_since(&after, &legacy, 100, 0).since.unwrap().fixed.is_empty());
     }
 }

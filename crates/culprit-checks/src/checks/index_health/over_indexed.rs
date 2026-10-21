@@ -15,7 +15,7 @@ pub fn over_indexed_info() -> CheckInfo {
     }
 }
 
-check!(OverIndexedCheck: over_indexed_info, over_indexed, &[Evidence::IndexCatalog, Evidence::Unknown]);
+check!(OverIndexedCheck: over_indexed_info, over_indexed, &[Evidence::IndexCatalog, Evidence::Tables(crate::evidence::TableMeasure::Writes)]);
 
 pub(crate) const MANY_INDEXES: usize = 7;
 

@@ -2,13 +2,28 @@
   "assessments": [
     {
       "check": "missing-index",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Missing indexes"
     },
     {
+      "assessed_queries": [
+        "7",
+        "9",
+        "10",
+        "8",
+        "6",
+        "5",
+        "35",
+        "138",
+        "143",
+        "161",
+        "249",
+        "255",
+        "263"
+      ],
       "check": "filtered-scan",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "Some statements lack the measurements this check needs; only measured statements were assessed.",
       "status": "insufficient-evidence",
       "title": "Scans an index would avoid"
     },
@@ -20,31 +35,31 @@
     },
     {
       "check": "duplicate-index",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Duplicate and redundant indexes"
     },
     {
       "check": "unindexed-fk",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Foreign keys without an index"
     },
     {
       "check": "overlapping-index",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Overlapping indexes"
     },
     {
       "check": "over-indexed",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Many indexes on write-heavy tables"
     },
     {
       "check": "tuning-advice",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "This scan did not record the required source's collection outcome.",
       "status": "insufficient-evidence",
       "title": "SQL Server's own tuning advice"
     },
@@ -85,9 +100,13 @@
       "title": "Plan insights"
     },
     {
+      "assessed_queries": [
+        "8",
+        "146"
+      ],
       "check": "plan-regression",
-      "reason": null,
-      "status": "assessed",
+      "reason": "Some statements lack the measurements this check needs; only measured statements were assessed.",
+      "status": "insufficient-evidence",
       "title": "Plan regressions"
     },
     {
@@ -97,12 +116,41 @@
       "title": "Queries that got slower"
     },
     {
+      "assessed_queries": [
+        "7",
+        "9",
+        "10",
+        "8",
+        "6",
+        "5",
+        "146",
+        "246",
+        "249"
+      ],
       "check": "unstable-query",
-      "reason": "This scan did not record the measurements this check needs.",
+      "reason": "Some statements lack the measurements this check needs; only measured statements were assessed.",
       "status": "insufficient-evidence",
       "title": "Unstable queries"
     },
     {
+      "assessed_queries": [
+        "7",
+        "9",
+        "10",
+        "8",
+        "6",
+        "5",
+        "35",
+        "146",
+        "138",
+        "143",
+        "161",
+        "246",
+        "249",
+        "255",
+        "263",
+        "264"
+      ],
       "check": "parameter-sensitive",
       "reason": null,
       "status": "assessed",
@@ -110,32 +158,32 @@
     },
     {
       "check": "stale-stats",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Stale statistics"
     },
     {
       "check": "heap-table",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Large tables without a clustered index"
     },
     {
       "check": "config",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Configuration"
     },
     {
       "check": "deadlocks",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Deadlocks"
     },
     {
       "check": "memory-grant",
-      "reason": null,
-      "status": "assessed",
+      "reason": "This scan did not record the measurements this check needs.",
+      "status": "insufficient-evidence",
       "title": "Queries that reserve far more memory than they use"
     },
     {
@@ -163,9 +211,12 @@
       "title": "A long open transaction holds cleanup back"
     },
     {
+      "assessed_queries": [
+        "264"
+      ],
       "check": "network-wait",
-      "reason": null,
-      "status": "assessed",
+      "reason": "Some statements lack the measurements this check needs; only measured statements were assessed.",
+      "status": "insufficient-evidence",
       "title": "Results the application reads slowly"
     },
     {
@@ -187,8 +238,24 @@
       "title": "Identity and sequence allocation limits"
     },
     {
+      "assessed_queries": [
+        "7",
+        "9",
+        "10",
+        "8",
+        "6",
+        "5",
+        "138",
+        "143",
+        "161",
+        "246",
+        "249",
+        "255",
+        "263",
+        "264"
+      ],
       "check": "failing-query",
-      "reason": "This scan did not record the measurements this check needs.",
+      "reason": "Some statements lack the measurements this check needs; only measured statements were assessed.",
       "status": "findings",
       "title": "Queries that fail or time out"
     },
@@ -199,18 +266,47 @@
       "title": "Queries that spend their time being planned"
     },
     {
+      "assessed_queries": [
+        "138",
+        "161",
+        "255",
+        "263"
+      ],
       "check": "log-volume",
-      "reason": "This scan did not record the measurements this check needs.",
+      "reason": "Some statements lack the measurements this check needs; only measured statements were assessed.",
       "status": "findings",
       "title": "Writes that produce most of the log"
     },
     {
+      "assessed_queries": [
+        "138",
+        "143",
+        "161"
+      ],
       "check": "lock-time",
-      "reason": null,
-      "status": "assessed",
+      "reason": "Some statements lack the measurements this check needs; only measured statements were assessed.",
+      "status": "insufficient-evidence",
       "title": "Queries that spend their time waiting for locks"
     },
     {
+      "assessed_queries": [
+        "7",
+        "9",
+        "10",
+        "8",
+        "6",
+        "5",
+        "35",
+        "146",
+        "138",
+        "143",
+        "161",
+        "246",
+        "249",
+        "255",
+        "263",
+        "264"
+      ],
       "check": "big-result",
       "reason": null,
       "status": "findings",
@@ -218,31 +314,31 @@
     },
     {
       "check": "hot-rows",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "This scan did not record the required source's collection outcome.",
       "status": "findings",
       "title": "Rows that many sessions fight over"
     },
     {
       "check": "lock-escalations",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "This scan did not record the required source's collection outcome.",
       "status": "findings",
       "title": "Statements that lock a whole table"
     },
     {
       "check": "last-page-insert",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "This scan did not record the required source's collection outcome.",
       "status": "findings",
       "title": "Inserts that queue for the last page"
     },
     {
       "check": "untrusted-constraint",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "This scan did not record the required source's collection outcome.",
       "status": "findings",
       "title": "Constraints the optimizer can't rely on"
     },
     {
       "check": "large-rows",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "Some tables lack the measurements this check needs.",
       "status": "insufficient-evidence",
       "title": "Tables whose rows are mostly large values"
     },
@@ -266,7 +362,7 @@
     },
     {
       "check": "last-actual-plans",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Actual plans without re-running queries"
     }
@@ -7097,7 +7193,7 @@
             "log_share": null,
             "plan_ms": null,
             "plans": null,
-            "row_bytes": null,
+            "row_bytes": 44.0,
             "top_error": null,
             "warnings": null
           },
@@ -7604,7 +7700,22 @@
           ]
         },
         {
-          "costs": null,
+          "costs": {
+            "aborted": null,
+            "aborted_mean_ms": null,
+            "compile_history": null,
+            "failed": null,
+            "jit_functions": null,
+            "jit_ms": null,
+            "log_bytes": null,
+            "log_full_pages": null,
+            "log_share": null,
+            "plan_ms": null,
+            "plans": null,
+            "row_bytes": 43.0,
+            "top_error": null,
+            "warnings": null
+          },
           "cpu_time_ms": 0.337,
           "executions": 2.0,
           "first_seen": "2026-10-11T11:54:28Z",

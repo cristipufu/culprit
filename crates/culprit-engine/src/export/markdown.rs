@@ -284,9 +284,18 @@ pub(crate) fn metric_text(m: &Metric) -> String {
 /// One finding in full for a digest (a chat thread, a ticket): the same pieces as [`finding_markdown`], always
 /// redacted, as data for the consumer to lay out.
 pub fn finding_detail(report: &Report, finding: &Finding) -> culprit_core::DigestDetail {
+    let shared = super::shared_report(report);
+    detail(report, super::shareable(report, &shared, finding))
+}
+
+/// Digest assembly already holds a report checked from redacted input; do not repeat analysis per finding.
+pub(crate) fn finding_detail_shared(report: &Report, finding: &Finding) -> culprit_core::DigestDetail {
+    detail(report, super::shareable(report, report, finding))
+}
+
+fn detail(report: &Report, f: Finding) -> culprit_core::DigestDetail {
     let s = &report.snapshot;
     let engine = s.server.engine;
-    let f = culprit_core::redact::redact_finding(finding, engine);
     let queries = s
         .workload
         .as_ref()

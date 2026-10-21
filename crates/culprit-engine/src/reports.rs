@@ -11,6 +11,26 @@ use crate::trends::{self, Counters};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+mod storage;
+
+/// The prepared report for clients. Retained replay/collection copies stay in the report store.
+pub fn display(report: &Report) -> impl Serialize + '_ {
+    #[derive(Serialize)]
+    struct View<'a> {
+        snapshot: &'a culprit_core::Snapshot,
+        findings: &'a [culprit_core::Finding],
+        locked: &'a [culprit_core::LockedCheck],
+        summary: &'a culprit_core::Summary,
+        assessments: &'a [culprit_core::CheckAssessment],
+        #[serde(skip_serializing_if = "<[culprit_core::RefinementDecision]>::is_empty")]
+        refinement: &'a [culprit_core::RefinementDecision],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provenance: &'a Option<culprit_core::AnalysisProvenance>,
+    }
+    let Report { snapshot, findings, locked, summary, assessments, refinement, provenance, evidence: _ } = report;
+    View { snapshot, findings, locked, summary, assessments, refinement, provenance }
+}
+
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
 #[ts(export)]
 pub struct ReportSummary {
@@ -63,7 +83,7 @@ fn summary_of(report: &Report) -> ReportSummary {
 pub fn save(dir: &Path, report: &Report) -> Result<()> {
     private_fs::create_dir(dir).map_err(|e| Error::internal(format!("{}: {e}", dir.display())))?;
     let path = dir.join(format!("{}.json", report.snapshot.id));
-    let json = serde_json::to_vec(report).map_err(|e| Error::internal(e.to_string()))?;
+    let json = storage::encode(report).map_err(|e| Error::internal(e.to_string()))?;
     write_atomic(&path, &json)?;
     if let Some(counters) = Counters::of(report) {
         let json = serde_json::to_vec(&counters).map_err(|e| Error::internal(e.to_string()))?;
@@ -71,6 +91,7 @@ pub fn save(dir: &Path, report: &Report) -> Result<()> {
     }
     let summary = summary_of(report);
     let json = serde_json::to_vec_pretty(&summary).map_err(|e| Error::internal(e.to_string()))?;
+    write_atomic(&dir.join(format!("{}.summary.json", report.snapshot.id)), &json)?;
     write_atomic(&summary_path(dir, None), &json)?;
     if let Some(minutes) = summary.window() {
         write_atomic(&summary_path(dir, Some(minutes)), &json)?;
@@ -98,6 +119,7 @@ fn is_report_file(path: &Path) -> bool {
         && name.starts_with(|c: char| c.is_ascii_digit())
         && !name.ends_with(COUNTERS_SUFFIX)
         && !name.ends_with(crate::history::EVENTS_SUFFIX)
+        && !name.ends_with(".summary.json")
 }
 
 /// Snapshot ids of every saved report, oldest first.
@@ -155,8 +177,9 @@ pub fn counters_history(dir: &Path, now: &str) -> Vec<Counters> {
 }
 
 /// A saved scan read again with what the scans saved beside it in `dir` say: pg_stat_statements' evictions against the
-/// oldest scan a day or more back ([`evictions_baseline`]), the baseline a scan taken now would use. Nothing changes
-/// without one, nor in a directory of no saved scans. Writes nothing.
+/// oldest scan a day or more back ([`evictions_baseline`]), the baseline a scan taken now would use. A retained
+/// scan-time baseline remains evidence when its original report was pruned; absence of that file does not erase
+/// the measurements stored in this scan. Writes nothing.
 pub fn rebase_on_scans(dir: &Path, snapshot: &mut culprit_core::Snapshot) {
     snapshot.ensure_measurement();
     if let Some(baseline) = evictions_baseline(dir, snapshot) {
@@ -206,10 +229,17 @@ pub fn rebuild_timeline(dir: &Path, snapshot: &mut culprit_core::Snapshot) {
     let evictions = trends::evictions(snapshot);
     let (database, taken_at) = (snapshot.server.database.clone(), snapshot.taken_at.clone());
     let Some(workload) = snapshot.workload.as_mut().filter(|w| {
-        w.is_cumulative() && w.timeline.as_ref().is_some_and(|t| t.source == culprit_core::TimelineSource::Scans)
+        w.is_cumulative() && w.timeline.as_ref().is_none_or(|t| t.source == culprit_core::TimelineSource::Scans)
     }) else {
         return;
     };
+    if workload.timeline.is_none() {
+        // No captured timeline backs these derived references or query buckets.
+        workload.history_inputs.retain(|r| r.purpose != culprit_core::BaselinePurpose::WorkloadTrend);
+        for q in &mut workload.queries {
+            q.trend = None;
+        }
+    }
     let Some(now) = trends::epoch(&taken_at) else { return };
     let oldest = now - trends::HISTORY_DAYS * 86_400.0;
     let history: Vec<Counters> = report_ids(dir)
@@ -228,6 +258,8 @@ pub fn rebuild_timeline(dir: &Path, snapshot: &mut culprit_core::Snapshot) {
     }
     let saved = workload.timeline.take();
     let trends: Vec<Option<culprit_core::QueryTrend>> = workload.queries.iter_mut().map(|q| q.trend.take()).collect();
+    // from_scans replaces WorkloadTrend references only after finding comparable points. If it cannot rebuild,
+    // the captured timeline, buckets and their retained references still describe the original observation.
     trends::from_scans(workload, &database, &taken_at, evictions, &history);
     if workload.timeline.is_none() {
         workload.timeline = saved;
@@ -293,7 +325,7 @@ pub fn latest(dir: &Path, window_minutes: Option<u32>) -> Result<Option<Report>>
 
 pub fn load(path: &Path) -> Result<Report> {
     let bytes = fs::read(path).map_err(|e| Error::not_found(format!("{}: {e}", path.display())))?;
-    serde_json::from_slice(&bytes).map_err(|e| {
+    storage::decode(&bytes).map_err(|e| {
         // `latest.json` is the one-line summary of the newest scan, not the scan itself.
         if serde_json::from_slice::<ReportSummary>(&bytes).is_ok() {
             return Error::invalid(format!("{} is a scan summary, not a report", path.display())).with_hint(
@@ -308,9 +340,9 @@ pub fn load(path: &Path) -> Result<Report> {
 /// Analysis replay separately reads retained original input through `load_analysis_input`.
 pub fn load_snapshot(path: &Path) -> Result<culprit_core::Snapshot> {
     let bytes = fs::read(path).map_err(|e| Error::not_found(format!("{}: {e}", path.display())))?;
-    let value: serde_json::Value =
+    let mut value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
-    let snapshot = value.get("snapshot").cloned().unwrap_or(value);
+    let snapshot = if value.get("snapshot").is_some() { value["snapshot"].take() } else { value };
     serde_json::from_value(snapshot)
         .map_err(|e| Error::invalid(format!("{} is not a Culprit snapshot or report: {e}", path.display())))
 }
@@ -322,8 +354,12 @@ pub(crate) fn load_analysis_input(path: &Path) -> Result<crate::analysis::Input>
     let mut value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
     if value.get("snapshot").is_some() && value.get("findings").is_some() && value.get("summary").is_some() {
-        return serde_json::from_value::<Report>(value)
-            .map(crate::analysis::Input::from)
+        return storage::expand(&mut value)
+            .and_then(|()| serde_json::from_value::<Report>(value))
+            .map(|mut report| {
+                storage::share_native_text(&mut report);
+                crate::analysis::Input::from(report)
+            })
             .map_err(|e| Error::invalid(format!("{} is not a Culprit report: {e}", path.display())));
     }
     let wrapped = value.get("snapshot").is_some();
@@ -345,11 +381,58 @@ pub fn list(dir: &Path) -> Result<Vec<ReportSummary>> {
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| is_report_file(p))
-        .filter_map(|p| load(&p).ok())
-        .map(|r| summary_of(&r))
+        .filter_map(|p| {
+            let id = p.file_stem()?.to_str()?;
+            let sidecar = p.with_file_name(format!("{id}.summary.json"));
+            fs::read(&sidecar)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<ReportSummary>(&b).ok())
+                .filter(|s| s.id == id)
+                .or_else(|| summary_from_file(&p))
+        })
         .collect();
     out.sort_by(|a, b| b.taken_at.cmp(&a.taken_at));
     Ok(out)
+}
+
+/// Legacy reports have no summary sidecar. Deserialize only the few fields a history row needs, skipping plans,
+/// findings and retained evidence directly in the JSON parser. Listing remains read-only.
+fn summary_from_file(path: &Path) -> Option<ReportSummary> {
+    #[derive(Deserialize)]
+    struct Header {
+        snapshot: Picture,
+        summary: Headline,
+    }
+    #[derive(Deserialize)]
+    struct Picture {
+        id: String,
+        taken_at: String,
+        options: Option<culprit_core::SnapshotOptions>,
+        server: Product,
+    }
+    #[derive(Deserialize)]
+    struct Product {
+        product: String,
+    }
+    #[derive(Deserialize)]
+    struct Headline {
+        opportunities: u32,
+        headline: String,
+        #[serde(default)]
+        no_workload: Option<String>,
+    }
+    let reader = std::io::BufReader::new(fs::File::open(path).ok()?);
+    let h: Header = serde_json::from_reader(reader).ok()?;
+    Some(ReportSummary {
+        id: h.snapshot.id,
+        taken_at: h.snapshot.taken_at,
+        opportunities: h.summary.opportunities,
+        headline: h.summary.headline,
+        window_days: h.snapshot.options.as_ref().filter(|o| o.window_minutes.is_none()).map(|o| o.window_days),
+        window_minutes: h.snapshot.options.as_ref().map(|o| o.window_in_minutes()),
+        product: Some(h.snapshot.server.product),
+        no_workload: h.summary.no_workload,
+    })
 }
 
 #[cfg(test)]
@@ -364,6 +447,28 @@ mod tests {
         report.snapshot.id = id.into();
         report.snapshot.options = Some(SnapshotOptions::default().with_window_minutes(window_minutes));
         report
+    }
+
+    #[test]
+    fn history_rows_use_sidecars_or_stream_only_the_legacy_header() {
+        let dir = std::env::temp_dir().join(format!("culprit-summary-header-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let report = fixture_report("20261021T100000.000Z", 60);
+        save(&dir, &report).unwrap();
+        assert_eq!(report_ids(&dir), vec![report.snapshot.id.clone()]);
+        let path = dir.join(format!("{}.json", report.snapshot.id));
+        let header = list(&dir).unwrap();
+        // No full report deserialization is needed for a history row, even without the new sidecar.
+        let mut value = serde_json::to_value(display(&report)).unwrap();
+        value["findings"] = serde_json::json!("Not a typed finding array");
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(list(&dir).unwrap()[0].id, header[0].id);
+        fs::remove_file(dir.join(format!("{}.summary.json", report.snapshot.id))).unwrap();
+        let legacy = list(&dir).unwrap();
+        assert_eq!(legacy[0].id, header[0].id);
+        assert_eq!(legacy[0].headline, header[0].headline);
+        assert_eq!(legacy[0].window(), Some(60));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -93,6 +93,50 @@ fn redacted_exports_and_digest_details_drop_values_quoted_in_prose() {
     assert!(detail.queries[0].stats.contains("of database time"));
 }
 
+#[test]
+fn shared_fixes_keep_generated_sql_constants_and_mask_unrechecked_plugin_values() {
+    let report: Report = serde_json::from_str(include_str!("../../../../fixtures/mssql-demo.report.json")).unwrap();
+    let finding = report.findings.iter().find(|f| f.id == "failing-query:246").unwrap();
+    let shared = shared_report(&report);
+    let checked = shared.findings.iter().find(|f| f.id == finding.id).unwrap();
+    let expected = checked.fix.as_ref().unwrap().sql.as_ref().unwrap();
+    assert!(expected.contains("severity >= 11") && expected.contains("SELECT 1"));
+    let exported = shareable(&report, &shared, finding);
+    assert_eq!(exported.fix.as_ref().unwrap().sql.as_ref(), Some(expected));
+    assert_eq!(finding_detail(&report, finding).fix.unwrap().sql.as_ref(), Some(expected));
+    assert_eq!(finding_detail_shared(&shared, checked).fix.unwrap().sql.as_ref(), Some(expected));
+    assert!(finding_markdown(&report, finding, &ExportOptions::default()).contains("severity >= 11"));
+
+    let mut plugin = finding.clone();
+    plugin.id = "external-check:orders".into();
+    plugin.check = "external-check".into();
+    plugin.fix.as_mut().unwrap().sql = Some("SELECT 'private-plugin-value', 424242".into());
+    for output in [
+        serde_json::to_string(&shareable(&report, &shared, &plugin)).unwrap(),
+        serde_json::to_string(&finding_detail(&report, &plugin)).unwrap(),
+        finding_markdown(&report, &plugin, &ExportOptions::default()),
+        finding_html(&report, &plugin, &ExportOptions::default()),
+    ] {
+        assert!(!output.contains("private-plugin-value") && !output.contains("424242"));
+    }
+}
+
+#[test]
+fn shared_findings_explain_deadlock_collection_limits_without_exposing_private_notes() {
+    for (fixture, expected) in [
+        (include_str!("../../../../fixtures/mariadb-demo.report.json"), "innodb_print_all_deadlocks"),
+        (include_str!("../../../../fixtures/pg-demo.report.json"), "server log"),
+    ] {
+        let mut report: Report = serde_json::from_str(fixture).unwrap();
+        report.snapshot.deadlocks.as_mut().unwrap().note = Some("private-collector-endpoint".into());
+        let shared = shared_report(&report);
+        let finding = shared.findings.iter().find(|f| f.check == "deadlocks").unwrap();
+        let markdown = finding_markdown(&shared, finding, &ExportOptions::default());
+        assert!(markdown.contains(expected), "{markdown}");
+        assert!(!markdown.contains("private-collector-endpoint"));
+    }
+}
+
 /// The demo's snapshot with values planted everywhere data can reach a scan: in statements, in plan predicates, and
 /// in the values plans were compiled for, one of them holding a backtick and a quote to break naive parsing.
 fn report_with_planted_values() -> Report {

@@ -14,7 +14,7 @@ pub fn last_page_insert_info() -> CheckInfo {
     }
 }
 
-check!(LastPageInsertCheck: last_page_insert_info, last_page_insert, &[Evidence::Unknown]);
+check!(LastPageInsertCheck: last_page_insert_info, last_page_insert, &[Evidence::IndexCatalog, Evidence::Source("index contention")]);
 
 pub fn last_page_insert(snapshot: &Snapshot) -> Vec<Finding> {
     snapshot

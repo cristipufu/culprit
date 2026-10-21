@@ -111,14 +111,21 @@ pub fn compare_reports(before: &Report, after: &Report, ids: &[String]) -> Verif
                 before: Some(was.impact.label.clone()), after: None,
                 note: Some("This observation uses cumulative counters. A reset, removed index or unavailable counter can make it disappear without verifying a fix. Compare new counts and waits under representative load.".into()),
             },
-            (Some(was), None) => match locked(after, &was) {
+            (Some(was), None) if before.assessments.is_empty() && was.id.contains(['/', '\\']) => VerifiedFinding {
+                id: id.clone(), title: was.title.clone(), status: VerifyStatus::Unknown,
+                before: Some(was.impact.label.clone()), after: None,
+                note: Some("This older report used a path in the finding identifier. A private replacement identifier does not verify a fix; compare a fresh baseline.".into()),
+            },
+            (Some(was), None) => match after.finding_absence_problem_with_baseline(
+                &was.id, &was.check, &was.queries.iter().map(|q| q.id.as_str()).collect::<Vec<_>>(), was.facts.plan_baseline.as_ref()
+            ) {
                 Some(missing) => VerifiedFinding {
                     id: id.clone(),
                     title: was.title.clone(),
                     status: VerifyStatus::Unknown,
                     before: Some(was.impact.label.clone()),
                     after: None,
-                    note: Some(format!("The check couldn't run in the new scan ({missing}), so this can't be confirmed.")),
+                    note: Some(format!("The new scan cannot establish that this is fixed. {missing}")),
                 },
                 None => VerifiedFinding {
                     id: id.clone(),
@@ -180,13 +187,6 @@ pub fn compare_reports(before: &Report, after: &Report, ids: &[String]) -> Verif
         findings,
         new_findings,
     }
-}
-
-/// The checks that couldn't run for this finding in `report`, by capability: "Query Store".
-fn locked(report: &Report, finding: &Finding) -> Option<String> {
-    let lock = report.locked.iter().find(|l| l.check.id == finding.check)?;
-    let names: Vec<String> = lock.missing.iter().map(|c| c.label().to_string()).collect();
-    Some(if names.is_empty() { "a capability is missing".into() } else { format!("needs {}", format::list(&names)) })
 }
 
 fn still_present_note(was: &Finding, now: &Finding, after: &Report) -> Option<String> {
@@ -271,7 +271,44 @@ mod counter_verification_tests {
             assert_eq!(result.findings[0].status, VerifyStatus::Unknown, "{engine:?}");
             // A schema change with normal rescan evidence can still be confirmed gone.
             before.findings[0].verification_basis = crate::VerificationBasis::Rescan;
+            let check = &before.findings[0].check;
+            let assessment = after.assessments.iter_mut().find(|a| &a.check == check).unwrap();
+            assessment.status = crate::CheckStatus::Assessed;
+            assessment.reason = None;
             assert_eq!(compare_reports(&before, &after, &[]).findings[0].status, VerifyStatus::Fixed);
         }
+    }
+
+    #[test]
+    fn incomplete_or_unregistered_checks_do_not_verify_absence_even_with_other_positive_findings() {
+        let mut before: Report =
+            serde_json::from_str(include_str!("../../../fixtures/mssql-demo.report.json")).unwrap();
+        before.findings.truncate(1);
+        let finding = &mut before.findings[0];
+        finding.verification_basis = crate::VerificationBasis::Rescan;
+        let check = finding.check.clone();
+        let mut after = before.clone();
+        after.findings.clear();
+        for status in
+            [crate::CheckStatus::Unavailable, crate::CheckStatus::InsufficientEvidence, crate::CheckStatus::Findings]
+        {
+            let assessment = after.assessments.iter_mut().find(|a| a.check == check).unwrap();
+            assessment.status = status;
+            assessment.reason = Some("Only part of the required source was collected.".into());
+            // A global source failure retains no per-query coverage, as the pipeline's evidence evaluator records.
+            assessment.assessed_queries.clear();
+            assert_eq!(compare_reports(&before, &after, &[]).findings[0].status, VerifyStatus::Unknown);
+        }
+        after.assessments.retain(|a| a.check != check);
+        assert_eq!(compare_reports(&before, &after, &[]).findings[0].status, VerifyStatus::Unknown);
+        // Positive evidence of inapplicability (e.g. the last foreign key was dropped) can establish absence.
+        after.assessments.push(crate::CheckAssessment {
+            check,
+            title: String::new(),
+            status: crate::CheckStatus::NotApplicable,
+            reason: Some("The complete catalog contains no such objects.".into()),
+            assessed_queries: Vec::new(),
+        });
+        assert_eq!(compare_reports(&before, &after, &[]).findings[0].status, VerifyStatus::Fixed);
     }
 }

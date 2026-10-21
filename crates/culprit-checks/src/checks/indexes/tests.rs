@@ -1,6 +1,54 @@
 use super::*;
 
 #[test]
+fn hiding_filter_literals_preserves_equality_and_statement_coverage() {
+    let mut s: Snapshot = serde_json::from_str(include_str!("../../../../../fixtures/mssql-demo.json")).unwrap();
+    let mut template = s.indexes[0].clone();
+    template.schema = "shop".into();
+    template.table = "orders".into();
+    template.columns = vec!["tenant".into()];
+    template.is_primary_key = false;
+    template.is_unique = false;
+    template.is_clustered = false;
+    template.is_disabled = false;
+    s.indexes.clear();
+    let filters = ["tenant = 'private-alpha'", "tenant = 'private-beta'", "tenant = 'private-alpha'", "is_deleted = 0"];
+    for (i, filter) in filters.iter().enumerate() {
+        let mut index = template.clone();
+        index.name = format!("ix_{i}");
+        index.filter = Some((*filter).into());
+        s.indexes.push(index);
+    }
+    let w = s.workload.as_mut().unwrap();
+    let query = w.queries[0].clone();
+    w.queries = ["tenant = 'private-alpha'", "tenant = 'private-beta'", "is_deleted = 0", "is_deleted = @p"]
+        .into_iter()
+        .enumerate()
+        .map(|(i, condition)| {
+            let mut q = query.clone();
+            q.id = i.to_string();
+            q.text = format!("SELECT id FROM shop.orders WHERE {condition}");
+            q
+        })
+        .collect();
+    let shared = culprit_core::redact::redact_snapshot(&s);
+    assert_eq!(
+        shared.indexes[0].filter, shared.indexes[1].filter,
+        "textual placeholders alone cannot prove equivalence"
+    );
+    assert!(!shared.indexes[0].same_filter(&shared.indexes[1]));
+    assert!(shared.indexes[0].same_filter(&shared.indexes[2]));
+    for (original, hidden) in s.indexes.iter().zip(&shared.indexes) {
+        for (query, hidden_query) in s.queries().iter().zip(shared.queries()) {
+            assert_eq!(fits_index_filter(original, &[query]), fits_index_filter(hidden, &[hidden_query]));
+        }
+    }
+    assert_eq!(redundant_indexes(&s).len(), redundant_indexes(&shared).len());
+    let output = serde_json::to_string(&shared).unwrap();
+    assert!(!output.contains("private-alpha") && !output.contains("private-beta"));
+}
+
+#[test]
 fn filters_made_of_literal_equalities() {
     let pairs =
         |f: &str| filter_equalities(f).map(|v| v.into_iter().map(|(c, l)| format!("{c}={l}")).collect::<Vec<_>>());

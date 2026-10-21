@@ -282,7 +282,6 @@ fn digest(r: &Rec, has_cpu: bool) -> Digest {
             waits: r
                 .number("lock_ps")
                 .map(|p| p / PICOS_PER_MS)
-                .filter(|ms| *ms > 0.0)
                 .map(|ms| {
                     vec![WaitStat {
                         category: "Lock".into(),
@@ -530,7 +529,7 @@ async fn attach_plans(connector: &Connector, database: &str, queries: &mut [Dige
 fn sample_plan(json: &str, sample: &str, database: &str, digest_text: &str) -> Result<Plan> {
     let plan = plan_json::parse(json, PlanKind::Estimated, Some(sample), Some(database))?;
     let mut clean = culprit_core::redact::redact_plan(&plan);
-    clean.raw = plan.raw.as_deref().map(|raw| culprit_core::redact::redact_native(raw, Engine::Mysql));
+    clean.raw = plan.raw.as_deref().map(|raw| culprit_core::redact::redact_native(raw, Engine::Mysql).into());
     clean.statement = Some(digest_text.to_string());
     if culprit_core::sql::has_limit(digest_text, Engine::Mysql)
         && culprit_core::sql::limit_count(digest_text, Engine::Mysql).is_none()

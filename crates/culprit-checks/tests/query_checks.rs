@@ -437,6 +437,7 @@ fn an_unstable_insert_says_what_its_foreign_keys_lock() {
     // A unique key on the columns it sets: another transaction inserting the same order and product holds it.
     let pkey = s.indexes.iter().find(|i| i.name == "order_items_pkey").cloned().expect("demo index");
     s.indexes.push(culprit_core::IndexStat {
+        filter_facts: None,
         name: "order_items_order_product_key".into(),
         columns: vec!["order_id".into(), "product_id".into()],
         is_primary_key: false,
@@ -1845,4 +1846,77 @@ fn frequent_empty_results_do_not_establish_a_timer_or_multiple_pollers() {
     assert!(f.summary.contains("request-driven checks"), "{}", f.summary);
     assert!(!f.summary.contains("the app is polling") && !f.summary.contains("every instance"));
     assert!(f.fix.as_ref().unwrap().summary.contains("Check the caller first"));
+}
+
+#[test]
+fn a_single_recovered_plan_verifies_against_the_retained_baseline() {
+    use culprit_core::{SourceOutcome, SourceState, VerifyStatus};
+    let before = analyze(with_plans(vec![
+        plan("8", 200.0, 9.0, "2026-10-11T07:44:00Z", "2026-10-11T10:44:00Z"),
+        plan("47", 100.0, 60.0, "2026-10-11T10:46:00Z", "2026-10-11T12:13:00Z"),
+    ]));
+    let finding = find(&before.findings, "plan-regression:8").unwrap();
+    let previous = culprit_checks::digest(&before, None, 100, 0);
+    // One current plan, forced or naturally selected, needs no second plan in the new window.
+    for forced in [false, true] {
+        let mut s = with_plans(vec![plan("8", 100.0, 10.0, "2026-10-11T12:14:00Z", "2026-10-11T12:30:00Z")]);
+        s.taken_at = "2026-10-11T12:43:47Z".into();
+        s.workload.as_mut().unwrap().window_start = Some("2026-10-11T08:10:00Z".into());
+        s.workload.as_mut().unwrap().window_end = Some(s.taken_at.clone());
+        query(&mut s, "8").plans[0].is_forced = forced;
+        let verify = |after: &culprit_core::Report| {
+            culprit_core::compare_reports(&before, after, std::slice::from_ref(&finding.id)).findings[0].status
+        };
+        let after = analyze(s.clone());
+        assert_eq!(verify(&after), VerifyStatus::Fixed);
+        for changes in [
+            culprit_checks::digest(&after, Some(&before), 100, 0).since.unwrap(),
+            culprit_checks::digest_since(&after, &previous, 100, 0).since.unwrap(),
+        ] {
+            assert!(changes.fixed.iter().any(|f| f.id == finding.id));
+        }
+        let assert_unknown = |s: Snapshot| {
+            let after = analyze(s);
+            assert_eq!(verify(&after), VerifyStatus::Unknown);
+            assert!(
+                !culprit_checks::digest_since(&after, &previous, 100, 0)
+                    .since
+                    .unwrap()
+                    .fixed
+                    .iter()
+                    .any(|f| f.id == finding.id)
+            );
+        };
+        let mut absorbed = after.clone();
+        absorbed.refinement.push(culprit_core::RefinementDecision {
+            rule: "another cause explains this observation".into(),
+            finding: Some(finding.id.clone()),
+            outcome: culprit_core::RefinementOutcome::Absorbed { into: "another-finding".into() },
+            queries: vec![],
+            tables: vec![],
+        });
+        assert_eq!(verify(&absorbed), VerifyStatus::Unknown);
+        let mut slow = s.clone();
+        query(&mut slow, "8").plans[0].mean_time_ms = 60.0;
+        assert_unknown(slow);
+        let mut sparse = s.clone();
+        query(&mut sparse, "8").plans[0].executions = 1.0;
+        assert_unknown(sparse);
+        let mut historical = s.clone();
+        query(&mut historical, "8").plans[0].first_seen = Some("2026-10-11T07:44:00Z".into());
+        assert_unknown(historical);
+        let mut failed = s.clone();
+        failed.sources.push(SourceOutcome {
+            source: "query_store".into(),
+            state: SourceState::Partial,
+            reason: Some("Some runtime intervals could not be read".into()),
+        });
+        assert_unknown(failed);
+        let mut future = s.clone();
+        query(&mut future, "8").plans[0].last_seen = Some("2026-10-12T12:30:00Z".into());
+        assert_unknown(future);
+        let mut missing = s.clone();
+        query(&mut missing, "8").plans.clear();
+        assert_unknown(missing);
+    }
 }

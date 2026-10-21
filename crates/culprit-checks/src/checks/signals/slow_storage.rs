@@ -148,7 +148,7 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
                 }),
             };
             let coverage = g.files.iter().map(|f| f.coverage(snapshot)).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>().join("; ");
-            let key = format!("{}:{what}", g.database.as_deref().unwrap_or(""));
+            let key = format!("{}:{}", g.database.as_deref().unwrap_or(""), culprit_core::redact::shareable_name(&what));
             let mut f = finding("slow-storage", &key, Category::Configuration, subject(SubjectKind::Database, &label));
             // Only reads come in bulk sizes that slow each one down; a log is judged on its commits.
             let bulk = !write && g.bulk();

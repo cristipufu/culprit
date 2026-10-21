@@ -386,6 +386,7 @@ fn index_of(r: &Rec, with_usage: bool) -> IndexStat {
     let (seeks, scans, lookups) = (usage("user_seeks"), usage("user_scans"), usage("user_lookups"));
     let reads = with_usage.then(|| seeks.unwrap_or(0.0) + scans.unwrap_or(0.0) + lookups.unwrap_or(0.0));
     IndexStat {
+        filter_facts: None,
         schema: r.string("schema_name"),
         table: r.string("table_name"),
         name: r.string("index_name"),

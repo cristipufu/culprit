@@ -1502,9 +1502,20 @@ pub struct IndexStat {
     /// counters as well. `None`: as old as the server's counters, as far as anyone knows.
     #[serde(default)]
     pub counters_since: Option<String>,
+    // Predicate relationships retained before shared-copy literal redaction; absent on ordinary collected indexes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub filter_facts: Option<IndexFilterFacts>,
 }
 
 impl IndexStat {
+    pub fn same_filter(&self, other: &Self) -> bool {
+        match (&self.filter_facts, &other.filter_facts) {
+            (Some(a), Some(b)) => a.fingerprint == b.fingerprint,
+            (None, None) => self.filter == other.filter,
+            _ => false,
+        }
+    }
     pub fn qualified_table(&self) -> String {
         format!("{}.{}", self.schema, self.table)
     }
@@ -1512,6 +1523,15 @@ impl IndexStat {
     pub fn key_names(&self) -> Vec<&str> {
         self.columns.iter().map(|c| strip_direction(c)).collect()
     }
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug)]
+#[ts(export)]
+pub struct IndexFilterFacts {
+    pub fingerprint: String,
+    pub matching_queries: Vec<String>,
+    // Only column names and redacted values; positive coverage is retained separately by statement identity.
+    pub equalities: Option<Vec<(String, String)>>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]

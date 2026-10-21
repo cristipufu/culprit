@@ -424,9 +424,7 @@ pub fn redundant_indexes(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexStat)> {
         }
         let keeper = snapshot
             .indexes_on(&a.schema, &a.table)
-            .filter(|b| {
-                b.name != a.name && !b.is_disabled && !b.is_clustered && b.filter == a.filter && b.kind == a.kind
-            })
+            .filter(|b| b.name != a.name && !b.is_disabled && !b.is_clustered && b.same_filter(a) && b.kind == a.kind)
             .find(|b| makes_redundant(b, a) && (!same_keys(a, b) || prefer_drop(a, b)))
             // A read index isn't redundant to one nothing reads: drop the unread one instead (the unused check says so).
             .filter(|b| !(is_unused(snapshot, b) && a.reads.is_some_and(|r| r > 0.0)));

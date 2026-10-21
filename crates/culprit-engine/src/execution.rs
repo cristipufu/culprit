@@ -158,9 +158,7 @@ impl Execution<'_> {
         plan_id: Option<&str>,
     ) -> Plan {
         if let Some(snapshot) = snapshot {
-            culprit_core::insights::mark_changed_columns(&mut plan, &snapshot.columns);
             culprit_core::insights::mark_plan(&mut plan, snapshot);
-            culprit_core::insights::mark_possible_keys(&mut plan, &snapshot.indexes);
             if let Some(q) = snapshot.queries().iter().find(|q| q.id == query_id) {
                 culprit_core::insights::mark_query(&mut plan, &q.text);
                 if plan_id.is_none_or(|id| q.plan_id.as_deref() == Some(id) || q.plans.iter().any(|p| p.id == id)) {
@@ -236,7 +234,7 @@ impl Execution<'_> {
         let mut live = self.connections.forget_rejected(name, provider.live().await)?;
         // Lock details are read only when someone waits, so a quiet server costs one query per refresh.
         if live.blocking.is_none() && live.sessions.iter().any(|s| s.blocked_by.is_some()) {
-            let locks = match provider.lock_waits().await {
+            let locks = match self.connections.forget_rejected(name, provider.lock_waits().await) {
                 Ok(locks) => locks,
                 Err(error) => {
                     live.notes.push(format!("Lock details were unavailable: {}", error.message));
@@ -291,7 +289,7 @@ impl Execution<'_> {
                 SessionAction::Terminate => "Use the database's own tooling.",
             }));
         }
-        provider.interrupt_session(session, action).await
+        self.connections.forget_rejected(name, provider.interrupt_session(session, action).await)
     }
 
     /// `confirmed` is the caller's explicit, per-action consent to execute on production.
@@ -378,7 +376,8 @@ impl Execution<'_> {
         let info = self.connections.connection(name)?;
         let provider = self.connections.provider(name).await?;
         let columns = self.connections.forget_rejected(name, catalog::columns(provider.as_ref(), info.engine).await)?;
-        let databases = provider.run(catalog::databases_sql(info.engine), 500).await.ok();
+        let databases =
+            self.connections.forget_rejected(name, provider.run(catalog::databases_sql(info.engine), 500).await).ok();
         Ok(catalog::fold(columns, databases))
     }
 }

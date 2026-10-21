@@ -34,6 +34,10 @@ pub struct SettingChange {
 pub trait EngineSpec: Send + Sync {
     fn inactive_index_state(&self, server: &ServerInfo) -> crate::IndexState;
     fn limitations(&self) -> Vec<String>;
+    /// Public collection limits, safe to show after private collector details have been removed for sharing.
+    fn deadlock_limitation(&self) -> Option<&'static str> {
+        None
+    }
     /// "SQL Server": the engine's name in sentences (a server's product can say more: MariaDB).
     fn label(&self) -> &'static str;
 

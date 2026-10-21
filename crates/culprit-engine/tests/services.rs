@@ -45,6 +45,32 @@ impl Provider for ParserProvider {
     async fn statement_types(&self, _: &str) -> Result<Option<Vec<String>>> {
         Ok(Some(self.types.clone()))
     }
+    fn session_actions(&self) -> Vec<culprit_core::SessionAction> {
+        vec![culprit_core::SessionAction::Terminate]
+    }
+    async fn interrupt_session(&self, _: &str, _: culprit_core::SessionAction) -> Result<()> {
+        Err(Error::new(ErrorCode::AuthFailed, "test authentication failure"))
+    }
+    async fn period_stats(
+        &self,
+        baseline: &culprit_core::Period,
+        recent: &culprit_core::Period,
+    ) -> Result<Option<culprit_core::changes::PeriodData>> {
+        Ok(Some(culprit_core::changes::PeriodData {
+            source: culprit_core::TimelineSource::QueryStore,
+            baseline: baseline.clone(),
+            recent: recent.clone(),
+            baseline_total: Default::default(),
+            recent_total: Default::default(),
+            baseline_coverage: 1.0,
+            queries: Vec::new(),
+            notes: Vec::new(),
+            unavailable: None,
+        }))
+    }
+    async fn recorded_changes(&self, _: &str) -> Result<Vec<culprit_core::ChangeEvent>> {
+        Err(Error::new(ErrorCode::AuthFailed, "test authentication failure"))
+    }
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet> {
         self.calls.lock().unwrap().push((sql.into(), limit));
         if self.reject_read {
@@ -149,6 +175,73 @@ async fn an_execution_authentication_failure_forgets_only_that_connections_cache
     assert!(secrets.get("first").unwrap().is_some());
     assert!(secrets.get("second").unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn session_and_optional_event_authentication_failures_invalidate_only_the_rejected_cache() {
+    for events in [false, true] {
+        let (ws, _, dir) = workspace(if events { "event-secret" } else { "session-secret" }, &["SELECT"], false);
+        let secrets = Arc::new(ObservedSecrets::default());
+        let ws = ws.with_secrets(secrets.clone());
+        ws.add_connection(NewConnection {
+            name: "first".into(),
+            input: "mssql://reader@service.invalid:1433/shop".into(),
+            environment: Environment::Development,
+            auth: Some(AuthKind::Password),
+            password: Some("first-test-secret".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        add(&ws, "second", Some("second-test-secret"));
+        if events {
+            let out = ws
+                .changes("first", &culprit_engine::changes::ChangeRequest { cloud: Some(false), ..Default::default() })
+                .await
+                .unwrap();
+            assert!(out.notes.iter().any(|n| n.contains("Database change events were unavailable")));
+        } else {
+            assert_eq!(
+                ws.interrupt_session("first", "123", culprit_core::SessionAction::Terminate).await.unwrap_err().code,
+                ErrorCode::AuthFailed
+            );
+        }
+        assert_eq!(*secrets.forgotten.lock().unwrap(), vec!["first"]);
+        assert!(secrets.get("first").unwrap().is_some());
+        assert!(secrets.get("second").unwrap().is_some());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(any(feature = "mssql", feature = "mysql", feature = "postgres"))]
+#[test]
+fn failed_auxiliary_sessions_leave_checks_unassessed_even_without_a_capability_lock() {
+    let groups = [
+        #[cfg(feature = "postgres")]
+        (include_str!("../../../fixtures/postgres-demo.json"), culprit_postgres::sources::MISC, "config"),
+        #[cfg(feature = "mysql")]
+        (include_str!("../../../fixtures/mysql-demo.json"), culprit_mysql::sources::SIGNAL_READS, "config"),
+        #[cfg(feature = "mysql")]
+        (include_str!("../../../fixtures/mysql-demo.json"), culprit_mysql::sources::MISC, "config"),
+        #[cfg(feature = "mssql")]
+        (include_str!("../../../fixtures/mssql-demo.json"), culprit_mssql::sources::MISC, "config"),
+        #[cfg(feature = "mssql")]
+        (
+            include_str!("../../../fixtures/mssql-demo.json"),
+            culprit_mssql::sources::SIGNAL_READS,
+            "untrusted-constraint",
+        ),
+    ];
+    for (fixture, sources, check) in groups {
+        let mut snapshot: Snapshot = serde_json::from_str(fixture).unwrap();
+        let mut coverage = culprit_core::Coverage::default();
+        coverage.sources_failed(sources, &Error::internal("auxiliary session was lost"));
+        coverage.append_to(&mut snapshot);
+        for source in sources {
+            assert_eq!(snapshot.source_outcome(source.name).unwrap().state, culprit_core::SourceState::Unavailable);
+        }
+        let report = culprit_checks::analyze(snapshot);
+        assert!(report.check_absence_problem(check).is_some(), "{check} cannot claim a clean result");
+    }
 }
 
 #[tokio::test]

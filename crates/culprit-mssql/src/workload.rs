@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use culprit_core::{PlanVariant, QueryStat, SnapshotOptions, WaitStat, Workload};
+use culprit_core::{Coverage, PlanVariant, QueryStat, SnapshotOptions, WaitStat, Workload};
 
 use crate::conn::{MsClient, OWN_QUERY_MARKER, query};
 use crate::plan_xml;
@@ -222,6 +222,7 @@ pub(crate) struct WorkloadResult {
     pub(crate) waits: Vec<WaitStat>,
     pub(crate) plans_parsed: usize,
     pub(crate) plan_errors: usize,
+    pub(crate) coverage: Coverage,
 }
 
 /// Query Store's queries behind the database's missing-index requests: the optimizer's request groups name the
@@ -318,13 +319,31 @@ GROUP BY ws.plan_id, ws.wait_category_desc
 "#,
         ids = id_list(&all_plan_ids)
     );
+    let mut coverage = Coverage::default();
+    let wait_rows = crate::sources::read_rows(
+        &mut coverage,
+        &crate::sources::QUERY_WAITS,
+        query(client, &plan_waits_sql).await,
+        || "Grant VIEW DATABASE STATE (VIEW DATABASE PERFORMANCE STATE on SQL Server 2022+).".into(),
+    );
+    // An empty category is zero only when the read succeeded and Query Store is capturing waits.
+    // Older servers, disabled capture and failed reads must not manufacture zeroes.
+    let capture_on = query(client, "SELECT wait_stats_capture_mode FROM sys.database_query_store_options")
+        .await
+        .ok()
+        .and_then(|rows| rows.first().and_then(|r| r.f64("wait_stats_capture_mode")))
+        == Some(1.0);
+    let waits_complete = wait_rows.is_some() && capture_on;
+    if wait_rows.is_some() && !capture_on {
+        coverage.partial(
+            &crate::sources::QUERY_WAITS,
+            "Query Store wait capture is disabled or could not be established; missing wait categories are unknown.",
+        );
+    }
     let mut plan_waits: HashMap<String, Vec<(String, f64)>> = HashMap::new();
-    if let Ok(rows) = query(client, &plan_waits_sql).await {
-        for r in rows {
-            plan_waits
-                .entry(r.string("plan_id"))
-                .or_default()
-                .push((r.string("wait_category_desc"), r.f64_or_zero("wait_ms")));
+    for r in wait_rows.into_iter().flatten() {
+        if let Some(ms) = r.f64("wait_ms") {
+            plan_waits.entry(r.string("plan_id")).or_default().push((r.string("wait_category_desc"), ms));
         }
     }
 
@@ -375,8 +394,10 @@ GROUP BY ws.wait_category_desc
                 }
             });
             let text = texts.get(&q.query_id);
-            let query_waits =
-                fold_waits(q.plans.iter().flat_map(|p| plan_waits.get(&p.plan_id).cloned().unwrap_or_default()));
+            let query_waits = measured_query_waits(
+                q.plans.iter().flat_map(|p| plan_waits.get(&p.plan_id).cloned().unwrap_or_default()),
+                waits_complete,
+            );
             let mut stat = to_query_stat(q, text, plan, query_waits);
             stat.plan_id = stat.plan.as_ref().and(current).map(|p| p.plan_id.clone());
             stat.trend = trends.remove(&q.query_id);
@@ -406,7 +427,7 @@ GROUP BY ws.wait_category_desc
         min_logged_ms: None,
         log: None,
     };
-    Ok(WorkloadResult { workload, waits, plans_parsed, plan_errors })
+    Ok(WorkloadResult { workload, waits, plans_parsed, plan_errors, coverage })
 }
 
 fn to_query_stat(
@@ -533,6 +554,18 @@ fn select_top(all: &[QueryAgg], limit: usize) -> Vec<&QueryAgg> {
     }
     out.sort_by(|a, b| b.total_ms().total_cmp(&a.total_ms()));
     out
+}
+
+fn measured_query_waits(items: impl IntoIterator<Item = (String, f64)>, complete: bool) -> Vec<WaitStat> {
+    let mut waits = fold_waits(items);
+    if complete {
+        for category in ["Lock", "Network"] {
+            if !waits.iter().any(|w| w.category == category) {
+                waits.push(WaitStat { category: category.into(), wait_type: None, wait_ms: 0.0, tasks: None });
+            }
+        }
+    }
+    waits
 }
 
 pub(crate) fn fold_waits(items: impl IntoIterator<Item = (String, f64)>) -> Vec<WaitStat> {
@@ -719,7 +752,7 @@ pub(crate) async fn from_plan_cache(
         min_logged_ms: None,
         log: None,
     };
-    Ok(WorkloadResult { workload, waits: Vec::new(), plans_parsed, plan_errors })
+    Ok(WorkloadResult { workload, waits: Vec::new(), plans_parsed, plan_errors, coverage: Coverage::default() })
 }
 
 #[cfg(test)]
@@ -738,6 +771,19 @@ mod tests {
         // A window in days reads the same history it always did.
         let week = SnapshotOptions::default();
         assert!(window_sql(week.window_in_minutes()).contains("DATEADD(minute, -10080, SYSDATETIMEOFFSET())"));
+    }
+
+    #[test]
+    fn zero_waits_require_successful_collection_and_enabled_capture() {
+        let waits = measured_query_waits([], true);
+        assert_eq!(waits.len(), 2);
+        assert!(waits.iter().all(|w| w.wait_ms == 0.0));
+        assert!(measured_query_waits([], false).is_empty());
+        let waits = measured_query_waits([("Lock".into(), 500.0)], true);
+        assert_eq!(waits.iter().find(|w| w.category == "Lock").unwrap().wait_ms, 500.0);
+        assert_eq!(waits.iter().find(|w| w.category == "Network").unwrap().wait_ms, 0.0);
+        let partial = measured_query_waits([("Lock".into(), 500.0)], false);
+        assert_eq!(partial.len(), 1, "an unrelated wait cannot establish a missing category");
     }
 
     fn agg(id: &str, ms: f64, cpu: f64, reads: f64, executions: f64) -> QueryAgg {

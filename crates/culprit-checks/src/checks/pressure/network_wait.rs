@@ -14,7 +14,7 @@ pub fn network_wait_info() -> CheckInfo {
     }
 }
 
-check!(NetworkWaitCheck: network_wait_info, network_wait, &[Evidence::Query(QueryMeasure::Waits)]);
+check!(NetworkWaitCheck: network_wait_info, network_wait, &[Evidence::Query(QueryMeasure::Waits("Network"))]);
 
 pub fn network_wait(snapshot: &Snapshot) -> Vec<Finding> {
     let mut findings: Vec<Finding> = app_queries(snapshot)

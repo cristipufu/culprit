@@ -190,10 +190,25 @@ Older baselines with only dates keep only dates, and never acquire today's endpo
 timestamp. Index-age history uses only this database's past scans; older event sidecars recover their source identity
 from their own saved reports within a bounded backfill.
 
-The persisted JSON is a portable replay artifact. The desktop and generated browser demo omit `evidence` from their
-view projection while keeping provenance; MCP returns its focused views. Shared exports and digests reparse before
+Saved reports use a versioned private JSON encoding: the prepared snapshot appears once, with lossless flat-path
+differences for retained input and collection. Loading restores the full report; older full-report JSON remains
+readable. Immutable native plan text is shared in memory across these snapshots. Report lists read small summary
+sidecars, or stream only the header of an older report, without deserializing its plans and retained evidence.
+
+The desktop, CLI JSON and generated browser demo omit `evidence` from their view projection while keeping provenance;
+MCP returns its focused views. Shared exports and digests reparse before
 redacting, analyze only redacted input and never copy unredacted collection or recorded events into their replay body.
 Saved artifacts and optional metadata remain readable when these additions are absent.
+
+Sharing masks SQL literals, physical paths and endpoint details, including retained measurement and baseline
+identities. Database, schema and logical catalog labels remain available for diagnosis. Before masking index predicates,
+typed `IndexFilterFacts` retain their opaque equivalence fingerprint and the query ids whose original text established
+coverage. Different literal predicates must not become equivalent merely because both now display placeholders;
+parameterized or unsupported predicates stay unproven.
+Fix SQL rebuilt from redacted evidence keeps generated constants and valid syntax. A finding that cannot be reproduced
+by that recheck, including an unavailable external check, gets fallback literal redaction in its SQL as well as prose.
+Public deadlock collection limits come from `EngineSpec` when private collector notes are removed, so sharing still
+explains the latest-only report or the counter without graphs.
 
 ## 3. The pipeline: from a snapshot to a report
 
@@ -252,7 +267,31 @@ sits in that area's `mod.rs`, and what every check shares (the evidence rules) i
 finding has a stable id (`<check>:<subject>`), a title and a plain-language summary, evidence (metrics, the queries
 behind it), a fix that is safe to run, a way to verify it, a severity, a confidence and an impact used for ranking.
 
+Per-statement assessments retain the exact query ids measured, including measured zero WAL, JIT and wait counters.
+Wait evidence names its category; another category cannot prove zero lock or network waiting. Query Store zeroes
+require a successful wait read and enabled capture. Cached memory grants are sampled for discovery, then the captured
+workload's hashes are read separately (at most 200), including zero grants; absence from the cache stays unknown.
+A plan regression retains a typed fast-plan baseline in the finding and digest. Recovery may use one later plan,
+forced or naturally selected, only with fresh, sufficiently sampled runs inside the new window that no longer meet
+the regression threshold. Losing an earlier variant alone never verifies recovery. Source failures, incompatible
+measurements, locked checks and refinement into another cause still prevent a fixed verdict.
+Legacy source contracts may explicitly accept their retained payload when outcomes did not yet exist. A missing
+payload remains unknown, and recorded partial or failed outcomes always win over that fallback.
+
 Cumulative findings declare `VerificationBasis::CounterChange`: losing their counters is unknown, not proof of a fix, and exports ask for comparisons under representative load. This contract applies to built-in and embedded checks alike.
+
+Verify and digest comparisons use `Report::finding_absence_problem` before treating a missing finding as fixed.
+A capability lock, an unavailable or incomplete assessment, or a check that did not run cannot establish absence.
+Positive findings from a partial source retain their assessment reason, so they cannot clear other observations from
+that check. Statement checks also record the identities with complete measurements: an unrelated statement with
+missing measurements cannot block verification of a measured statement, and a measured unrelated statement cannot
+stand in for the affected one. Saved digests retain those statement identities. A completed assessment or established
+inapplicability can confirm absence; older reports without
+assessments retain their capability-lock interpretation.
+The same guard consults the refinement trace: an observation absorbed or covered by another cause was reclassified,
+so losing its old id is not proof of improvement.
+Saved digests retain the originating check in `DigestFinding.check`; older digests recover it only from an
+unambiguous registered check prefix, so a custom check namespace cannot accidentally borrow another check's result.
 
 Plan insights (`culprit-core/src/insights.rs`) are rules over one plan, shown in the plan viewer; the `plan-insights`
 check promotes the ones that matter to findings. `views/plan_advice.rs` applies the selected scan's workload and

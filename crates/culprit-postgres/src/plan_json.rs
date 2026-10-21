@@ -21,7 +21,7 @@ pub fn parse(json: &str, kind: PlanKind, statement: Option<&str>) -> Result<Plan
     let value: Value = serde_json::from_str(json)
         .map_err(|e| Error::internal(format!("PostgreSQL returned a plan Culprit cannot read: {e}")))?;
     let mut plan = from_value(&value, kind, statement)?;
-    plan.raw = Some(json.to_string());
+    plan.raw = Some(json.into());
     Ok(plan)
 }
 

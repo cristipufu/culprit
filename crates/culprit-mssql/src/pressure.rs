@@ -9,7 +9,7 @@ use culprit_core::{
     WaitStat,
 };
 
-use crate::conn::{MsClient, query};
+use crate::conn::{MsClient, OWN_QUERY_MARKER, query};
 use crate::probe::Probe;
 use crate::schema::{BENIGN_WAITS, wait_type_category};
 use crate::sources;
@@ -51,8 +51,8 @@ WHERE w.wait_type = N'THREADPOOL' AND w.wait_duration_ms >= 100
   AND COALESCE(r.database_id, s.database_id) = DB_ID()
   AND s.session_id <> @@SPID AND ISNULL(s.program_name, N'') <> N'culprit'";
 
-const GRANTS_SQL: &str = r#"
-SELECT TOP (30) CONVERT(varchar(20), qs.query_hash, 1) AS query_hash,
+const GRANTS_SELECT: &str = r#"
+SELECT {limit} CONVERT(varchar(20), qs.query_hash, 1) AS query_hash,
   SUM(qs.execution_count) AS executions,
   SUM(qs.total_grant_kb) * 1.0 / NULLIF(SUM(qs.execution_count), 0) AS avg_granted_kb,
   SUM(qs.total_used_grant_kb) * 1.0 / NULLIF(SUM(qs.execution_count), 0) AS avg_used_kb,
@@ -61,10 +61,58 @@ SELECT TOP (30) CONVERT(varchar(20), qs.query_hash, 1) AS query_hash,
   SUM(qs.last_used_grant_kb) * 1.0 / COUNT(*) AS last_used_kb
 FROM sys.dm_exec_query_stats qs
 CROSS APPLY sys.dm_exec_plan_attributes(qs.plan_handle) pa
-WHERE pa.attribute = 'dbid' AND CAST(pa.value AS int) = DB_ID() AND qs.total_grant_kb > 0
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+WHERE pa.attribute = 'dbid' AND CAST(pa.value AS int) = DB_ID() AND {predicate}
+  AND st.text NOT LIKE N'%{marker}%'
 GROUP BY qs.query_hash
 ORDER BY SUM(qs.total_grant_kb) - SUM(qs.total_used_grant_kb) DESC
 "#;
+
+/// Empty hashes select the worst thirty grants. Selected workload hashes are read separately, without
+/// a positive-grant filter or ranking cutoff, so a measured zero remains distinguishable from cache eviction.
+fn grants_sql(hashes: &[String]) -> Option<String> {
+    let (limit, predicate) = if hashes.is_empty() {
+        ("TOP (30)", "qs.total_grant_kb > 0".to_string())
+    } else {
+        let valid: Vec<_> = hashes
+            .iter()
+            .filter(|hash| {
+                hash.strip_prefix("0x").is_some_and(|hex| hex.len() == 16 && hex.bytes().all(|c| c.is_ascii_hexdigit()))
+            })
+            .take(200)
+            .map(String::as_str)
+            .collect();
+        if valid.is_empty() {
+            return None;
+        }
+        ("", format!("qs.query_hash IN ({})", valid.join(",")))
+    };
+    Some(
+        GRANTS_SELECT
+            .replace("{limit}", limit)
+            .replace("{predicate}", &predicate)
+            .replace("{marker}", OWN_QUERY_MARKER),
+    )
+}
+
+pub(crate) async fn grants(client: &mut MsClient, hashes: &[String]) -> tiberius::Result<Vec<GrantStat>> {
+    let Some(sql) = grants_sql(hashes) else { return Ok(Vec::new()) };
+    Ok(query(client, &sql)
+        .await?
+        .iter()
+        .filter_map(|r| {
+            Some(GrantStat {
+                query_hash: r.string("query_hash"),
+                executions: r.f64("executions")?,
+                avg_granted_kb: r.f64("avg_granted_kb")?,
+                avg_used_kb: r.f64("avg_used_kb")?,
+                max_granted_kb: r.f64("max_granted_kb")?,
+                last_granted_kb: r.f64("last_granted_kb"),
+                last_used_kb: r.f64("last_used_kb"),
+            })
+        })
+        .collect())
+}
 
 const VERSION_STORE_SQL: &str =
     "SELECT SUM(reserved_space_kb) AS kb FROM sys.dm_tran_version_store_space_usage WHERE database_id = DB_ID()";
@@ -329,21 +377,10 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
         p.cpus = r.f64("cpu_count").filter(|n| *n > 0.0);
         p.numa_nodes = r.f64("numa_nodes").filter(|n| *n > 0.0);
     }
-    if let Some(rows) =
-        sources::read(&mut coverage, &sources::GRANTS, query(client, GRANTS_SQL).await, || probe.grant_hint())
+    if let Some(grants) =
+        sources::read(&mut coverage, &sources::GRANTS, grants(client, &[]).await, || probe.grant_hint())
     {
-        p.grants = rows
-            .iter()
-            .map(|r| GrantStat {
-                query_hash: r.string("query_hash"),
-                executions: r.f64_or_zero("executions"),
-                avg_granted_kb: r.f64_or_zero("avg_granted_kb"),
-                avg_used_kb: r.f64_or_zero("avg_used_kb"),
-                max_granted_kb: r.f64_or_zero("max_granted_kb"),
-                last_granted_kb: r.f64("last_granted_kb"),
-                last_used_kb: r.f64("last_used_kb"),
-            })
-            .collect();
+        p.grants = grants;
     }
     let version_store = match query(client, VERSION_STORE_SQL).await {
         Ok(rows) => rows.first().and_then(|r| r.f64("kb")).map(|kb| kb * 1024.0),
@@ -501,6 +538,22 @@ fn scheduling_share(signal: f64, wait: f64, scope: SignalScope) -> Signal {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selected_grants_include_zeroes_without_a_ranking_cutoff_and_validate_hashes() {
+        let sample = super::grants_sql(&[]).unwrap();
+        assert!(sample.contains("TOP (30)"));
+        let selected = super::grants_sql(&["0x0123456789ABCDEF".into(), "0x0);DROP TABLE x;--".into()]).unwrap();
+        assert!(!selected.contains("TOP ("));
+        assert!(!selected.contains("total_grant_kb > 0"));
+        assert!(selected.contains("qs.query_hash IN (0x0123456789ABCDEF)"));
+        assert!(selected.contains("CAST(pa.value AS int) = DB_ID()"));
+        assert!(selected.contains("st.text NOT LIKE N'%/* culprit */%'"));
+        assert!(!selected.contains("DROP"));
+        assert!(super::grants_sql(&["not-a-hash".into()]).is_none());
+        let many = vec!["0x0123456789ABCDEF".into(); 201];
+        assert_eq!(super::grants_sql(&many).unwrap().matches("0x0123456789ABCDEF").count(), 200);
+    }
+
     use culprit_core::SignalStatus;
 
     use super::*;

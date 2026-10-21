@@ -18,7 +18,7 @@ pub fn overlapping_index_info() -> CheckInfo {
 
 check!(
     OverlappingIndexCheck: overlapping_index_info, overlapping_index,
-    &[Evidence::IndexCatalog, Evidence::Unknown]
+    &[Evidence::IndexCatalog]
 );
 
 /// Indexes that compete for the same leading column, as (rarely read, well used). The well-used one must hold every key
@@ -64,7 +64,7 @@ pub(crate) fn overlapping_pairs(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexS
                 b.name != a.name
                     && !b.is_disabled
                     && !b.is_clustered
-                    && b.filter == a.filter
+                    && b.same_filter(a)
                     && b.kind == a.kind
                     && !same_keys(a, b)
             })

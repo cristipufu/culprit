@@ -1,8 +1,18 @@
 {
   "assessments": [
     {
+      "assessed_queries": [
+        "04cd7be9c366fadc",
+        "19bd4ff468839ea3",
+        "c7b5ac9bb4bcecfe",
+        "9b30e6ad79d940fe",
+        "17f97e6ec7a22e0a",
+        "b4c0f3861e32013e",
+        "4167fe7f2c20deb7",
+        "7f47c8550af0c644"
+      ],
       "check": "filtered-scan",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "Some statements lack the measurements this check needs; only measured statements were assessed.",
       "status": "insufficient-evidence",
       "title": "Scans an index would avoid"
     },
@@ -14,31 +24,31 @@
     },
     {
       "check": "duplicate-index",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Duplicate and redundant indexes"
     },
     {
       "check": "unindexed-fk",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Foreign keys without an index"
     },
     {
       "check": "overlapping-index",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Overlapping indexes"
     },
     {
       "check": "over-indexed",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Many indexes on write-heavy tables"
     },
     {
       "check": "scan-heavy",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Tables read in full over and over"
     },
@@ -85,12 +95,36 @@
       "title": "Unstable queries"
     },
     {
+      "assessed_queries": [
+        "04cd7be9c366fadc",
+        "19bd4ff468839ea3",
+        "c7b5ac9bb4bcecfe",
+        "9b30e6ad79d940fe",
+        "17f97e6ec7a22e0a",
+        "b4c0f3861e32013e",
+        "4167fe7f2c20deb7",
+        "4515abd524a46f37",
+        "7f47c8550af0c644",
+        "fc709554a9248878"
+      ],
       "check": "parameter-sensitive",
       "reason": null,
       "status": "assessed",
       "title": "Queries that are fast for most calls and slow for some"
     },
     {
+      "assessed_queries": [
+        "04cd7be9c366fadc",
+        "19bd4ff468839ea3",
+        "c7b5ac9bb4bcecfe",
+        "9b30e6ad79d940fe",
+        "17f97e6ec7a22e0a",
+        "b4c0f3861e32013e",
+        "4167fe7f2c20deb7",
+        "4515abd524a46f37",
+        "7f47c8550af0c644",
+        "fc709554a9248878"
+      ],
       "check": "temp-spill",
       "reason": null,
       "status": "findings",
@@ -98,13 +132,13 @@
     },
     {
       "check": "config",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Configuration"
     },
     {
       "check": "deadlocks",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "A cumulative counter or a limited deadlock sample cannot verify the absence of this deadlock pattern.",
       "status": "insufficient-evidence",
       "title": "Deadlocks"
     },
@@ -145,18 +179,48 @@
       "title": "Galera node readiness and flow control"
     },
     {
+      "assessed_queries": [
+        "04cd7be9c366fadc",
+        "19bd4ff468839ea3",
+        "c7b5ac9bb4bcecfe",
+        "9b30e6ad79d940fe",
+        "17f97e6ec7a22e0a",
+        "b4c0f3861e32013e",
+        "4167fe7f2c20deb7",
+        "4515abd524a46f37",
+        "7f47c8550af0c644",
+        "fc709554a9248878"
+      ],
       "check": "failing-query",
       "reason": null,
       "status": "findings",
       "title": "Queries that fail or time out"
     },
     {
+      "assessed_queries": [
+        "4167fe7f2c20deb7",
+        "4515abd524a46f37",
+        "7f47c8550af0c644",
+        "fc709554a9248878"
+      ],
       "check": "lock-time",
-      "reason": null,
+      "reason": "Some statements lack the measurements this check needs; only measured statements were assessed.",
       "status": "findings",
       "title": "Queries that spend their time waiting for locks"
     },
     {
+      "assessed_queries": [
+        "04cd7be9c366fadc",
+        "19bd4ff468839ea3",
+        "c7b5ac9bb4bcecfe",
+        "9b30e6ad79d940fe",
+        "17f97e6ec7a22e0a",
+        "b4c0f3861e32013e",
+        "4167fe7f2c20deb7",
+        "4515abd524a46f37",
+        "7f47c8550af0c644",
+        "fc709554a9248878"
+      ],
       "check": "big-result",
       "reason": null,
       "status": "findings",

@@ -259,6 +259,13 @@ impl Coverage {
         }
     }
 
+    /// A failed shared connection prevents every source assigned to it from being read.
+    pub fn sources_failed(&mut self, sources: &[Source], error: &Error) {
+        for source in sources {
+            self.source_failed(source, error);
+        }
+    }
+
     /// Take in what another part of the scan found (sources read on another connection, concurrently).
     pub fn merge(&mut self, other: Coverage) {
         for outcome in other.sources {

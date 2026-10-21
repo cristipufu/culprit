@@ -2,7 +2,7 @@
   "assessments": [
     {
       "check": "missing-index",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "This scan did not record the required source's collection outcome.",
       "status": "insufficient-evidence",
       "title": "Missing indexes"
     },
@@ -20,25 +20,25 @@
     },
     {
       "check": "duplicate-index",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Duplicate and redundant indexes"
     },
     {
       "check": "unindexed-fk",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Foreign keys without an index"
     },
     {
       "check": "overlapping-index",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Overlapping indexes"
     },
     {
       "check": "over-indexed",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "Some tables lack the measurements this check needs.",
       "status": "insufficient-evidence",
       "title": "Many indexes on write-heavy tables"
     },
@@ -110,25 +110,25 @@
     },
     {
       "check": "stale-stats",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Stale statistics"
     },
     {
       "check": "heap-table",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Large tables without a clustered index"
     },
     {
       "check": "config",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Configuration"
     },
     {
       "check": "deadlocks",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Deadlocks"
     },
@@ -218,31 +218,31 @@
     },
     {
       "check": "hot-rows",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "This scan did not record the required source's collection outcome.",
       "status": "insufficient-evidence",
       "title": "Rows that many sessions fight over"
     },
     {
       "check": "lock-escalations",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "This scan did not record the required source's collection outcome.",
       "status": "insufficient-evidence",
       "title": "Statements that lock a whole table"
     },
     {
       "check": "last-page-insert",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "This scan did not record the required source's collection outcome.",
       "status": "insufficient-evidence",
       "title": "Inserts that queue for the last page"
     },
     {
       "check": "untrusted-constraint",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "This scan did not record the required source's collection outcome.",
       "status": "insufficient-evidence",
       "title": "Constraints the optimizer can't rely on"
     },
     {
       "check": "large-rows",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "Some tables lack the measurements this check needs.",
       "status": "insufficient-evidence",
       "title": "Tables whose rows are mostly large values"
     },
@@ -266,8 +266,8 @@
     },
     {
       "check": "last-actual-plans",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": "Query Store is OFF on this database.",
+      "status": "unavailable",
       "title": "Actual plans without re-running queries"
     }
   ],

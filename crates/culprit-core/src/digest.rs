@@ -249,6 +249,17 @@ pub struct DigestFinding {
     /// In `since.again` only: how many happened since the previous digest's scan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count_since: Option<f64>,
+    // The originating check, retained explicitly for evidence-aware comparisons of saved digests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub check: Option<String>,
+    // Statement identities needed to verify this finding against partially measured workloads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub queries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub plan_baseline: Option<crate::PlanBaseline>,
 }
 
 /// A finding in full, in the app's order: what's happening, the numbers, the queries and where their plans spend,

@@ -1,7 +1,10 @@
 //! The `missing-index` check: Index suggestions recorded by SQL Server's optimizer, merged with each other and checked against existing indexes.
 
 use super::*;
-use crate::evidence::Requirement as Evidence;
+use crate::evidence::{Observation, Requirement as Evidence};
+#[cfg(test)]
+pub(crate) use culprit_core::index_filter::same_literal;
+pub(crate) use culprit_core::index_filter::{compared_to, filter_equalities, is_literal};
 
 pub fn missing_index_info() -> CheckInfo {
     CheckInfo {
@@ -14,7 +17,7 @@ pub fn missing_index_info() -> CheckInfo {
     }
 }
 
-check!(MissingIndexCheck: missing_index_info, missing_index, &[Evidence::IndexCatalog, Evidence::Unknown]);
+check!(MissingIndexCheck: missing_index_info, missing_index, &[Evidence::IndexCatalog, Evidence::SourceWithLegacy("missing_indexes", Observation::MissingIndexes)]);
 
 pub(crate) struct Candidate {
     pub(crate) schema: String,
@@ -118,7 +121,7 @@ pub(crate) fn existing_match<'a>(
     same_keys_on_table(snapshot, c)
         .filter(|i| match i.filter.as_deref() {
             None => true,
-            Some(filter) => fits_filter(&c.table, filter, asking),
+            Some(_) => fits_index_filter(i, asking),
         })
         .min_by_key(|i| i.is_disabled)
 }
@@ -131,7 +134,7 @@ pub(super) fn filtered_bystander<'a>(
     c: &Candidate,
     asking: &[&QueryStat],
 ) -> Option<(&'a IndexStat, String)> {
-    let passed_over = |i: &&IndexStat| i.filter.as_deref().is_some_and(|f| !fits_filter(&c.table, f, asking));
+    let passed_over = |i: &&IndexStat| i.filter.is_some() && !fits_index_filter(i, asking);
     if let Some(i) = same_keys_on_table(snapshot, c).find(passed_over) {
         return Some((i, "has these keys".into()));
     }
@@ -177,10 +180,7 @@ fn overlap(i: &IndexStat, c: &Candidate) -> Option<Overlap> {
     if seeks.is_empty() {
         return None;
     }
-    let filtered: Vec<String> = i
-        .filter
-        .as_deref()
-        .and_then(filter_equalities)
+    let filtered: Vec<String> = index_filter_equalities(i)
         .unwrap_or_default()
         .into_iter()
         .map(|(column, _)| column)
@@ -219,7 +219,7 @@ fn lacks_only_the_range<'a>(
         .indexes
         .iter()
         .filter(|i| on_table(i, c) && !i.is_disabled)
-        .filter(|i| i.filter.as_deref().is_none_or(|f| fits_filter(&c.table, f, asking)))
+        .filter(|i| fits_index_filter(i, asking))
         .filter_map(|i| {
             let o = overlap(i, c).filter(|o| o.range_missing && o.missing.len() == 1 && o.serves())?;
             Some((i, o))
@@ -254,7 +254,7 @@ fn overlapping_index<'a>(
         .indexes
         .iter()
         .filter(|i| on_table(i, c) && !i.is_disabled && !i.is_clustered && !i.is_primary_key && !i.is_unique)
-        .filter(|i| i.filter.as_deref().is_none_or(|f| fits_filter(&c.table, f, asking)))
+        .filter(|i| fits_index_filter(i, asking))
         .filter_map(|i| {
             // A range the index has no key for is the request's own index: checking it on every row the equality
             // columns find can cost what the range was asked for to spare.
@@ -283,15 +283,22 @@ pub(super) fn same_keys_on_table<'a>(snapshot: &'a Snapshot, c: &Candidate) -> i
     })
 }
 
-/// Every query in `asking` (at least one) compares each of the filter's columns of `table` to the filter's own literal.
-pub(crate) fn fits_filter(table: &str, filter: &str, asking: &[&QueryStat]) -> bool {
-    let Some(conditions) = filter_equalities(filter) else { return false };
-    !asking.is_empty()
-        && asking.iter().all(|q| {
-            conditions
-                .iter()
-                .all(|(column, literal)| compared_to(&q.text, table, column, |value| same_literal(value, literal)))
-        })
+/// Coverage established before redaction stays attached to the statement that supplied it.
+pub(crate) fn fits_index_filter(index: &IndexStat, asking: &[&QueryStat]) -> bool {
+    let Some(filter) = index.filter.as_deref() else {
+        return true;
+    };
+    if let Some(facts) = &index.filter_facts {
+        return !asking.is_empty() && asking.iter().all(|q| facts.matching_queries.contains(&q.id));
+    }
+    !asking.is_empty() && asking.iter().all(|q| culprit_core::index_filter::matches(&index.table, filter, &q.text))
+}
+
+fn index_filter_equalities(index: &IndexStat) -> Option<Vec<(String, String)>> {
+    match &index.filter_facts {
+        Some(facts) => facts.equalities.clone(),
+        None => index.filter.as_deref().and_then(filter_equalities),
+    }
 }
 
 /// A filter as people read it: "is_deleted = 0", or the definition without its brackets.
@@ -944,7 +951,7 @@ pub(crate) fn parameterized_filter<'a>(
         i.schema.eq_ignore_ascii_case(&c.schema) && i.table.eq_ignore_ascii_case(&c.table) && !i.is_disabled
     };
     snapshot.indexes.iter().filter(on_table).find_map(|i| {
-        let conditions = filter_equalities(i.filter.as_deref()?)?;
+        let conditions = index_filter_equalities(i)?;
         // Every condition of the filter: the request asks for its column, and a query passes it as a parameter.
         let all_passed = conditions.iter().all(|(column, _)| {
             c.equality.iter().any(|k| k.eq_ignore_ascii_case(column))
@@ -971,122 +978,9 @@ pub(crate) fn parameterized_filter<'a>(
     })
 }
 
-/// `([is_deleted]=(0))`, `([status]='open' AND [kind]=(2))`: a filter made only of column-equals-literal conditions,
-/// as (column, literal). `None` for any other filter.
-pub(super) fn filter_equalities(filter: &str) -> Option<Vec<(String, String)>> {
-    let plain: String = filter.chars().filter(|c| !matches!(c, '[' | ']' | '"' | '(' | ')')).collect();
-    let spaced = plain.replace('=', " = ");
-    let words: Vec<&str> = spaced.split_whitespace().collect();
-    words
-        .split(|w| w.eq_ignore_ascii_case("and"))
-        .map(|condition| match condition {
-            [column, "=", literal] if is_literal(literal) => {
-                Some((column.rsplit('.').next().unwrap_or(column).to_string(), literal.to_string()))
-            }
-            _ => None,
-        })
-        .collect::<Option<Vec<_>>>()
-        .filter(|c| !c.is_empty())
-}
-
-pub(crate) fn is_literal(word: &str) -> bool {
-    word.parse::<f64>().is_ok() || (word.ends_with('\'') && (word.starts_with('\'') || word.starts_with("N'")))
-}
-
 /// Whether `text` compares `table`'s `column` to a parameter: `[column] = @p`, `t.column = @p` or `@p = column`.
 pub(super) fn compares_to_parameter(text: &str, table: &str, column: &str) -> bool {
     compared_to(text, table, column, |value| value.starts_with('@') && value.len() > 1)
-}
-
-/// Whether `a` and `b` are the same literal: `0` and `(0)`, `'open'` and `N'open'`.
-pub(super) fn same_literal(a: &str, b: &str) -> bool {
-    let plain = |v: &str| {
-        let v = v.trim().trim_matches(|c: char| c == '(' || c == ')' || c.is_whitespace());
-        v.strip_prefix(['n', 'N']).filter(|rest| rest.starts_with('\'')).unwrap_or(v).to_ascii_lowercase()
-    };
-    let (a, b) = (plain(a), plain(b));
-    match (a.parse::<f64>(), b.parse::<f64>()) {
-        (Ok(x), Ok(y)) => x == y,
-        _ => !a.is_empty() && a == b,
-    }
-}
-
-/// Whether `text` compares `table`'s `column` with `=` to a value `wanted` accepts, on either side, the column perhaps
-/// bracketed or qualified: `[column] = @p`, `t.column = 0`, `N'open' = column`. A column qualified by another table's
-/// name or alias (`[app].[call_sessions].[is_deleted] = 0` in a join) is that table's, not this one's. Text is compared
-/// lower-cased, its aliases read as SQL Server writes them (the optimizer's requests and Azure's are its own).
-pub(crate) fn compared_to(text: &str, table: &str, column: &str, wanted: impl Fn(&str) -> bool) -> bool {
-    let plain = text.chars().filter(|c| !matches!(c, '[' | ']' | '"')).collect::<String>().to_ascii_lowercase();
-    let column = column.to_ascii_lowercase();
-    let table = table.to_ascii_lowercase();
-    let aliases = culprit_core::sql::table_aliases(text, Engine::Mssql);
-    let ours = |qualifier: &str| {
-        qualifier == table
-            || aliases.iter().any(|(alias, name)| alias == qualifier && name.rsplit('.').next() == Some(table.as_str()))
-    };
-    let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '@' | '#' | '$');
-    plain.match_indices(&column).any(|(at, _)| {
-        let end = at + column.len();
-        if plain[..at].chars().next_back().is_some_and(part) || plain[end..].chars().next().is_some_and(part) {
-            return false;
-        }
-        // The column perhaps qualified: by this table, or an alias the statement gives it.
-        let mut before = &plain[..at];
-        if let Some(qualified) = before.strip_suffix('.') {
-            let unqualified = qualified.trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_');
-            if !ours(&qualified[unqualified.len()..]) {
-                return false;
-            }
-            before = unqualified;
-        }
-        // `column = value`
-        if let Some(value) = plain[end..].trim_start().strip_prefix('=') {
-            return wanted(operand_after(value));
-        }
-        // `value = column`
-        before.trim_end().strip_suffix('=').is_some_and(|lhs| {
-            // `<=`, `>=` and `!=` aren't equality.
-            !lhs.ends_with(['<', '>', '!']) && wanted(operand_before(lhs))
-        })
-    })
-}
-
-/// The value right after `=`: a parameter, a number or a quoted string, past any opening parentheses.
-pub(super) fn operand_after(text: &str) -> &str {
-    let text = text.trim_start().trim_start_matches(|c: char| c == '(' || c.is_whitespace());
-    let quote = if text.starts_with('\'') {
-        Some(0)
-    } else if text.starts_with("n'") {
-        Some(1)
-    } else {
-        None
-    };
-    match quote {
-        Some(open) => match text[open + 1..].find('\'') {
-            Some(close) => &text[..open + 1 + close + 1],
-            None => text,
-        },
-        None => {
-            let end = text
-                .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '@' | '#' | '$' | '.' | '-' | '+')))
-                .unwrap_or(text.len());
-            &text[..end]
-        }
-    }
-}
-
-/// The value right before `=`, the same way.
-pub(super) fn operand_before(text: &str) -> &str {
-    let text = text.trim_end().trim_end_matches(|c: char| c == ')' || c.is_whitespace());
-    if let Some(inner) = text.strip_suffix('\'') {
-        let Some(open) = inner.rfind('\'') else { return text };
-        let start = if text[..open].ends_with('n') { open - 1 } else { open };
-        return &text[start..];
-    }
-    let start = text
-        .rfind(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '@' | '#' | '$' | '.' | '-' | '+')))
-        .map_or(0, |p| p + 1);
-    &text[start..]
 }
 
 /// The finding when an existing filtered index would serve the request but its queries pass the filter's column as a

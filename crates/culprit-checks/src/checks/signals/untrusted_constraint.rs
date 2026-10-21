@@ -14,7 +14,7 @@ pub fn untrusted_constraint_info() -> CheckInfo {
     }
 }
 
-check!(UntrustedConstraintCheck: untrusted_constraint_info, untrusted_constraint, &[Evidence::Unknown]);
+check!(UntrustedConstraintCheck: untrusted_constraint_info, untrusted_constraint, &[Evidence::Source("constraints")]);
 
 /// Whether PostgreSQL's planner reads these CHECK constraints at all: constraint exclusion looks at inheritance
 /// children only (constraint_exclusion = partition, the default), or at every table with constraint_exclusion = on.

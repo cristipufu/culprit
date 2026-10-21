@@ -18,7 +18,7 @@ pub fn unused_index_info() -> CheckInfo {
     }
 }
 
-check!(UnusedIndexCheck: unused_index_info, unused_index, &[Evidence::IndexHistory, Evidence::Unknown]);
+check!(UnusedIndexCheck: unused_index_info, unused_index, &[Evidence::IndexCatalog, Evidence::IndexHistory]);
 
 pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
     let engine = snapshot.server.engine;

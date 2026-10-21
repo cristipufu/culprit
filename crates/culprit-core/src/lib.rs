@@ -18,6 +18,7 @@ pub mod finding;
 pub mod finding_facts;
 pub mod fingerprint;
 pub mod format;
+pub mod index_filter;
 pub mod insights;
 pub mod measurement;
 pub mod model;

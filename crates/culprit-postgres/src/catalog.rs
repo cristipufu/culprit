@@ -144,6 +144,7 @@ pub(crate) async fn indexes(client: &Client, probe: &Probe) -> Result<Vec<IndexS
     let mut indexes: Vec<IndexStat> = rows
         .iter()
         .map(|r| IndexStat {
+            filter_facts: None,
             schema: r.string("schema_name"),
             table: r.string("table_name"),
             name: r.string("index_name"),

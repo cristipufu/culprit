@@ -67,7 +67,7 @@ pub fn parse(tree: &str, statement: Option<&str>, schema: Option<&str>) -> Resul
         warnings: Vec::new(),
         index_hints: Vec::new(),
         props,
-        raw: Some(tree.to_string()),
+        raw: Some(tree.into()),
         insights: None,
     };
     plan.compute_self_costs();

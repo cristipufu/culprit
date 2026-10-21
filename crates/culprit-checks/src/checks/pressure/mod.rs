@@ -72,7 +72,8 @@ pub(crate) use health::{grade_findings, grade_on_evidence};
 /// How long the database-level waits (`snapshot.waits`) cover, and whether that is a measured window (Query Store's
 /// intervals) rather than totals since the server started. `None` when unknown or under an hour.
 fn waits_window(snapshot: &Snapshot) -> (Option<f64>, bool) {
-    let windowed = snapshot.server.engine == Engine::Mssql && app_queries(snapshot).any(|q| !q.waits.is_empty());
+    let windowed = snapshot.server.engine == Engine::Mssql
+        && app_queries(snapshot).any(|q| q.waits.iter().any(|w| w.wait_ms > 0.0));
     let hours = if windowed {
         snapshot.workload.as_ref().map(|w| w.measurement_hours())
     } else {

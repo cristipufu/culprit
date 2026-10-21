@@ -108,7 +108,7 @@ pub fn plan_from_rows(statement: &str, rows: &[(i64, i64, String)]) -> Plan {
         warnings: Vec::new(),
         index_hints: Vec::new(),
         props: Default::default(),
-        raw: Some(raw),
+        raw: Some(raw.into()),
         insights: None,
     }
 }

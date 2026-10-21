@@ -103,7 +103,7 @@ pub fn parse(value: &Value, json: &str, kind: PlanKind, statement: Option<&str>,
         warnings: Vec::new(),
         index_hints: Vec::new(),
         props,
-        raw: Some(json.to_string()),
+        raw: Some(json.into()),
         insights: None,
     };
     plan.compute_self_costs();

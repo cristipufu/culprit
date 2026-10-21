@@ -15,7 +15,7 @@ pub fn duplicate_index_info() -> CheckInfo {
     }
 }
 
-check!(DuplicateIndexCheck: duplicate_index_info, duplicate_index, &[Evidence::IndexCatalog, Evidence::Unknown]);
+check!(DuplicateIndexCheck: duplicate_index_info, duplicate_index, &[Evidence::IndexCatalog]);
 
 pub fn duplicate_index(snapshot: &Snapshot) -> Vec<Finding> {
     let engine = snapshot.server.engine;

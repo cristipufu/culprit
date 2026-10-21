@@ -743,7 +743,7 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
         Command::Cloud(args) => timeline_cmd::cloud(&ws, args, out).await,
         Command::Indexes { connection } => {
             let advice = match report_file(&connection) {
-                Some(path) => ws.index_advice_for(ws.analyze_file(&path)?),
+                Some(path) => culprit_engine::index_advice(&ws.analyze_file(&path)?),
                 None => ws.index_advice(&connection)?,
             };
             out.index_advice(&advice);

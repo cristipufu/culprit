@@ -137,7 +137,7 @@ pub async fn snapshot(
             (coverage.read_rows(&sources::SETTINGS, settings).unwrap_or_default(), waits, Some(pressure))
         }
         Err(e) => {
-            coverage.source_failed(&sources::SETTINGS, &e);
+            coverage.sources_failed(sources::MISC, &e);
             (Vec::new(), Vec::new(), None)
         }
     };

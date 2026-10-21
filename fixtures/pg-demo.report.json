@@ -1,8 +1,25 @@
 {
   "assessments": [
     {
+      "assessed_queries": [
+        "9065391607317686058",
+        "5308963031944094559",
+        "-8886085649470066503",
+        "4911431806993420100",
+        "-3722457391793582113",
+        "2004611025554862962",
+        "2885972271926804069",
+        "3432126458605143571",
+        "8465053948014496855",
+        "-6576252161252119529",
+        "5306524445554315840",
+        "2169115237613314459",
+        "-463560455567765064",
+        "-967240904657798800",
+        "6425265648074738764"
+      ],
       "check": "filtered-scan",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "Some statements lack the measurements this check needs; only measured statements were assessed.",
       "status": "findings",
       "title": "Scans an index would avoid"
     },
@@ -14,32 +31,32 @@
     },
     {
       "check": "duplicate-index",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Duplicate and redundant indexes"
     },
     {
       "check": "unindexed-fk",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Foreign keys without an index"
     },
     {
       "check": "overlapping-index",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Overlapping indexes"
     },
     {
       "check": "over-indexed",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Many indexes on write-heavy tables"
     },
     {
       "check": "scan-heavy",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Tables read in full over and over"
     },
     {
@@ -85,12 +102,43 @@
       "title": "Queries that got slower"
     },
     {
+      "assessed_queries": [
+        "9065391607317686058",
+        "5308963031944094559",
+        "-3722457391793582113",
+        "2004611025554862962",
+        "2885972271926804069",
+        "3432126458605143571",
+        "-967240904657798800",
+        "6425265648074738764"
+      ],
       "check": "unstable-query",
-      "reason": "This scan did not record the measurements this check needs.",
+      "reason": "Some statements lack the measurements this check needs; only measured statements were assessed.",
       "status": "insufficient-evidence",
       "title": "Unstable queries"
     },
     {
+      "assessed_queries": [
+        "9065391607317686058",
+        "5308963031944094559",
+        "-8886085649470066503",
+        "4911431806993420100",
+        "-3722457391793582113",
+        "2004611025554862962",
+        "2885972271926804069",
+        "3432126458605143571",
+        "4237762245898133153",
+        "8465053948014496855",
+        "-6576252161252119529",
+        "5306524445554315840",
+        "2169115237613314459",
+        "-8017746645856686016",
+        "6097083398544187049",
+        "4854991825702068830",
+        "-463560455567765064",
+        "-967240904657798800",
+        "6425265648074738764"
+      ],
       "check": "temp-spill",
       "reason": null,
       "status": "findings",
@@ -98,20 +146,20 @@
     },
     {
       "check": "stale-stats",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Stale statistics"
     },
     {
       "check": "dead-rows",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Dead rows and lagging autovacuum"
     },
     {
       "check": "xid-age",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Transaction ID wraparound risk"
     },
     {
@@ -122,13 +170,13 @@
     },
     {
       "check": "config",
-      "reason": "The available evidence does not establish complete coverage of this check.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Configuration"
     },
     {
       "check": "deadlocks",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "A cumulative counter or a limited deadlock sample cannot verify the absence of this deadlock pattern.",
       "status": "findings",
       "title": "Deadlocks"
     },
@@ -163,24 +211,57 @@
       "title": "Archive, replication and redo failures"
     },
     {
+      "assessed_queries": [
+        "-967240904657798800"
+      ],
       "check": "planning-time",
-      "reason": "This scan did not record the measurements this check needs.",
+      "reason": "Some statements lack the measurements this check needs; only measured statements were assessed.",
       "status": "findings",
       "title": "Queries that spend their time being planned"
     },
     {
+      "assessed_queries": [
+        "6425265648074738764"
+      ],
       "check": "jit-overhead",
-      "reason": "This scan did not record the measurements this check needs.",
+      "reason": "Some statements lack the measurements this check needs; only measured statements were assessed.",
       "status": "findings",
       "title": "JIT compilation that takes much of a statement's time"
     },
     {
+      "assessed_queries": [
+        "4911431806993420100",
+        "2885972271926804069",
+        "4237762245898133153",
+        "-463560455567765064"
+      ],
       "check": "log-volume",
-      "reason": "This scan did not record the measurements this check needs.",
+      "reason": "Some statements lack the measurements this check needs; only measured statements were assessed.",
       "status": "insufficient-evidence",
       "title": "Writes that produce most of the log"
     },
     {
+      "assessed_queries": [
+        "9065391607317686058",
+        "5308963031944094559",
+        "-8886085649470066503",
+        "4911431806993420100",
+        "-3722457391793582113",
+        "2004611025554862962",
+        "2885972271926804069",
+        "3432126458605143571",
+        "4237762245898133153",
+        "8465053948014496855",
+        "-6576252161252119529",
+        "5306524445554315840",
+        "2169115237613314459",
+        "-8017746645856686016",
+        "6097083398544187049",
+        "4854991825702068830",
+        "-463560455567765064",
+        "-967240904657798800",
+        "6425265648074738764"
+      ],
       "check": "big-result",
       "reason": null,
       "status": "assessed",
@@ -188,25 +269,25 @@
     },
     {
       "check": "untrusted-constraint",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "This scan did not record the required source's collection outcome.",
       "status": "findings",
       "title": "Constraints the optimizer can't rely on"
     },
     {
       "check": "hot-updates",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": null,
       "status": "findings",
       "title": "Updates that rewrite every index"
     },
     {
       "check": "table-bloat",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "Some tables lack the measurements this check needs.",
       "status": "insufficient-evidence",
       "title": "Tables that are mostly empty space"
     },
     {
       "check": "large-rows",
-      "reason": "The available evidence does not establish complete coverage of this check.",
+      "reason": "Some tables lack the measurements this check needs.",
       "status": "insufficient-evidence",
       "title": "Tables whose rows are mostly large values"
     },
@@ -6102,7 +6183,22 @@
           "waits": []
         },
         {
-          "costs": null,
+          "costs": {
+            "aborted": null,
+            "aborted_mean_ms": null,
+            "compile_history": null,
+            "failed": null,
+            "jit_functions": null,
+            "jit_ms": null,
+            "log_bytes": null,
+            "log_full_pages": null,
+            "log_share": null,
+            "plan_ms": null,
+            "plans": null,
+            "row_bytes": 8.0,
+            "top_error": null,
+            "warnings": null
+          },
           "cpu_time_ms": null,
           "executions": 1.0,
           "first_seen": "2026-10-11T07:01:50Z",
@@ -6265,7 +6361,22 @@
           "waits": []
         },
         {
-          "costs": null,
+          "costs": {
+            "aborted": null,
+            "aborted_mean_ms": null,
+            "compile_history": null,
+            "failed": null,
+            "jit_functions": null,
+            "jit_ms": null,
+            "log_bytes": null,
+            "log_full_pages": null,
+            "log_share": null,
+            "plan_ms": null,
+            "plans": null,
+            "row_bytes": 40.0,
+            "top_error": null,
+            "warnings": null
+          },
           "cpu_time_ms": null,
           "executions": 1.0,
           "first_seen": "2026-10-11T07:02:21Z",
@@ -6502,7 +6613,22 @@
           "waits": []
         },
         {
-          "costs": null,
+          "costs": {
+            "aborted": null,
+            "aborted_mean_ms": null,
+            "compile_history": null,
+            "failed": null,
+            "jit_functions": null,
+            "jit_ms": null,
+            "log_bytes": null,
+            "log_full_pages": null,
+            "log_share": null,
+            "plan_ms": null,
+            "plans": null,
+            "row_bytes": 4.0,
+            "top_error": null,
+            "warnings": null
+          },
           "cpu_time_ms": null,
           "executions": 1.0,
           "first_seen": "2026-10-11T07:01:50Z",

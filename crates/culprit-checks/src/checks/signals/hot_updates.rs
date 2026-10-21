@@ -14,7 +14,7 @@ pub fn hot_updates_info() -> CheckInfo {
     }
 }
 
-check!(HotUpdatesCheck: hot_updates_info, hot_updates, &[Evidence::Unknown]);
+check!(HotUpdatesCheck: hot_updates_info, hot_updates, &[Evidence::IndexCatalog, Evidence::Tables(crate::evidence::TableMeasure::HotUpdates)]);
 
 /// Non-HOT updates a day to one table that make hot-updates Medium.
 pub(super) const COLD_UPDATES_MEDIUM_PER_DAY: f64 = 1_000_000.0;

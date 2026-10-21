@@ -245,6 +245,7 @@ pub(crate) async fn indexes(conn: &mut Conn, db: &str, probe: &Probe) -> Result<
             )
         };
         out.push(IndexStat {
+            filter_facts: None,
             schema: db.to_string(),
             kind: first.string("index_type").to_ascii_lowercase(),
             include: Vec::new(),

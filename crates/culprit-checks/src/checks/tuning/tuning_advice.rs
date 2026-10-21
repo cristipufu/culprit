@@ -1,7 +1,7 @@
 //! The `tuning-advice` check: Plan-forcing and index recommendations from automatic tuning, forced plans (those that stopped applying, and those that scan where an index added since could seek), Query Store hints that stopped applying, and automatic plan correction left off.
 
 use super::*;
-use crate::evidence::Requirement as Evidence;
+use crate::evidence::{Observation, Requirement as Evidence};
 
 pub fn tuning_advice_info() -> CheckInfo {
     CheckInfo {
@@ -18,7 +18,7 @@ pub fn tuning_advice_info() -> CheckInfo {
     }
 }
 
-check!(TuningAdviceCheck: tuning_advice_info, tuning_advice, &[Evidence::Unknown]);
+check!(TuningAdviceCheck: tuning_advice_info, tuning_advice, &[Evidence::SourceWithLegacy("tuning", Observation::Tuning)]);
 
 /// A day or more between `last` and the end of the scan's data, as (seconds, `last`).
 pub(super) fn quiet_since<'a>(snapshot: &Snapshot, last: Option<&'a str>) -> Option<(f64, &'a str)> {
@@ -1085,7 +1085,7 @@ fn picked_elsewhere<'a>(
         .iter()
         .filter(|i| i.schema.eq_ignore_ascii_case(&ix.schema) && i.table.eq_ignore_ascii_case(&ix.table))
         .filter(|i| !i.is_disabled && !i.name.eq_ignore_ascii_case(&used))
-        .filter(|i| i.filter.as_deref().is_none_or(|f| crate::indexes::fits_filter(&ix.table, f, &[h.query])))
+        .filter(|i| crate::indexes::fits_index_filter(i, &[h.query]))
         .filter(|i| i.key_names().first().is_some_and(|k| recommended(k) && !is_sought(k)))
         .map(|i| {
             let keys: Vec<String> =

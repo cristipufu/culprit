@@ -28,8 +28,8 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use culprit_core::{
-    Capability, CollectorNote, ColumnInfo, ConnectionSpec, Coverage, Engine, Environment, ExplainMode, ForeignKey,
-    IndexStat, LiveState, MissingIndex, Plan, Provider, ResourceSample, Result, ResultSet, SNAPSHOT_FORMAT, ServerInfo,
+    Capability, ColumnInfo, ConnectionSpec, Coverage, Engine, Environment, ExplainMode, ForeignKey, IndexStat,
+    LiveState, MissingIndex, Plan, Provider, ResourceSample, Result, ResultSet, SNAPSHOT_FORMAT, ServerInfo,
     SessionAction, Setting, Snapshot, SnapshotOptions, StatisticsInfo, TableStat, WaitStat, Workload,
 };
 
@@ -142,6 +142,7 @@ async fn collect_workload(client: &mut MsClient, probe: &Probe, options: &Snapsh
             workload::from_query_store(client, options).await,
             grant,
         ) {
+            part.outcome.merge(result.coverage);
             part.outcome.completed(&sources::QUERY_STORE, result.workload.queries.len());
             part.outcome.delivered(Capability::QueryStore);
             if result.plans_parsed > 0 {
@@ -297,7 +298,7 @@ async fn collect_misc(client: &mut MsClient, probe: &Probe, options: &SnapshotOp
 
 impl MssqlProvider {
     /// Runs `f` on its own pooled session so collector groups proceed concurrently.
-    async fn on_session<T: Default, F, Fut>(&self, f: F) -> (T, Option<CollectorNote>)
+    async fn on_session<T: Default, F, Fut>(&self, f: F) -> (T, Option<culprit_core::Error>)
     where
         F: FnOnce(MsClient) -> Fut,
         Fut: Future<Output = (T, MsClient)>,
@@ -308,7 +309,7 @@ impl MssqlProvider {
                 self.pool.put(client);
                 (value, None)
             }
-            Err(err) => (T::default(), Some(CollectorNote { collector: "connection".into(), message: err.message })),
+            Err(err) => (T::default(), Some(err)),
         }
     }
 }
@@ -335,7 +336,7 @@ impl Provider for MssqlProvider {
         let probe = self.pool.with(|c| Box::pin(probe::run(c))).await?;
         let probe_ref = &probe;
 
-        let (workload_part, (schema_part, schema_note), (misc_part, misc_note)) = tokio::join!(
+        let (workload_part, (schema_part, schema_error), (misc_part, misc_error)) = tokio::join!(
             async {
                 match self.pool.get().await {
                     Ok(mut client) => {
@@ -355,7 +356,11 @@ impl Provider for MssqlProvider {
                 (part, c)
             }),
         );
-        let workload_part = workload_part?;
+        let workload_part = workload_part.unwrap_or_else(|error| {
+            let mut part = WorkloadPart::default();
+            part.outcome.sources_failed(sources::WORKLOAD, &error);
+            part
+        });
 
         let mut outcome = Outcome::default();
         let (expected_have, expected_missing) = probe::expected_capabilities(&probe);
@@ -372,15 +377,11 @@ impl Provider for MssqlProvider {
         outcome.merge(workload_part.outcome);
         outcome.merge(schema_part.outcome);
         outcome.merge(misc_part.outcome);
-        if let Some(note) = &schema_note {
-            for source in
-                [&sources::TABLES, &sources::INDEXES, &sources::COLUMNS, &sources::FOREIGN_KEYS, &sources::STATISTICS]
-            {
-                outcome.source_failed(source, &culprit_core::Error::internal(note.message.clone()));
-            }
+        if let Some(error) = schema_error {
+            outcome.sources_failed(sources::SCHEMA, &error);
         }
-        for note in schema_note.into_iter().chain(misc_note) {
-            outcome.note(&note.collector, note.message);
+        if let Some(error) = misc_error {
+            outcome.sources_failed(sources::MISC, &error);
         }
         let sources = outcome.outcomes();
         let (have, missing, notes) = outcome.finish();
@@ -431,7 +432,11 @@ impl Provider for MssqlProvider {
                 operations::collect(&mut client, &probe, &mut snapshot).await;
                 self.pool.put(client);
             }
-            Err(err) => snapshot.notes.push(CollectorNote { collector: "signals".into(), message: err.message }),
+            Err(error) => {
+                let mut coverage = Coverage::default();
+                coverage.sources_failed(sources::SIGNAL_READS, &error);
+                coverage.append_to(&mut snapshot);
+            }
         }
         snapshot.bind_identity(culprit_core::DatabaseIdentity::server(
             Engine::Mssql,

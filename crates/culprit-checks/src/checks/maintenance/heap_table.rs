@@ -15,7 +15,7 @@ pub fn heap_table_info() -> CheckInfo {
     }
 }
 
-check!(HeapTableCheck: heap_table_info, heap_table, &[Evidence::Unknown]);
+check!(HeapTableCheck: heap_table_info, heap_table, &[Evidence::Tables(crate::evidence::TableMeasure::Heap)]);
 
 pub fn heap_table(snapshot: &Snapshot) -> Vec<Finding> {
     if snapshot.server.engine != Engine::Mssql {

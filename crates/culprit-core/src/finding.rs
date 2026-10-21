@@ -298,4 +298,82 @@ impl Report {
     pub fn analysis_input(&self) -> &Snapshot {
         self.evidence.as_ref().map_or(&self.snapshot, |e| e.input.as_ref())
     }
+
+    /// Why a missing finding cannot establish a clean result for this check. A partial source can still yield
+    /// positive findings, so a `Findings` assessment with a reason retains that incomplete-evidence account.
+    /// Reports saved before assessments existed retain their capability-lock interpretation.
+    pub fn check_absence_problem(&self, check: &str) -> Option<String> {
+        if let Some(lock) = self.locked.iter().find(|l| l.check.id == check) {
+            let names: Vec<_> = lock.missing.iter().map(|c| c.label().to_string()).collect();
+            return Some(if names.is_empty() {
+                "A capability is missing.".into()
+            } else {
+                format!("Needs {}.", crate::format::list(&names))
+            });
+        }
+        let Some(assessment) = self.assessments.iter().find(|a| a.check == check) else {
+            return (!self.assessments.is_empty()).then(|| "This check was not run in the new scan.".into());
+        };
+        use crate::CheckStatus;
+        match assessment.status {
+            CheckStatus::Unavailable | CheckStatus::InsufficientEvidence => {
+                Some(assessment.reason.clone().unwrap_or_else(|| "The required evidence is incomplete.".into()))
+            }
+            CheckStatus::Findings => assessment.reason.clone(),
+            CheckStatus::Assessed | CheckStatus::NotApplicable => None,
+        }
+    }
+
+    /// A finding reclassified under another cause did not disappear because a fix was verified.
+    pub fn finding_absence_problem(&self, finding: &str, check: &str, queries: &[&str]) -> Option<String> {
+        self.finding_absence_problem_with_baseline(finding, check, queries, None)
+    }
+
+    /// A retained baseline can establish recovery even after the earlier plan leaves the current window.
+    pub fn finding_absence_problem_with_baseline(
+        &self,
+        finding: &str,
+        check: &str,
+        queries: &[&str],
+        baseline: Option<&crate::PlanBaseline>,
+    ) -> Option<String> {
+        if let Some(baseline) = baseline {
+            // This bypasses only the missing historical comparison, never a locked, unrun or failed check.
+            if queries != [baseline.query.as_str()]
+                || self.locked.iter().any(|l| l.check.id == check)
+                || !self.assessments.iter().any(|a| a.check == check && a.status != crate::CheckStatus::Unavailable)
+            {
+                return Some("The plan-regression check could not assess the affected statement.".into());
+            }
+            return baseline.recovery_problem(&self.snapshot).or_else(|| self.refinement_absence_problem(finding));
+        }
+        if self.assessments.iter().any(|a| {
+            a.check == check
+                && !a.assessed_queries.is_empty()
+                && queries.iter().any(|q| !a.assessed_queries.iter().any(|id| id == q))
+        }) {
+            return Some("The affected statement was not measured sufficiently in the new scan.".into());
+        }
+        let measured = !queries.is_empty()
+            && !self.locked.iter().any(|l| l.check.id == check)
+            && self.assessments.iter().any(|a| {
+                a.check == check
+                    && matches!(a.status, crate::CheckStatus::InsufficientEvidence | crate::CheckStatus::Findings)
+                    && queries.iter().all(|q| a.assessed_queries.iter().any(|id| id == q))
+            });
+        self.check_absence_problem(check).filter(|_| !measured).or_else(|| self.refinement_absence_problem(finding))
+    }
+
+    fn refinement_absence_problem(&self, finding: &str) -> Option<String> {
+        self.refinement
+                .iter()
+                .any(|decision| {
+                    decision.finding.as_deref() == Some(finding)
+                        && matches!(
+                            decision.outcome,
+                            crate::RefinementOutcome::Absorbed { .. } | crate::RefinementOutcome::Covered { .. }
+                        )
+                })
+                .then(|| "This finding was combined with another observation during analysis; its disappearance does not verify a fix.".into())
+    }
 }

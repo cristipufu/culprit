@@ -22,7 +22,7 @@ pub fn storage_capacity(s: &Snapshot) -> Vec<Finding> {
         let reuse = space.reuse_wait.as_deref().filter(|w| *w != "NOTHING");
         // A nearly occupied log with autogrowth room is ordinary operation, not a full-disk diagnosis.
         let actionable = !shared && constrained && share >= 0.95 && (space.kind != FileKind::Log || reuse.is_some());
-        let mut f = finding("storage-capacity", &space.name, Category::Configuration, subject(SubjectKind::Database, &space.name));
+        let mut f = finding("storage-capacity", &culprit_core::redact::shareable_name(&space.name), Category::Configuration, subject(SubjectKind::Database, &space.name));
         f.title = format!("{} uses {} of {} {}", space.name, format::bytes(space.used_bytes), format::bytes(capacity), if constrained { "available allocation" } else if capacity > space.total_bytes { "configured capacity" } else { "currently allocated space" });
         f.summary = format!("Measured when the scan ran: {} free in this allocation. {}{}{} This does not measure free filesystem space or predict when it will fill.", format::bytes((capacity-space.used_bytes).max(0.0)), if shared { "These files are shared by the whole instance; this does not attribute their use to the selected database. " } else { "" }, if constrained { "The files cannot grow beyond this allocation under their current settings. " } else { "Growth settings or additional storage may permit more space. Allocated space being mostly occupied alone is not an incident. " }, reuse.map(|r| format!("SQL Server currently reports log_reuse_wait_desc = {r}. ")).unwrap_or_default());
         f.severity = if actionable { Severity::Medium } else { Severity::Low };
