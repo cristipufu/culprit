@@ -206,6 +206,22 @@ impl Aggregator {
             kept
         });
         self.order.retain(|key| self.shapes.contains_key(key));
+        self.first = None;
+        self.last = None;
+        for shape in self.shapes.values() {
+            if let Some(f) = shape.first {
+                self.first = Some(match self.first {
+                    Some(cur) if cur.epoch <= f.epoch => cur,
+                    _ => f,
+                });
+            }
+            if let Some(l) = shape.last {
+                self.last = Some(match self.last {
+                    Some(cur) if cur.epoch >= l.epoch => cur,
+                    _ => l,
+                });
+            }
+        }
         before - self.entries
     }
 

@@ -470,7 +470,41 @@ async fn run_in_transaction(client: &Client, statement: &str, limit: usize, curs
 }
 
 fn strip_concurrently_keyword(stmt: &str) -> String {
-    let words: Vec<&str> = stmt.split_whitespace().collect();
+    let mut cleaned = String::with_capacity(stmt.len());
+    let mut chars = stmt.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    while let Some(c) = chars.next() {
+        if !in_single && !in_double {
+            if c == '-' && chars.peek() == Some(&'-') {
+                for ch in chars.by_ref() {
+                    if ch == '\n' {
+                        cleaned.push('\n');
+                        break;
+                    }
+                }
+                continue;
+            }
+            if c == '/' && chars.peek() == Some(&'*') {
+                chars.next();
+                while let Some(ch) = chars.next() {
+                    if ch == '*' && chars.peek() == Some(&'/') {
+                        chars.next();
+                        break;
+                    }
+                }
+                cleaned.push(' ');
+                continue;
+            }
+        }
+        if c == '\'' && !in_double {
+            in_single = !in_single;
+        } else if c == '"' && !in_single {
+            in_double = !in_double;
+        }
+        cleaned.push(c);
+    }
+    let words: Vec<&str> = cleaned.split_whitespace().collect();
     if let Some(on_pos) = words.iter().position(|w| w.eq_ignore_ascii_case("ON")) {
         let mut head = Vec::with_capacity(on_pos);
         let mut i = 0;
@@ -489,8 +523,8 @@ fn strip_concurrently_keyword(stmt: &str) -> String {
             head.push(words[i]);
             i += 1;
         }
-        let on_byte = words[on_pos].as_ptr() as usize - stmt.as_ptr() as usize;
-        return format!("{} {}", head.join(" "), &stmt[on_byte..]);
+        let on_byte = words[on_pos].as_ptr() as usize - cleaned.as_ptr() as usize;
+        return format!("{} {}", head.join(" "), &cleaned[on_byte..]);
     }
     words.into_iter().filter(|w| !w.eq_ignore_ascii_case("CONCURRENTLY")).collect::<Vec<_>>().join(" ")
 }

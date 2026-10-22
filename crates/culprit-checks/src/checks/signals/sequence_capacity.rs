@@ -26,7 +26,10 @@ pub fn sequence_capacity(s: &Snapshot) -> Vec<Finding> {
         f.verify=vec!["Check the new type and allocation bounds, confirm foreign keys and application values remain compatible, and verify inserts or sequence allocations under representative load.".into()];Some(f)
     }).collect();
     if s.server.engine != Engine::Postgres {
-        out.extend(super::table_bloat::expiring_range_partitions(s));
+        for mut f in super::table_bloat::expiring_range_partitions(s) {
+            f.check = "sequence-capacity".into();
+            out.push(f);
+        }
     }
     out.extend(int32_primary_keys_near_limit(s));
     out

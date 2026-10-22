@@ -70,16 +70,20 @@ pub fn apply_sql_fixes(snapshot: &Snapshot, sql: &str) -> (String, usize) {
 
         out.push_str(&sql[last_pos..*start]);
 
+        let mut emitted_fk_fixes = Vec::<String>::new();
         for f in &stmt_findings {
             if f.id.starts_with("sql-lint:unindexed-fk:")
                 && !(in_transaction && snapshot.server.engine == Engine::Postgres)
                 && let Some(fix_sql) = f.fix.as_ref().and_then(|fix| fix.sql.as_deref())
             {
                 let trimmed = fix_sql.trim();
-                out.push_str(trimmed);
-                out.push('\n');
-                created_indexes.extend(collect_script_indexes(&split_statements(trimmed)));
-                applied += 1;
+                if !emitted_fk_fixes.iter().any(|prev| prev == trimmed) {
+                    out.push_str(trimmed);
+                    out.push('\n');
+                    created_indexes.extend(collect_script_indexes(&split_statements(trimmed)));
+                    emitted_fk_fixes.push(trimmed.to_string());
+                    applied += 1;
+                }
             }
         }
 
@@ -993,7 +997,17 @@ fn check_alter_table_action(
         let ref_pos = rest_idx + ref_offset;
         if let Some(raw_parent) = tokens.get(ref_pos + 1) {
             let parent_cols = parse_paren_list(tokens, ref_pos + 2).map(|(cols, _)| cols).unwrap_or_default();
-            check_foreign_key_addition(snapshot, stmt, table, &child_cols, raw_parent, &parent_cols, ctx, findings);
+            check_foreign_key_addition(
+                snapshot,
+                stmt,
+                table,
+                &child_cols,
+                raw_parent,
+                &parent_cols,
+                ctx,
+                before_count,
+                findings,
+            );
         }
     }
 
@@ -1394,6 +1408,7 @@ fn check_foreign_key_addition(
     raw_parent: &str,
     parent_cols: &[String],
     ctx: &ScriptContext<'_>,
+    before_count: usize,
     findings: &mut Vec<Finding>,
 ) {
     if child_cols.is_empty() {
@@ -1410,14 +1425,13 @@ fn check_foreign_key_addition(
         .created_indexes
         .iter()
         .any(|(tbl, cols)| table_matches(child_table, tbl) && index_covers_prefix(cols, child_cols));
-    if !covered_in_snapshot && !covered_in_script {
-        let cols_label = child_cols.join(", ");
-        let mut f = finding(
-            "sql-lint",
-            &format!("unindexed-fk:{child_qual}.{cols_label}"),
-            Category::Indexes,
-            subject(SubjectKind::Table, &child_qual),
-        );
+    let cols_label = child_cols.join(", ");
+    let fk_finding_id = format!("unindexed-fk:{child_qual}.{cols_label}");
+    if !covered_in_snapshot
+        && !covered_in_script
+        && !findings[before_count..].iter().any(|f| f.id == format!("sql-lint:{fk_finding_id}"))
+    {
+        let mut f = finding("sql-lint", &fk_finding_id, Category::Indexes, subject(SubjectKind::Table, &child_qual));
         f.actionability = Actionability::NeedsAttention;
         f.confidence = Confidence::High;
         f.severity = if is_large_table(child_table) { Severity::High } else { Severity::Medium };
@@ -1832,6 +1846,10 @@ fn rewrite_preserving_comments(orig_span: &str, rep_sql: &str) -> String {
     for suffix in [" WITH (ONLINE = ON);", " ALGORITHM=INPLACE LOCK=NONE;", ", ALGORITHM=INPLACE, LOCK=NONE;"] {
         if rep_sql.ends_with(suffix) {
             let body = orig_span.trim_end().strip_suffix(';').unwrap_or(orig_span.trim_end());
+            let last_line = body.rsplit('\n').next().unwrap_or(body);
+            if last_line.contains("--") {
+                return format!("{body}\n{}", suffix.trim_start());
+            }
             return format!("{body}{suffix}");
         }
     }
@@ -1851,8 +1869,31 @@ fn find_keyword_outside_comments(sql: &str, keyword: &str) -> Option<usize> {
     let mut i = 0;
     let mut in_single = false;
     let mut in_double = false;
+    let mut in_backtick = false;
+    let mut in_bracket = false;
+    let mut dollar_tag: Option<&str> = None;
     while i < bytes.len() {
-        if !in_single && !in_double {
+        if let Some(tag) = dollar_tag {
+            if bytes[i] == b'$' && sql[i..].starts_with(tag) {
+                i += tag.len();
+                dollar_tag = None;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        if in_single && bytes[i] == b'\\' {
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        if !in_single && !in_double && !in_backtick && !in_bracket {
+            if bytes[i] == b'$'
+                && let Some(tag) = parse_dollar_tag(&sql[i..])
+            {
+                dollar_tag = Some(tag);
+                i += tag.len();
+                continue;
+            }
             if bytes[i] == b'-' && bytes.get(i + 1) == Some(&b'-') {
                 i += 2;
                 while i < bytes.len() && bytes[i] != b'\n' {
@@ -1877,10 +1918,16 @@ fn find_keyword_outside_comments(sql: &str, keyword: &str) -> Option<usize> {
                 }
             }
         }
-        if bytes[i] == b'\'' && !in_double {
+        if bytes[i] == b'\'' && !in_double && !in_backtick && !in_bracket {
             in_single = !in_single;
-        } else if bytes[i] == b'"' && !in_single {
+        } else if bytes[i] == b'"' && !in_single && !in_backtick && !in_bracket {
             in_double = !in_double;
+        } else if bytes[i] == b'`' && !in_single && !in_double && !in_bracket {
+            in_backtick = !in_backtick;
+        } else if bytes[i] == b'[' && !in_single && !in_double && !in_backtick && !in_bracket {
+            in_bracket = true;
+        } else if bytes[i] == b']' && in_bracket {
+            in_bracket = false;
         }
         i += 1;
     }
@@ -1899,7 +1946,11 @@ fn parse_dollar_tag(sql: &str) -> Option<&str> {
     let rest = sql.strip_prefix('$')?;
     let end = rest.find('$')?;
     let tag = &rest[..end];
-    if tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') { Some(&sql[..end + 2]) } else { None }
+    if !tag.starts_with(|c: char| c.is_ascii_digit()) && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        Some(&sql[..end + 2])
+    } else {
+        None
+    }
 }
 
 fn split_statement_spans(sql: &str) -> Vec<(usize, usize, String)> {
@@ -1910,6 +1961,8 @@ fn split_statement_spans(sql: &str) -> Vec<(usize, usize, String)> {
     let mut chars = sql.char_indices().peekable();
     let mut in_single = false;
     let mut in_double = false;
+    let mut in_backtick = false;
+    let mut in_bracket = false;
     let mut dollar_tag: Option<String> = None;
     while let Some((idx, c)) = chars.next() {
         if let Some(ref tag) = dollar_tag {
@@ -1926,7 +1979,7 @@ fn split_statement_spans(sql: &str) -> Vec<(usize, usize, String)> {
             }
             continue;
         }
-        if (in_single || in_double) && c == '\\' {
+        if in_single && c == '\\' {
             current.push(c);
             if let Some((end_i, next_c)) = chars.next() {
                 current.push(next_c);
@@ -1934,7 +1987,7 @@ fn split_statement_spans(sql: &str) -> Vec<(usize, usize, String)> {
             }
             continue;
         }
-        if !in_single && !in_double {
+        if !in_single && !in_double && !in_backtick && !in_bracket {
             if c == '$'
                 && let Some(tag) = parse_dollar_tag(&sql[idx..])
             {
@@ -1984,10 +2037,16 @@ fn split_statement_spans(sql: &str) -> Vec<(usize, usize, String)> {
                 continue;
             }
         }
-        if c == '\'' && !in_double {
+        if c == '\'' && !in_double && !in_backtick && !in_bracket {
             in_single = !in_single;
-        } else if c == '"' && !in_single {
+        } else if c == '"' && !in_single && !in_backtick && !in_bracket {
             in_double = !in_double;
+        } else if c == '`' && !in_single && !in_double && !in_bracket {
+            in_backtick = !in_backtick;
+        } else if c == '[' && !in_single && !in_double && !in_backtick && !in_bracket {
+            in_bracket = true;
+        } else if c == ']' && in_bracket {
+            in_bracket = false;
         }
         if !c.is_whitespace() {
             if stmt_start.is_none() {
@@ -2010,12 +2069,44 @@ fn tokenize(stmt: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut close_delim: Option<char> = None;
-    for c in stmt.chars() {
+    let mut dollar_tag: Option<String> = None;
+    let mut chars = stmt.char_indices().peekable();
+    while let Some((idx, c)) = chars.next() {
+        if let Some(ref tag) = dollar_tag {
+            current.push(c);
+            if c == '$' && stmt[idx..].starts_with(tag.as_str()) {
+                for _ in 0..tag.chars().count().saturating_sub(1) {
+                    if let Some((_, ch)) = chars.next() {
+                        current.push(ch);
+                    }
+                }
+                dollar_tag = None;
+            }
+            continue;
+        }
         if let Some(q) = close_delim {
             current.push(c);
+            if q == '\'' && c == '\\' {
+                if let Some((_, next_c)) = chars.next() {
+                    current.push(next_c);
+                }
+                continue;
+            }
             if c == q {
                 close_delim = None;
             }
+            continue;
+        }
+        if c == '$'
+            && let Some(tag) = parse_dollar_tag(&stmt[idx..])
+        {
+            current.push(c);
+            for _ in 0..tag.chars().count().saturating_sub(1) {
+                if let Some((_, ch)) = chars.next() {
+                    current.push(ch);
+                }
+            }
+            dollar_tag = Some(tag.to_string());
             continue;
         }
         if matches!(c, '\'' | '"' | '`') {

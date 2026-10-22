@@ -135,10 +135,33 @@ fn sarif_level(severity: Severity) -> &'static str {
     }
 }
 
+fn extract_summary_statement(summary: &str) -> Option<&str> {
+    if let Some(rest) =
+        summary.strip_prefix("The statement `").or_else(|| summary.strip_prefix("The migration statement `"))
+    {
+        const CLOSERS: &[&str] = &[
+            "` uses `CONCURRENTLY`",
+            "` drops `",
+            "` truncates ",
+            "` runs `",
+            "` rebuilds ",
+            "` builds an index ",
+            "` alters ",
+            "` adds ",
+            "` references ",
+        ];
+        if let Some(pos) = CLOSERS.iter().filter_map(|c| rest.find(c)).min() {
+            return Some(&rest[..pos]);
+        }
+        return rest.split('`').next();
+    }
+    summary.split('`').nth(1)
+}
+
 /// Find the 1-based line number in `sql` where the statement referenced by `f` starts.
 fn locate_finding_line(sql: &str, f: &Finding) -> Option<usize> {
     let (norm_sql, byte_lines) = normalize_sql_with_lines(sql);
-    if let Some(after_tick) = f.summary.split('`').nth(1) {
+    if let Some(after_tick) = extract_summary_statement(&f.summary) {
         let full_needle = after_tick
             .trim()
             .trim_end_matches(';')
@@ -174,7 +197,11 @@ fn parse_dollar_tag(sql: &str) -> Option<&str> {
     let rest = sql.strip_prefix('$')?;
     let end = rest.find('$')?;
     let tag = &rest[..end];
-    if tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') { Some(&sql[..end + 2]) } else { None }
+    if !tag.starts_with(|c: char| c.is_ascii_digit()) && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        Some(&sql[..end + 2])
+    } else {
+        None
+    }
 }
 
 fn normalize_sql_with_lines(sql: &str) -> (String, Vec<usize>) {
@@ -184,6 +211,8 @@ fn normalize_sql_with_lines(sql: &str) -> (String, Vec<usize>) {
     let mut chars = sql.char_indices().peekable();
     let mut in_single = false;
     let mut in_double = false;
+    let mut in_backtick = false;
+    let mut in_bracket = false;
     let mut dollar_tag: Option<String> = None;
     let mut last_was_space = true;
 
@@ -226,7 +255,7 @@ fn normalize_sql_with_lines(sql: &str) -> (String, Vec<usize>) {
             }
             continue;
         }
-        if (in_single || in_double) && c == '\\' {
+        if in_single && c == '\\' {
             push_lower(c, line, &mut norm, &mut byte_lines);
             if let Some((_, next_c)) = chars.next() {
                 if next_c == '\n' {
@@ -237,7 +266,7 @@ fn normalize_sql_with_lines(sql: &str) -> (String, Vec<usize>) {
             last_was_space = false;
             continue;
         }
-        if !in_single && !in_double {
+        if !in_single && !in_double && !in_backtick && !in_bracket {
             if c == '$'
                 && let Some(tag) = parse_dollar_tag(&sql[idx..])
             {
@@ -283,10 +312,16 @@ fn normalize_sql_with_lines(sql: &str) -> (String, Vec<usize>) {
                 continue;
             }
         }
-        if c == '\'' && !in_double {
+        if c == '\'' && !in_double && !in_backtick && !in_bracket {
             in_single = !in_single;
-        } else if c == '"' && !in_single {
+        } else if c == '"' && !in_single && !in_backtick && !in_bracket {
             in_double = !in_double;
+        } else if c == '`' && !in_single && !in_double && !in_bracket {
+            in_backtick = !in_backtick;
+        } else if c == '[' && !in_single && !in_double && !in_backtick && !in_bracket {
+            in_bracket = true;
+        } else if c == ']' && in_bracket {
+            in_bracket = false;
         }
         if c.is_whitespace() {
             if !last_was_space {

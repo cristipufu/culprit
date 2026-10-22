@@ -49,15 +49,19 @@ pub(crate) fn leading_timestamp(line: &str) -> Option<(Moment, &str)> {
         && bytes[4] == b'-'
         && bytes[7] == b'-'
         && (bytes[10] == b' ' || bytes[10] == b'T')
-        && bytes[13] == b':';
+        && bytes[13] == b':'
+        && bytes[16] == b':';
     if !date_like {
         return None;
     }
     // The timestamp runs to the first space after the time (and a zone right after it, as `+0000` or `Z`).
     let after_time = t[11..].find(' ').map_or(t.len(), |p| p + 11);
+    if after_time < 19 {
+        return None;
+    }
     let mut stamp = t[..after_time].replace(',', ".");
     let mut rest = &t[after_time..];
-    let zoned_inline = stamp.ends_with('Z') || stamp[19..].contains(['+', '-']);
+    let zoned_inline = stamp.ends_with('Z') || stamp.get(19..).is_some_and(|s| s.contains(['+', '-']));
     let mut zoned = zoned_inline;
     if !zoned_inline {
         let next = rest.trim_start();
@@ -253,6 +257,8 @@ mod tests {
         let (z, _) = leading_timestamp("2026-10-15 12:00:01 +0000 Started").unwrap();
         assert!(z.zoned);
         assert!(leading_timestamp("Started GET /").is_none());
+        assert!(leading_timestamp("2026-10-15 12:00 INFO Starting worker").is_none());
+        assert!(leading_timestamp("2026-10-15 12:00:5—foo").is_none());
     }
 
     #[test]

@@ -44,11 +44,45 @@ const HAS_DDL = /\b(create|alter|drop|truncate|rename|reindex|vacuum|cluster)\b/
 
 const setLintEffect = StateEffect.define<Finding[]>();
 
+const DOLLAR_TAG_RE = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/;
+
+function extractSummaryStatement(summary: string): string | null {
+  const prefix = summary.startsWith("The statement `")
+    ? "The statement `"
+    : summary.startsWith("The migration statement `")
+      ? "The migration statement `"
+      : null;
+  if (prefix !== null) {
+    const rest = summary.slice(prefix.length);
+    const closers = [
+      "` uses `CONCURRENTLY`",
+      "` drops `",
+      "` truncates ",
+      "` runs `",
+      "` rebuilds ",
+      "` builds an index ",
+      "` alters ",
+      "` adds ",
+      "` references ",
+    ];
+    let best = -1;
+    for (const c of closers) {
+      const idx = rest.indexOf(c);
+      if (idx !== -1 && (best === -1 || idx < best)) best = idx;
+    }
+    if (best !== -1) return rest.slice(0, best);
+    return rest.split("`")[0] ?? null;
+  }
+  return summary.split("`")[1] ?? null;
+}
+
 function normalizeSqlWithOffsets(docText: string): { norm: string; offsets: number[] } {
   let norm = "";
   const offsets: number[] = [];
   let inSingle = false;
   let inDouble = false;
+  let inBacktick = false;
+  let inBracket = false;
   let dollarTag: string | null = null;
   let lastSpace = true;
 
@@ -77,16 +111,16 @@ function normalizeSqlWithOffsets(docText: string): { norm: string; offsets: numb
       }
       continue;
     }
-    if ((inSingle || inDouble) && ch === "\\" && i + 1 < docText.length) {
+    if (inSingle && ch === "\\" && i + 1 < docText.length) {
       norm += ch.toLowerCase() + next!.toLowerCase();
       offsets.push(i, i + 1);
       lastSpace = false;
       i += 1;
       continue;
     }
-    if (!inSingle && !inDouble) {
+    if (!inSingle && !inDouble && !inBacktick && !inBracket) {
       if (ch === "$") {
-        const m = /^\$[A-Za-z0-9_]*\$/.exec(docText.slice(i));
+        const m = DOLLAR_TAG_RE.exec(docText.slice(i));
         if (m) {
           dollarTag = m[0];
           for (let k = 0; k < dollarTag.length; k++) {
@@ -121,8 +155,11 @@ function normalizeSqlWithOffsets(docText: string): { norm: string; offsets: numb
         continue;
       }
     }
-    if (ch === "'" && !inDouble) inSingle = !inSingle;
-    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    if (ch === "'" && !inDouble && !inBacktick && !inBracket) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle && !inBacktick && !inBracket) inDouble = !inDouble;
+    else if (ch === "`" && !inSingle && !inDouble && !inBracket) inBacktick = !inBacktick;
+    else if (ch === "[" && !inSingle && !inDouble && !inBacktick && !inBracket) inBracket = true;
+    else if (ch === "]" && inBracket) inBracket = false;
 
     if (/\s/.test(ch)) {
       if (!lastSpace) {
@@ -142,6 +179,8 @@ function normalizeSqlWithOffsets(docText: string): { norm: string; offsets: numb
 function statementStartOffset(docText: string, targetOffset: number): number {
   let inSingle = false;
   let inDouble = false;
+  let inBacktick = false;
+  let inBracket = false;
   let dollarTag: string | null = null;
   let stmtStart: number | null = null;
   for (let i = 0; i < docText.length && i <= targetOffset; i++) {
@@ -154,13 +193,13 @@ function statementStartOffset(docText: string, targetOffset: number): number {
       }
       continue;
     }
-    if ((inSingle || inDouble) && ch === "\\" && i + 1 < docText.length) {
+    if (inSingle && ch === "\\" && i + 1 < docText.length) {
       i += 1;
       continue;
     }
-    if (!inSingle && !inDouble) {
+    if (!inSingle && !inDouble && !inBacktick && !inBracket) {
       if (ch === "$") {
-        const m = /^\$[A-Za-z0-9_]*\$/.exec(docText.slice(i));
+        const m = DOLLAR_TAG_RE.exec(docText.slice(i));
         if (m) {
           if (stmtStart === null) stmtStart = i;
           dollarTag = m[0];
@@ -185,8 +224,11 @@ function statementStartOffset(docText: string, targetOffset: number): number {
         continue;
       }
     }
-    if (ch === "'" && !inDouble) inSingle = !inSingle;
-    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    if (ch === "'" && !inDouble && !inBacktick && !inBracket) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle && !inBacktick && !inBracket) inDouble = !inDouble;
+    else if (ch === "`" && !inSingle && !inDouble && !inBracket) inBacktick = !inBacktick;
+    else if (ch === "[" && !inSingle && !inDouble && !inBacktick && !inBracket) inBracket = true;
+    else if (ch === "]" && inBracket) inBracket = false;
     if (!/\s/.test(ch) && stmtStart === null) {
       stmtStart = i;
     }
@@ -204,7 +246,7 @@ function lineSpanFromOffset(docText: string, startOffset: number): [number, numb
 
 function locateFindingSpan(docText: string, f: Finding): [number, number] | null {
   const { norm, offsets } = normalizeSqlWithOffsets(docText);
-  const quoted = f.summary.split("`")[1];
+  const quoted = extractSummaryStatement(f.summary);
   const quotedFull = quoted
     ? quoted
         .trim()
@@ -242,6 +284,8 @@ function locateFindingSpan(docText: string, f: Finding): [number, number] | null
 function statementEndOffset(docText: string, from: number, fallbackTo: number): number {
   let inSingle = false;
   let inDouble = false;
+  let inBacktick = false;
+  let inBracket = false;
   let dollarTag: string | null = null;
   for (let i = from; i < docText.length; i++) {
     const ch = docText[i]!;
@@ -253,13 +297,13 @@ function statementEndOffset(docText: string, from: number, fallbackTo: number): 
       }
       continue;
     }
-    if ((inSingle || inDouble) && ch === "\\" && i + 1 < docText.length) {
+    if (inSingle && ch === "\\" && i + 1 < docText.length) {
       i += 1;
       continue;
     }
-    if (!inSingle && !inDouble) {
+    if (!inSingle && !inDouble && !inBacktick && !inBracket) {
       if (ch === "$") {
-        const m = /^\$[A-Za-z0-9_]*\$/.exec(docText.slice(i));
+        const m = DOLLAR_TAG_RE.exec(docText.slice(i));
         if (m) {
           dollarTag = m[0];
           i += dollarTag.length - 1;
@@ -280,8 +324,11 @@ function statementEndOffset(docText: string, from: number, fallbackTo: number): 
       }
       if (ch === ";") return i + 1;
     }
-    if (ch === "'" && !inDouble) inSingle = !inSingle;
-    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    if (ch === "'" && !inDouble && !inBacktick && !inBracket) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle && !inBacktick && !inBracket) inDouble = !inDouble;
+    else if (ch === "`" && !inSingle && !inDouble && !inBracket) inBacktick = !inBacktick;
+    else if (ch === "[" && !inSingle && !inDouble && !inBacktick && !inBracket) inBracket = true;
+    else if (ch === "]" && inBracket) inBracket = false;
   }
   return fallbackTo;
 }

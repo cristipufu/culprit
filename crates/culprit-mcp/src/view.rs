@@ -126,6 +126,37 @@ pub fn findings(report: &Report, category: Option<Category>, min: Severity, limi
     })
 }
 
+pub fn lint_sql(report: &Report, findings: &[Finding]) -> Value {
+    let shown: Vec<Value> = findings
+        .iter()
+        .map(|f| {
+            json!({
+                "id": f.id,
+                "severity": f.severity,
+                "confidence": f.confidence,
+                "category": f.category,
+                "title": f.title,
+                "summary": f.summary,
+                "impact": f.impact.label,
+                "fix": f.fix.as_ref().map(|x| json!({
+                    "summary": x.summary,
+                    "sql": x.sql,
+                    "cost": x.cost,
+                })),
+                "fix_sql": f.fix.as_ref().and_then(|x| x.sql.as_deref()),
+                "verify": f.verify,
+            })
+        })
+        .collect();
+    json!({
+        "connection": report.snapshot.connection,
+        "engine": report.snapshot.server.engine,
+        "database": report.snapshot.server.database,
+        "total": findings.len(),
+        "findings": shown,
+    })
+}
+
 pub fn finding(report: &Report, f: &Finding) -> Value {
     json!({
         "id": f.id,

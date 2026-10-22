@@ -236,13 +236,20 @@ fn columns_by_table(s: &Snapshot) -> BTreeMap<String, BTreeMap<String, &ColumnIn
 fn signature(i: &IndexStat) -> String {
     let mut include: Vec<String> = i.include.iter().map(|c| c.to_ascii_lowercase()).collect();
     include.sort();
+    let opclasses = i
+        .opclasses
+        .as_ref()
+        .map(|ops| ops.iter().map(|o| o.to_ascii_lowercase()).collect::<Vec<_>>().join(","))
+        .unwrap_or_default();
     format!(
-        "{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}",
         key(&i.schema, &i.table),
         i.columns.iter().map(|c| c.to_ascii_lowercase()).collect::<Vec<_>>().join(","),
         include.join(","),
         i.is_unique || i.is_primary_key,
-        i.filter.as_deref().map(normalize_filter).unwrap_or_default()
+        i.filter.as_deref().map(normalize_filter).unwrap_or_default(),
+        i.is_disabled,
+        opclasses,
     )
 }
 
@@ -255,7 +262,16 @@ fn normalize_filter(filter: &str) -> String {
 }
 
 fn definition(i: &IndexStat) -> String {
-    let mut out = format!("({})", i.columns.join(", "));
+    let cols: Vec<String> = i
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(idx, c)| match i.opclasses.as_ref().and_then(|ops| ops.get(idx)).filter(|o| !o.is_empty()) {
+            Some(op) => format!("{c} {op}"),
+            None => c.clone(),
+        })
+        .collect();
+    let mut out = format!("({})", cols.join(", "));
     if !i.include.is_empty() {
         out.push_str(&format!(" INCLUDE ({})", i.include.join(", ")));
     }
@@ -269,6 +285,9 @@ fn definition(i: &IndexStat) -> String {
     }
     if let Some(filter) = &i.filter {
         out.push_str(&format!(" WHERE {filter}"));
+    }
+    if i.is_disabled {
+        out.push_str(" DISABLED");
     }
     out
 }
@@ -482,22 +501,24 @@ fn foreign_keys(
         {
             matched_b.insert(pos);
             let fk_b = fks_b[pos];
-            if let (Some(ra), Some(rb)) = (fk_a.delete_rule.as_deref(), fk_b.delete_rule.as_deref())
-                && !ra.eq_ignore_ascii_case(rb)
-            {
-                items.push(DriftItem {
-                    kind: DriftKind::Table,
-                    presence: DriftPresence::Different,
-                    subject: format!("{table_display}.{}", fk_a.name),
-                    title: format!(
-                        "Foreign key {} on {table_display} uses ON DELETE {ra} in {} and ON DELETE {rb} in {}.",
-                        fk_a.name, n.a, n.b
-                    ),
-                    a: Some(fk_desc(fk_a)),
-                    b: Some(fk_desc(fk_b)),
-                    sql: None,
-                    sql_for: None,
-                });
+            if fk_a.delete_rule.is_some() || fk_b.delete_rule.is_some() {
+                let ra = fk_a.delete_rule.as_deref().unwrap_or("NO ACTION");
+                let rb = fk_b.delete_rule.as_deref().unwrap_or("NO ACTION");
+                if !ra.eq_ignore_ascii_case(rb) {
+                    items.push(DriftItem {
+                        kind: DriftKind::Table,
+                        presence: DriftPresence::Different,
+                        subject: format!("{table_display}.{}", fk_a.name),
+                        title: format!(
+                            "Foreign key {} on {table_display} uses ON DELETE {ra} in {} and ON DELETE {rb} in {}.",
+                            fk_a.name, n.a, n.b
+                        ),
+                        a: Some(fk_desc(fk_a)),
+                        b: Some(fk_desc(fk_b)),
+                        sql: None,
+                        sql_for: None,
+                    });
+                }
             }
         } else {
             items.push(DriftItem {

@@ -394,7 +394,17 @@ impl Out {
             return self.json(&json!({ "summary": report.summary, "findings": report.findings }));
         }
         if self.format == Format::Md {
-            return print!("{}", markdown_report(report));
+            let mut md = markdown_report(report);
+            for (i, f) in report.findings.iter().enumerate() {
+                md.push_str(&format!("\n### {}. {}\n\n{}\n", i + 1, f.title, f.summary));
+                if let Some(fix) = &f.fix {
+                    md.push_str(&format!("\n**Fix:** {}\n", fix.summary));
+                    if let Some(sql) = &fix.sql {
+                        md.push_str(&format!("\n```sql\n{}\n```\n", sql.trim()));
+                    }
+                }
+            }
+            return print!("{md}");
         }
         println!("{}", self.paint(BOLD, &report.summary.headline));
         for (i, f) in report.findings.iter().enumerate() {

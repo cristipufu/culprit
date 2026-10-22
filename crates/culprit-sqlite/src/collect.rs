@@ -412,21 +412,38 @@ fn attach_triggers(conn: &Connection, tables: &mut [TableStat]) {
         return;
     };
     for (name, tbl, sql) in rows.flatten() {
-        let header = sql
+        let event_words: Vec<String> = sql
             .as_deref()
             .map(|s| {
                 let u = s.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_uppercase();
-                u.find(" ON ").map_or(u.clone(), |i| u[..i].to_string())
+                let before_on = u.rfind(" ON ").map_or(u.as_str(), |i| &u[..i]);
+                let after_timing: String = [" INSTEAD OF ", " BEFORE ", " AFTER "]
+                    .into_iter()
+                    .find_map(|kw| before_on.find(kw).map(|i| before_on[i + kw.len()..].to_string()))
+                    .unwrap_or_else(|| {
+                        let words: Vec<&str> = before_on.split_whitespace().collect();
+                        if let Some(trig_idx) = words.iter().position(|w| *w == "TRIGGER") {
+                            let mut start = trig_idx + 1;
+                            if words.get(start..start + 3) == Some(&["IF", "NOT", "EXISTS"]) {
+                                start += 3;
+                            }
+                            start = (start + 1).min(words.len());
+                            return words[start..].join(" ");
+                        }
+                        before_on.to_string()
+                    });
+                let without_of = after_timing.split(" OF ").next().unwrap_or(&after_timing);
+                without_of.split_whitespace().map(str::to_string).collect()
             })
             .unwrap_or_default();
         let mut events = String::new();
-        if header.contains("INSERT") {
+        if event_words.iter().any(|w| w == "INSERT") {
             events.push('I');
         }
-        if header.contains("DELETE") {
+        if event_words.iter().any(|w| w == "DELETE") {
             events.push('D');
         }
-        if header.contains("UPDATE") {
+        if event_words.iter().any(|w| w == "UPDATE") {
             events.push('U');
         }
         if !events.is_empty()
@@ -635,11 +652,22 @@ fn read_indexes(
     Ok(out)
 }
 
+fn keyword_positions(sql: &str, kw: &str) -> Vec<usize> {
+    let upper = sql.to_ascii_uppercase();
+    upper
+        .match_indices(kw)
+        .filter_map(|(at, _)| {
+            let before = sql[..at].chars().last();
+            let after = sql[at + kw.len()..].chars().next();
+            (before.is_some_and(char::is_whitespace) && after.is_some_and(char::is_whitespace)).then_some(at)
+        })
+        .collect()
+}
+
 /// The key terms of a CREATE INDEX statement, as written: `CREATE INDEX i ON t (lower(email), status DESC)` →
 /// `lower(email)`, `status`. Each without its ASC, DESC or COLLATE, which the catalog reports apart.
 fn index_terms(sql: &str) -> Vec<String> {
-    let upper = sql.to_ascii_uppercase();
-    let Some(on) = upper.find(" ON ") else { return Vec::new() };
+    let Some(&on) = keyword_positions(sql, "ON").first() else { return Vec::new() };
     let Some(open) = sql[on..].find('(').map(|i| on + i) else { return Vec::new() };
     let (mut depth, mut start, mut quote, mut out) = (0i32, open + 1, None::<char>, Vec::new());
     for (i, c) in sql[open..].char_indices().map(|(i, c)| (open + i, c)) {
@@ -680,9 +708,8 @@ fn index_terms(sql: &str) -> Vec<String> {
 
 /// The WHERE of a partial index's CREATE statement.
 fn partial_filter(sql: &str) -> Option<String> {
-    let upper = sql.to_ascii_uppercase();
-    let at = upper.rfind(" WHERE ")?;
-    Some(sql[at + 7..].trim().trim_end_matches(';').trim().to_string())
+    let &at = keyword_positions(sql, "WHERE").last()?;
+    Some(sql[at + "WHERE".len()..].trim().trim_end_matches(';').trim().to_string())
 }
 
 /// One foreign key's parent table, its columns, the parent columns each refers to (`None`: the primary key's), and its
@@ -882,19 +909,31 @@ mod tests {
     fn multiline_trigger_header_ignores_dml_keywords_inside_body() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY, total INTEGER);
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, total INTEGER, is_deleted INTEGER);
              CREATE TABLE audit_log (id INTEGER PRIMARY KEY, msg TEXT);
-             CREATE TRIGGER trg_orders_insert AFTER INSERT
+             CREATE TRIGGER update_audit_on_insert AFTER INSERT
              ON orders
              BEGIN
                UPDATE audit_log SET msg = 'inserted';
                DELETE FROM audit_log WHERE id < 0;
+             END;
+             CREATE TRIGGER trg_delete_flag AFTER UPDATE OF is_deleted ON orders
+             BEGIN
+               INSERT INTO audit_log(msg) VALUES ('deleted');
              END;",
         )
         .unwrap();
         let s = snapshot(&conn, Path::new("demo.db"), "demo", Environment::Local, Instant::now()).unwrap();
         let orders = s.tables.iter().find(|t| t.name == "orders").unwrap();
         let opts = &orders.storage.as_ref().unwrap().options;
-        assert_eq!(opts, &["trigger=trg_orders_insert:I"]);
+        assert_eq!(opts, &["trigger=trg_delete_flag:U", "trigger=update_audit_on_insert:I"]);
+        assert_eq!(
+            partial_filter("CREATE INDEX ix_orders_active\nON orders (lower(total))\nWHERE is_deleted = 0;").as_deref(),
+            Some("is_deleted = 0")
+        );
+        assert_eq!(
+            index_terms("CREATE INDEX ix_orders_active\nON orders (lower(total))\nWHERE is_deleted = 0;"),
+            vec!["lower(total)"]
+        );
     }
 }
