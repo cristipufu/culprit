@@ -196,7 +196,12 @@ fn node(map: &Map<String, Value>, next_id: &mut u32, parallelism: f64, divisor: 
     let loops_or_one = loops.unwrap_or(1.0).max(1.0);
     // Rows per loop are averaged and rounded by PostgreSQL; the total is a whole number of rows.
     let act_rows = number(map, "Actual Rows").map(|r| (r * loops_or_one).round());
-    let removed = number(map, "Rows Removed by Filter").map(|r| r * loops_or_one);
+    let removed_filter = number(map, "Rows Removed by Filter").map(|r| r * loops_or_one);
+    let removed_recheck = number(map, "Rows Removed by Index Recheck").map(|r| r * loops_or_one);
+    let removed = match (removed_filter, removed_recheck) {
+        (Some(f), Some(r)) => Some(f + r),
+        (f, r) => f.or(r),
+    };
 
     let object = text(map, "Relation Name").map(|relation| match text(map, "Schema") {
         Some(schema) => format!("{schema}.{relation}"),
@@ -707,6 +712,17 @@ mod tests {
         assert_eq!(scan.props.get("Shared Read Blocks").map(String::as_str), Some("4500"));
         assert_eq!(plan.props.get("Execution Time").map(String::as_str), Some("815.1"));
         assert_eq!(plan.root.act_time_ms, Some(812.5));
+
+        // Rows Removed by Index Recheck also counts toward rows_read and ResidualPredicate.
+        let recheck_json = r#"[{"Plan": {
+            "Node Type": "Bitmap Heap Scan", "Relation Name": "events", "Total Cost": 200.0,
+            "Plan Rows": 50, "Actual Rows": 50, "Actual Loops": 2, "Actual Total Time": 12.0,
+            "Recheck Cond": "(payload @> '{\"k\": 1}'::jsonb)", "Rows Removed by Index Recheck": 25000
+        }}]"#;
+        let recheck_plan = parse(recheck_json, PlanKind::Actual, None).unwrap();
+        assert_eq!(recheck_plan.root.act_rows, Some(100.0));
+        assert_eq!(recheck_plan.root.rows_read, Some(50_100.0));
+        assert!(recheck_plan.root.warnings.contains(&PlanWarning::ResidualPredicate));
     }
 
     #[test]

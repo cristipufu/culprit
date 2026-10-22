@@ -179,6 +179,60 @@ impl Provider for PostgresProvider {
         }
     }
 
+    async fn explain_hypothetical(&self, sql: &str, indexes: &[String]) -> Result<Plan> {
+        let statement = single_statement(sql)?;
+        let client = self.connector.connect(INTERACTIVE).await?;
+        let hypopg_schema = query_one(
+            &client,
+            "SELECT n.nspname AS schema FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'hypopg'",
+        )
+        .await?
+        .map(|r| r.string("schema"));
+        let Some(ext_schema) = hypopg_schema else {
+            return Err(Error::new(
+                culprit_core::ErrorCode::Unsupported,
+                "The `hypopg` extension is not installed on this PostgreSQL database",
+            )
+            .with_hint("Install it with `CREATE EXTENSION hypopg;` to test virtual indexes with `--with-index`."));
+        };
+        let q_schema = Engine::Postgres.dialect().quote(&ext_schema);
+        let reset_sql = format!("SELECT {q_schema}.hypopg_reset()");
+        let create_sql = format!("SELECT * FROM {q_schema}.hypopg_create_index($1)");
+        client.batch_execute(&tagged(&reset_sql)).await.map_err(map_error)?;
+        let result = async {
+            for raw_idx in indexes {
+                let idx_stmt = single_statement(raw_idx)?;
+                if !culprit_core::sql::creates_index(idx_stmt, Engine::Postgres) {
+                    return Err(Error::invalid("`--with-index` expects a `CREATE INDEX` statement"));
+                }
+                let cleaned = strip_concurrently_keyword(idx_stmt);
+                client.query(&tagged(&create_sql), &[&cleaned]).await.map_err(map_error)?;
+            }
+            let parameters = parameter_count(&client, statement).await?;
+            let elevated = trust::elevated(&client).await?;
+            let mut plan = if parameters == 0 {
+                trust::begin(&client, elevated).await?;
+                let explained = explain_text(
+                    &client,
+                    &format!("EXPLAIN (FORMAT JSON, VERBOSE) {statement}"),
+                    PlanKind::Estimated,
+                    statement,
+                )
+                .await;
+                trust::end(&client).await;
+                explained?
+            } else {
+                let json = generic::plan_json(&client, statement, server_version(&client).await?, elevated).await?;
+                plan_json::parse(&json, PlanKind::Generic, Some(statement))?
+            };
+            tables::fill(&client, &mut plan).await;
+            Ok(plan)
+        }
+        .await;
+        let _ = client.batch_execute(&tagged(&reset_sql)).await;
+        result
+    }
+
     async fn query_progress(&self, session: &str, with_plan: bool) -> Result<culprit_core::QueryProgress> {
         let mut progress = progress::query_progress(&self.connector, session).await?;
         if with_plan
@@ -401,6 +455,32 @@ async fn run_in_transaction(client: &Client, statement: &str, limit: usize, curs
     Ok(ResultSet { columns, rows, truncated, elapsed_ms: 0.0, messages: vec![message] })
 }
 
+fn strip_concurrently_keyword(stmt: &str) -> String {
+    let words: Vec<&str> = stmt.split_whitespace().collect();
+    if let Some(on_pos) = words.iter().position(|w| w.eq_ignore_ascii_case("ON")) {
+        let mut head = Vec::with_capacity(on_pos);
+        let mut i = 0;
+        while i < on_pos {
+            if words[i].eq_ignore_ascii_case("CONCURRENTLY") {
+                i += 1;
+                continue;
+            }
+            if words[i].eq_ignore_ascii_case("IF")
+                && words.get(i + 1).is_some_and(|w| w.eq_ignore_ascii_case("NOT"))
+                && words.get(i + 2).is_some_and(|w| w.eq_ignore_ascii_case("EXISTS"))
+            {
+                i += 3;
+                continue;
+            }
+            head.push(words[i]);
+            i += 1;
+        }
+        let on_byte = words[on_pos].as_ptr() as usize - stmt.as_ptr() as usize;
+        return format!("{} {}", head.join(" "), &stmt[on_byte..]);
+    }
+    words.into_iter().filter(|w| !w.eq_ignore_ascii_case("CONCURRENTLY")).collect::<Vec<_>>().join(" ")
+}
+
 fn json_value(text: Option<String>, kind: Option<&Type>) -> Value {
     let Some(text) = text else { return Value::Null };
     match kind {
@@ -436,6 +516,16 @@ mod tests {
     fn statements_are_trimmed() {
         assert_eq!(single_statement("  select 1 ;  ").unwrap(), "select 1");
         assert!(single_statement(" ; ").is_err());
+        assert_eq!(
+            strip_concurrently_keyword("CREATE INDEX CONCURRENTLY idx_orders_user ON public.orders (user_id)"),
+            "CREATE INDEX idx_orders_user ON public.orders (user_id)"
+        );
+        assert_eq!(
+            strip_concurrently_keyword(
+                "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_open ON public.orders (user_id) WHERE status = 'in  progress'"
+            ),
+            "CREATE UNIQUE INDEX idx_orders_open ON public.orders (user_id) WHERE status = 'in  progress'"
+        );
     }
 
     #[test]

@@ -502,6 +502,11 @@ impl Workspace {
         self.execution_service().explain(name, sql, mode, confirmed).await
     }
 
+    /// Estimated plan of `sql` with one or more virtual indexes (`CREATE INDEX ...`) in planner memory (`hypopg`).
+    pub async fn explain_hypothetical(&self, name: &str, sql: &str, indexes: &[String]) -> Result<Plan> {
+        self.execution_service().explain_hypothetical(name, sql, indexes).await
+    }
+
     /// The actual plan of a query's last run as the engine kept it (SQL Server 2019+ with LAST_QUERY_PLAN_STATS).
     /// Never runs the query; other engines say why they can't and how to measure it instead.
     pub async fn last_actual_plan(&self, name: &str, query_id: &str, plan_id: Option<&str>) -> Result<Plan> {
@@ -682,6 +687,11 @@ pub fn explain_waits(snapshot: &culprit_core::Snapshot) -> Option<culprit_core::
 /// Lint migration or DDL SQL offline against a saved snapshot's catalog, table sizes and indexes.
 pub fn lint_sql(snapshot: &culprit_core::Snapshot, sql: &str) -> Vec<culprit_core::Finding> {
     culprit_checks::lint_sql(snapshot, sql)
+}
+
+/// Apply all safe DDL auto-fixes recommended by [`lint_sql`] to `sql`, returning `(rewritten_sql, fixes_applied)`.
+pub fn apply_sql_fixes(snapshot: &culprit_core::Snapshot, sql: &str) -> (String, usize) {
+    culprit_checks::apply_sql_fixes(snapshot, sql)
 }
 
 /// PostgreSQL and MySQL providers already run reads inside a read-only transaction. SQL Server has no read-only

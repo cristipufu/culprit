@@ -1862,3 +1862,219 @@ fn an_index_advice_is_conditional_only_where_a_statement_is_slow() {
         }
     }
 }
+
+/// Every plan insight suppressed by `plan-insights` because another check covers it (`COVERED`) must actually have a
+/// report-level finding on that statement when the statement takes >= 1% of database time.
+#[test]
+fn every_covered_plan_insight_on_a_heavy_query_has_a_report_finding() {
+    const COVERED: [&str; 5] =
+        ["implicit-conversion", "spill", "no-join-predicate", "missing-statistics", "scan-filter"];
+    let mut seen = 0;
+    for (name, report) in demo_reports() {
+        let Some(w) = report.snapshot.workload.as_ref().filter(|w| w.total_time_ms > 0.0) else { continue };
+        for q in &w.queries {
+            if q.total_time_ms / w.total_time_ms < 0.01 {
+                continue;
+            }
+            let Some(plan) = &q.plan else { continue };
+            for insight in plan.insights.iter().flat_map(|i| &i.items) {
+                if !COVERED.contains(&insight.rule.as_str()) || insight.severity == culprit_core::Severity::Low {
+                    continue;
+                }
+                seen += 1;
+                let has_finding = report.findings.iter().any(|f| f.queries.iter().any(|r| r.id == q.id));
+                assert!(
+                    has_finding,
+                    "{name}: query {} has covered plan insight {} ({:?}) but no report finding references it",
+                    q.id, insight.rule, insight.severity
+                );
+            }
+        }
+    }
+    assert!(seen > 0, "the demos exercise covered plan insights on heavy queries");
+}
+
+#[test]
+fn no_surface_contains_nan_inf_or_broken_placeholders() {
+    for (name, report) in demo_reports() {
+        let check_text = |surface: &str, text: &str| {
+            for bad in ["NaN", "nan%", "inf%", "Infinity", " ` ` "] {
+                assert!(!text.contains(bad), "{name} ({surface}) contains `{bad}`: {text}");
+            }
+        };
+        for f in &report.findings {
+            assert!(f.impact.score.is_finite(), "{name} {}: non-finite score", f.id);
+            if let Some(share) = f.impact.db_time_share {
+                assert!(share.is_finite() && (0.0..=1.0).contains(&share), "{name} {}: invalid share {share}", f.id);
+            }
+            for m in &f.metrics {
+                assert!(m.value.is_finite(), "{name} {} metric {}: non-finite value", f.id, m.label);
+            }
+            check_text(&f.id, &finding_text(f));
+            let brief = culprit_checks::agent_brief(&report, f);
+            check_text(&format!("brief:{}", f.id), &brief);
+        }
+        let advice_json = serde_json::to_string(&culprit_checks::index_advice(&report)).unwrap();
+        check_text("index_advice", &advice_json);
+        let dash_json = serde_json::to_string(&culprit_engine::dashboard_report(&report)).unwrap();
+        check_text("dashboard", &dash_json);
+        let digest_json = serde_json::to_string(&culprit_checks::digest(&report, None, 100, 10)).unwrap();
+        check_text("digest", &digest_json);
+    }
+}
+
+#[test]
+fn index_advice_and_findings_never_contradict_each_other() {
+    use std::collections::HashSet;
+    for (name, report) in demo_reports() {
+        let mut ids = HashSet::new();
+        for f in &report.findings {
+            assert!(ids.insert(&f.id), "{name}: duplicate finding id {}", f.id);
+        }
+        let advice = culprit_checks::index_advice(&report);
+        // No index flagged as Unused is used by any captured query plan in the snapshot.
+        let used_in_plans: HashSet<String> = report
+            .snapshot
+            .queries()
+            .iter()
+            .filter_map(|q| q.plan.as_ref())
+            .flat_map(|p| p.nodes())
+            .filter_map(|n| n.index.as_deref())
+            .map(|ix| ix.trim_matches(['[', ']', '"', '`']).to_ascii_lowercase())
+            .collect();
+        for cleanup in advice.cleanups.iter().filter(|c| c.kind == culprit_core::CleanupKind::Unused) {
+            let clean = cleanup.index.trim_matches(['[', ']', '"', '`']).to_ascii_lowercase();
+            assert!(
+                !used_in_plans.contains(&clean),
+                "{name}: index_advice marks {} as unused when it is used in a captured query plan",
+                cleanup.index
+            );
+        }
+    }
+}
+
+#[test]
+fn applying_recommended_index_or_drop_resolves_the_finding() {
+    let mut verified_adds = 0;
+    let mut verified_drops = 0;
+    for (name, report) in demo_reports() {
+        for f in report.findings.iter().filter(|f| !f.inactive && f.is_actionable()) {
+            if matches!(f.check.as_str(), "unindexed-fk" | "filtered-scan") && !f.facts.index_keys.is_empty() {
+                let mut after = report.snapshot.clone();
+                let parts: Vec<&str> = f.subject.name.split('.').collect();
+                let (schema, table) = match parts.as_slice() {
+                    [s, t] => ((*s).to_string(), (*t).to_string()),
+                    [t] => ("dbo".to_string(), (*t).to_string()),
+                    _ => continue,
+                };
+                after.indexes.push(culprit_core::IndexStat {
+                    schema,
+                    table,
+                    name: "ix_culprit_verified".into(),
+                    kind: "btree".into(),
+                    columns: f.facts.index_keys.clone(),
+                    include: Vec::new(),
+                    filter: None,
+                    is_unique: false,
+                    is_primary_key: false,
+                    is_clustered: false,
+                    is_disabled: false,
+                    state: None,
+                    maintained: Some(true),
+                    has_statistics: Some(true),
+                    size_bytes: Some(8192.0),
+                    reads: Some(10.0),
+                    writes: Some(0.0),
+                    seeks: Some(10.0),
+                    scans: Some(0.0),
+                    lookups: Some(0.0),
+                    last_read: None,
+                    definition: None,
+                    contention: None,
+                    created_at_latest: None,
+                    partition_of: None,
+                    opclasses: None,
+                    counters_since: None,
+                    filter_facts: None,
+                });
+                let next = culprit_checks::analyze(after);
+                assert!(
+                    !next.findings.iter().any(|g| g.id == f.id),
+                    "{name}: adding recommended index {:?} did not resolve {}",
+                    f.facts.index_keys,
+                    f.id
+                );
+                verified_adds += 1;
+            } else if matches!(f.check.as_str(), "unused-index" | "duplicate-index")
+                && f.fix.as_ref().and_then(|x| x.sql.as_deref()).is_some_and(|sql| sql.contains("DROP INDEX"))
+            {
+                let mut after = report.snapshot.clone();
+                let idx_leaf = f.subject.name.rsplit('.').next().unwrap_or(&f.subject.name);
+                let fk_before: Vec<String> =
+                    report.findings.iter().filter(|g| g.check == "unindexed-fk").map(|g| g.id.clone()).collect();
+                after.indexes.retain(|i| !i.name.eq_ignore_ascii_case(idx_leaf));
+                let next = culprit_checks::analyze(after);
+                assert!(!next.findings.iter().any(|g| g.id == f.id), "{name}: dropping index did not resolve {}", f.id);
+                let fk_after: Vec<String> =
+                    next.findings.iter().filter(|g| g.check == "unindexed-fk").map(|g| g.id.clone()).collect();
+                assert_eq!(fk_before, fk_after, "{name}: dropping {} introduced a new unindexed-fk finding", f.id);
+                verified_drops += 1;
+            }
+        }
+    }
+    assert!(verified_adds > 0 && verified_drops > 0, "exercised both index creation and index drop resolution");
+}
+
+#[test]
+fn adversarial_and_nan_mutated_snapshots_never_panic_or_emit_nan() {
+    for (name, report) in demo_reports() {
+        let mut s = report.snapshot.clone();
+        // Inject hostile values: NaN, Infinity, 0.0, negative numbers, and multi-byte UTF-8 / quotes in SQL & names.
+        if let Some(t) = s.tables.first_mut() {
+            t.rows = Some(f64::NAN);
+            t.total_bytes = Some(f64::INFINITY);
+            t.dead_rows = Some(-50.0);
+        }
+        if let Some(t) = s.tables.get_mut(1) {
+            t.name = "🔥_orders\"quoted".into();
+        }
+        if let Some(i) = s.indexes.first_mut() {
+            i.seeks = Some(f64::NAN);
+            i.scans = Some(f64::INFINITY);
+            i.writes = Some(-10.0);
+        }
+        if let Some(w) = s.workload.as_mut() {
+            w.window_hours = 0.0;
+            if let Some(q) = w.queries.first_mut() {
+                q.executions = 0.0;
+                q.total_time_ms = f64::NAN;
+                q.mean_time_ms = f64::INFINITY;
+                q.text = "SELECT * FROM \"🔥_orders\" WHERE LOWER(🔥_col) = 'a''b' AND name LIKE '%🔥%'".into();
+                if let Some(p) = q.plan.as_mut() {
+                    p.total_cost = f64::NAN;
+                    p.root.est_rows = f64::NAN;
+                    p.root.act_rows = Some(f64::INFINITY);
+                    p.root.predicate = Some("LOWER(🔥_col) = $1 AND name LIKE '%🔥%'".into());
+                }
+            }
+        }
+        let analyzed = culprit_checks::analyze(s.clone());
+        let json = serde_json::to_string(&analyzed).expect("valid JSON without NaN/Infinity");
+        assert!(!json.contains("NaN") && !json.contains("Infinity"), "{name}: NaN/Infinity in JSON");
+        let _ = culprit_checks::index_advice(&analyzed);
+        let _ = culprit_checks::digest(&analyzed, Some(&report), 100, 10);
+        let _ = culprit_engine::dashboard_report(&analyzed);
+        for f in &analyzed.findings {
+            let brief = culprit_checks::agent_brief(&analyzed, f);
+            assert!(!brief.contains("NaN") && !brief.contains("inf%"), "{name} {}: {brief}", f.id);
+        }
+        let lint = culprit_checks::lint_sql(
+            &s,
+            "BEGIN; CREATE INDEX CONCURRENTLY \"🔥_idx\" ON \"🔥_orders\" (\"🔥_col\"); \
+             ALTER TABLE \"🔥_orders\" ADD COLUMN c int NOT NULL, DROP COLUMN x; COMMIT;",
+        );
+        let _ = serde_json::to_string(&lint).expect("valid lint JSON");
+        let redacted = culprit_core::redact::redact_snapshot(&analyzed.snapshot);
+        let _ = serde_json::to_string(&redacted).expect("valid redacted JSON");
+    }
+}

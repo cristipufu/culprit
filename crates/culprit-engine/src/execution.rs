@@ -94,6 +94,23 @@ impl Execution<'_> {
         Ok(plan)
     }
 
+    /// Estimated plan of `sql` with one or more virtual indexes (`CREATE INDEX ...`) in planner memory (`hypopg`).
+    pub(crate) async fn explain_hypothetical(&self, name: &str, sql: &str, indexes: &[String]) -> Result<Plan> {
+        let info = self.connections.connection(name)?;
+        culprit_core::sql::single_statement(sql, info.engine)?;
+        for idx in indexes {
+            culprit_core::sql::single_statement(idx, info.engine)?;
+            if !culprit_core::sql::creates_index(idx, info.engine) {
+                return Err(Error::invalid("`--with-index` expects a `CREATE INDEX` statement"));
+            }
+        }
+        let provider = self.connections.provider(name).await?;
+        let mut plan = self.connections.forget_rejected(name, provider.explain_hypothetical(sql, indexes).await)?;
+        culprit_core::insights::annotate(&mut plan);
+        culprit_checks::present_plan(&mut plan, None);
+        Ok(plan)
+    }
+
     /// The actual plan of a query's last run as the engine kept it (SQL Server 2019+ with LAST_QUERY_PLAN_STATS).
     /// Never runs the query; other engines say why they can't and how to measure it instead.
     pub(crate) async fn last_actual_plan(&self, name: &str, query_id: &str, plan_id: Option<&str>) -> Result<Plan> {

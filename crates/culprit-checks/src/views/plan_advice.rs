@@ -96,7 +96,14 @@ pub(crate) fn catalog_insights(snapshot: &Snapshot, query: &QueryStat, plan: &Pl
             "scan-filter" => {
                 i.nodes.first().and_then(|id| plan.nodes().into_iter().find(|n| n.id == *id)).and_then(|n| {
                     let (s, t) = split_object(n.object.as_deref()?)?;
-                    let cols = predicate_columns(n.predicate.as_deref()?);
+                    let combined = match (n.seek_predicate.as_deref(), n.predicate.as_deref()) {
+                        (Some(seek), Some(pred)) if n.kind == culprit_core::NodeKind::Seek => {
+                            format!("{seek} AND {pred}")
+                        }
+                        (_, Some(pred)) => pred.to_string(),
+                        _ => return None,
+                    };
+                    let cols = predicate_columns(&combined);
                     Some((s, t, cols.equality, cols.range.into_iter().take(1).collect(), Vec::new()))
                 })
             }

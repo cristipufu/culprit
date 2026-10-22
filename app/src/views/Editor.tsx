@@ -40,30 +40,67 @@ const SPLIT_KEY = "culprit.editor.split";
 const RAIL_KEY = "culprit.editor.rail";
 const ROW_LIMIT = 1000;
 const PLACEHOLDER = keys("-- Write a query. ⌘↵ runs it (or the selection), ⌘E shows its plan without running it, ⌘S saves it.\n");
-const HAS_DDL = /\b(create|alter|drop|truncate|rename|reindex)\b/i;
+const HAS_DDL = /\b(create|alter|drop|truncate|rename|reindex|vacuum|cluster)\b/i;
 
 const setLintEffect = StateEffect.define<Finding[]>();
 
 function locateFindingSpan(docText: string, f: Finding): [number, number] | null {
   const lines = docText.split("\n");
   const quoted = f.summary.split("`")[1];
-  const prefix = quoted ? quoted.trim().split(/\s+/).slice(0, 4).join(" ").toLowerCase() : "";
+  const quotedNorm = quoted ? quoted.trim().replace(/\s+/g, " ").toLowerCase() : "";
+  const prefix = quoted ? quoted.trim().split(/\s+/).slice(0, 3).join(" ").toLowerCase() : "";
   const leaf = (f.subject.name.split(".").pop() ?? f.subject.name).toLowerCase();
 
   let offset = 0;
-  for (const line of lines) {
+  for (const [i, line] of lines.entries()) {
     const norm = line.trim().replace(/\s+/g, " ").toLowerCase();
-    const matchesPrefix = prefix.length > 0 && norm.includes(prefix);
-    const matchesLeaf = !matchesPrefix && leaf.length > 0 && HAS_DDL.test(norm) && norm.includes(leaf);
-    if (matchesPrefix || matchesLeaf) {
-      const leading = line.length - line.trimStart().length;
-      const from = offset + leading;
-      const to = offset + line.trimEnd().length;
-      if (to > from) return [from, to];
+    if (norm.length > 0 && !norm.startsWith("--")) {
+      const windowNorm = lines
+        .slice(i, i + 4)
+        .join(" ")
+        .trim()
+        .replace(/\s+/g, " ")
+        .toLowerCase();
+      const matchesFull = quotedNorm.length > 0 && windowNorm.startsWith(quotedNorm);
+      const matchesPrefix = prefix.length > 0 && (norm.includes(prefix) || windowNorm.startsWith(prefix));
+      const matchesLeaf = !matchesPrefix && leaf.length > 0 && HAS_DDL.test(norm) && norm.includes(leaf);
+      if (matchesFull || matchesPrefix || matchesLeaf) {
+        const leading = line.length - line.trimStart().length;
+        const from = offset + leading;
+        const to = offset + line.trimEnd().length;
+        if (to > from) return [from, to];
+      }
     }
     offset += line.length + 1;
   }
   return null;
+}
+
+function statementEndOffset(docText: string, from: number, fallbackTo: number): number {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = from; i < docText.length; i++) {
+    const ch = docText[i]!;
+    const next = docText[i + 1];
+    if (!inSingle && !inDouble) {
+      if (ch === "-" && next === "-") {
+        const nl = docText.indexOf("\n", i + 2);
+        if (nl === -1) break;
+        i = nl;
+        continue;
+      }
+      if (ch === "/" && next === "*") {
+        const end = docText.indexOf("*/", i + 2);
+        if (end === -1) break;
+        i = end + 1;
+        continue;
+      }
+      if (ch === ";") return i + 1;
+    }
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+  }
+  return fallbackTo;
 }
 
 const lintField = StateField.define<DecorationSet>({
@@ -279,9 +316,53 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
       return;
     }
     if (span) {
-      editor.dispatch({ changes: { from: span[0], to: span[1], insert: fixSql } });
+      const to = statementEndOffset(docText, span[0], span[1]);
+      editor.dispatch({ changes: { from: span[0], to, insert: fixSql } });
       toast("Applied safe SQL");
     }
+  };
+
+  const applyAllLintFixes = () => {
+    const editor = view.current;
+    if (!editor) return;
+    const docText = editor.state.doc.toString();
+    const byStart = new Map<number, { from: number; to: number; prefixes: string[]; replacement: string | null }>();
+    let applied = 0;
+    for (const f of liveLint) {
+      const fixSql = f.fix?.sql?.trim();
+      if (!fixSql) continue;
+      const span = locateFindingSpan(docText, f);
+      if (f.id.startsWith("sql-lint:unindexed-fk:")) {
+        const from = span ? span[0] : 0;
+        const to = span ? statementEndOffset(docText, span[0], span[1]) : 0;
+        const entry = byStart.get(from) ?? { from, to, prefixes: [], replacement: null };
+        if (!entry.prefixes.includes(fixSql)) {
+          entry.prefixes.push(fixSql);
+          applied += 1;
+        }
+        byStart.set(from, entry);
+      } else if (span) {
+        const from = span[0];
+        const to = statementEndOffset(docText, from, span[1]);
+        const entry = byStart.get(from) ?? { from, to, prefixes: [], replacement: null };
+        entry.to = Math.max(entry.to, to);
+        if (entry.replacement === null) {
+          entry.replacement = fixSql;
+          applied += 1;
+        }
+        byStart.set(from, entry);
+      }
+    }
+    if (applied === 0) return;
+    const changes = [...byStart.values()]
+      .sort((a, b) => a.from - b.from)
+      .map((entry) => {
+        const prefix = entry.prefixes.length > 0 ? `${entry.prefixes.join("\n")}\n` : "";
+        const body = entry.replacement ?? docText.slice(entry.from, entry.to);
+        return { from: entry.from, to: entry.to, insert: `${prefix}${body}` };
+      });
+    editor.dispatch({ changes });
+    toast(`Applied ${applied} safe DDL fixes`);
   };
 
   // ── actions ────────────────────────────────────────────────────────────────────────────────────
@@ -616,6 +697,23 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
           )}
           {liveLint.length > 0 && (
             <div className="editor-lint" role="status" aria-live="polite">
+              {liveLint.filter((f) => Boolean(f.fix?.sql)).length >= 2 && (
+                <div className="editor-lint-row">
+                  <WandSparkles size={13} className="editor-lint-icon" />
+                  <div className="editor-lint-copy">
+                    <strong>{liveLint.filter((f) => Boolean(f.fix?.sql)).length} auto-fixable DDL warnings</strong>
+                    <span>Rewrite all fixable statements in place with non-blocking DDL</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn ghost sm"
+                    onClick={applyAllLintFixes}
+                    title="Apply all safe DDL fixes"
+                  >
+                    <WandSparkles size={12} /> Apply all fixes
+                  </button>
+                </div>
+              )}
               {liveLint.map((f) => (
                 <div key={f.id} className="editor-lint-row">
                   <TriangleAlert size={13} className="editor-lint-icon" />

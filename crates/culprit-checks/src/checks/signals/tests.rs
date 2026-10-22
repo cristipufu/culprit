@@ -1069,3 +1069,40 @@ fn postgres_non_hot_updates_on_referenced_parent_escalate_fk_lock_contention() {
     let fk_finding = fks.iter().find(|f| f.id == "unindexed-fk:public.order_items(order_id)").expect("unindexed fk");
     assert!(fk_finding.summary.contains("non-HOT updates"), "{}", fk_finding.summary);
 }
+
+#[test]
+fn large_btree_index_on_append_only_postgres_time_series_table_recommends_brin() {
+    let mut s = snapshot_with(Engine::Postgres);
+    let mut events = s.tables[0].clone();
+    events.schema = "public".into();
+    events.name = "audit_events".into();
+    events.rows = Some(12_000_000.0);
+    events.data_bytes = Some(2.4 * GB);
+    events.inserts = Some(12_000_000.0);
+    events.updates = Some(0.0);
+    events.deletes = Some(0.0);
+    events.dead_rows = Some(0.0);
+    s.tables.push(events);
+
+    let mut idx = s.indexes[0].clone();
+    idx.schema = "public".into();
+    idx.table = "audit_events".into();
+    idx.name = "ix_audit_events_created_at".into();
+    idx.kind = "btree".into();
+    idx.columns = vec!["created_at".into()];
+    idx.is_unique = false;
+    idx.is_primary_key = false;
+    idx.filter = None;
+    idx.include.clear();
+    idx.reads = Some(5_000.0);
+    idx.size_bytes = Some(420.0 * MB);
+    s.indexes.push(idx);
+
+    let out = table_bloat(&s);
+    let f = out
+        .iter()
+        .find(|f| f.id == "table-bloat:brin-candidate:public.audit_events.ix_audit_events_created_at")
+        .expect("brin candidate finding");
+    assert!(f.title.contains("BRIN index would take < 1%"), "{}", f.title);
+    assert!(f.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("USING brin (created_at)"), "{:?}", f.fix);
+}

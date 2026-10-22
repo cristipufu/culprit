@@ -180,19 +180,38 @@ pub(super) fn scan_filter_text(cx: &Cx, n: &PlanNode) -> Option<String> {
 pub(super) fn scan_filter(cx: &Cx) -> Vec<Draft> {
     let hinted: Vec<String> = cx.plan.index_hints.iter().map(|h| table_leaf(&h.table).to_ascii_lowercase()).collect();
     let mut out = Vec::new();
-    for n in cx.nodes.iter().filter(|n| index_could_pay(cx, n)) {
+    for n in cx.nodes.iter().filter(|n| index_could_pay(cx, n) || seek_filter_could_pay(cx, n)) {
         let Some(table) = n.object.clone() else { continue };
         let Some(filter) = scan_filter_text(cx, n) else { continue };
         // SQL Server's own suggestion, a conversion, a function or a leading wildcard explain the scan better, and
         // MySQL's ignored index says why there's no seek: their rules say so.
         if hinted.contains(&table_leaf(&table).to_ascii_lowercase())
             || blocker(cx, n, &filter).is_some()
-            || (cx.engine() == Engine::Mysql && !possible_keys_for_filter(cx, n).is_empty())
+            || (cx.engine() == Engine::Mysql && n.kind == NodeKind::Scan && !possible_keys_for_filter(cx, n).is_empty())
         {
             continue;
         }
         // Only the conditions an index can seek on make the advice; a filter with none of them has no index to give.
-        let cols = seekable_columns(&filter);
+        let filter_cols = seekable_columns(&filter);
+        if filter_cols.is_empty() {
+            continue;
+        }
+        let (cols, equality) = if let Some(seek) = n.seek_predicate.as_deref().filter(|_| n.kind == NodeKind::Seek) {
+            let seek_cols = seekable_columns(seek);
+            // A seek whose residual filter checks only columns already in the seek predicate isn't solved by adding
+            // another column to the index.
+            if seek_cols.is_empty()
+                || filter_cols.iter().all(|fc| seek_cols.iter().any(|sc| sc.eq_ignore_ascii_case(fc)))
+            {
+                continue;
+            }
+            let combined = format!("{seek} AND {filter}");
+            let (eq, _) = seekable_keys(&combined);
+            (seekable_columns(&combined), eq)
+        } else {
+            let (eq, _) = seekable_keys(&filter);
+            (filter_cols, eq)
+        };
         if cols.is_empty() {
             continue;
         }
@@ -218,15 +237,21 @@ pub(super) fn scan_filter(cx: &Cx) -> Vec<Draft> {
             cx.work_sentence(impact, &[n.id])
         );
         // What the catalog says the table has, where the snapshot marked it: an index that already starts with one of
-        // these columns, or none.
+        // these columns (or for a seek, covers all of them), or none.
         let leaf = table_leaf(&table);
         let has = table_indexes(n).map(|list| {
-            list.into_iter()
-                .find(|(_, keys)| keys.first().is_some_and(|k| cols.iter().any(|c| c.eq_ignore_ascii_case(k))))
+            if n.kind == NodeKind::Seek {
+                list.into_iter().find(|(_, keys)| {
+                    keys.len() >= cols.len()
+                        && cols.iter().all(|c| keys[..cols.len()].iter().any(|k| k.eq_ignore_ascii_case(c)))
+                })
+            } else {
+                list.into_iter()
+                    .find(|(_, keys)| keys.first().is_some_and(|k| cols.iter().any(|c| c.eq_ignore_ascii_case(k))))
+            }
         });
         // Equality columns go in any order: the filter's isn't the data's. The SQL below takes the filter's order, and
         // the note says so rather than advise an order the SQL doesn't have.
-        let (equality, _) = seekable_keys(&filter);
         let order = if equality.len() >= 2 {
             format!(
                 " {} can go in any order, and the SQL below takes the filter's ({} first). Put {} first instead if it \
@@ -249,9 +274,13 @@ pub(super) fn scan_filter(cx: &Cx) -> Vec<Draft> {
                 d.fix_sql = Some(cx.engine().dialect().refresh_statistics(&qualified(cx.engine(), &table)));
             }
             Some(None) => {
+                let starts_with = if n.kind == NodeKind::Seek {
+                    format::list(&cols)
+                } else {
+                    format::list(&cols).replace(" and ", " or ")
+                };
                 d.fix = format!(
-                    "No index on {leaf} starts with {}: one on {} lets the database go straight to the matching rows.{order}",
-                    format::list(&cols).replace(" and ", " or "),
+                    "No index on {leaf} starts with {starts_with}: one on {} lets the database go straight to the matching rows.{order}",
                     format::list(&cols)
                 );
                 d.fix_sql = index_sql(cx.engine(), &table, &cols, &[]);

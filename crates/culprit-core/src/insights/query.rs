@@ -89,9 +89,9 @@ pub(super) fn convert_expression(text: &str) -> String {
 
 pub(super) fn non_sargable(cx: &Cx) -> Vec<Draft> {
     let mut out = Vec::new();
-    for n in cx.nodes.iter().filter(|n| index_could_pay(cx, n)) {
-        let Some(filter) = n.predicate.as_deref() else { continue };
-        let Some(Blocker::Function(func, col)) = blocker(cx, n, filter) else { continue };
+    for n in cx.nodes.iter().filter(|n| index_could_pay(cx, n) || seek_filter_could_pay(cx, n)) {
+        let Some(filter) = scan_filter_text(cx, n) else { continue };
+        let Some(Blocker::Function(func, col)) = blocker(cx, n, &filter) else { continue };
         let table = what(n);
         let impact = cx.share(n).max(cx.subtree(n) * 0.5);
         let mut d = Draft::new("non-sargable", InsightArea::Query, impact, vec![n.id]);
@@ -103,7 +103,7 @@ pub(super) fn non_sargable(cx: &Cx) -> Vec<Draft> {
         };
         d.detail = format!(
             "Each row's {col} is computed before it can be compared (`{}`), so an index on {col} can't narrow the search: {} reads {} rows to keep {}.{}",
-            format::predicate(filter),
+            format::predicate(&filter),
             n.op,
             format::count(rows_read(n)),
             format::percent(filter_keeps(cx, n).unwrap_or(1.0)),
@@ -169,9 +169,9 @@ pub(super) fn non_sargable(cx: &Cx) -> Vec<Draft> {
 
 pub(super) fn leading_wildcard(cx: &Cx) -> Vec<Draft> {
     let mut out = Vec::new();
-    for n in cx.nodes.iter().filter(|n| index_could_pay(cx, n)) {
-        let Some(filter) = n.predicate.as_deref() else { continue };
-        let Some(Blocker::Wildcard(at)) = blocker(cx, n, filter) else { continue };
+    for n in cx.nodes.iter().filter(|n| index_could_pay(cx, n) || seek_filter_could_pay(cx, n)) {
+        let Some(filter) = scan_filter_text(cx, n) else { continue };
+        let Some(Blocker::Wildcard(at)) = blocker(cx, n, &filter) else { continue };
         let column = identifiers(&filter[..at]).into_iter().last().unwrap_or_else(|| "the column".into());
         let table = what(n);
         let impact = cx.share(n).max(cx.subtree(n) * 0.5);
@@ -463,14 +463,15 @@ pub(super) fn nested_loops(cx: &Cx) -> Vec<Draft> {
             matches!(x.op.as_str(), "Memoize" | "Table Spool" | "Index Spool" | "Query block" | "Materialized subquery")
                 || x.op.starts_with("Materialize")
         };
-        let cached_input = if materializes(inner) {
-            inner.children.first()
+        let cache_node = if materializes(inner) {
+            Some(inner)
         } else if inner.object.is_none() {
             inner.children.iter().find(|c| materializes(c))
         } else {
             None
         };
-        let cache = materializes(inner) || cached_input.is_some();
+        let cached_input = cache_node.and_then(|c| c.children.first());
+        let cache = cache_node.is_some();
         let reads = if cache { cached_input.map_or(0.0, |c| c.runs()) } else { asked };
         let outer_name = table_leaf(&first_object(outer).unwrap_or_else(|| outer.op.clone()));
         let inner_name = table_leaf(&first_object(inner).unwrap_or_else(|| inner.op.clone()));
@@ -485,14 +486,13 @@ pub(super) fn nested_loops(cx: &Cx) -> Vec<Draft> {
         let leaf = inner_nodes.iter().find(|x| x.object.is_some() && x.kind != NodeKind::Other).copied();
         let per_read = leaf.map(|l| rows_read(l) / l.runs().max(1.0));
         let table = leaf.and_then(|l| l.table_rows).filter(|t| *t > 0.0);
-        let rereads = !cache
-            && per_read.is_some_and(|per| {
-                per >= 100.0
-                    && match table {
-                        Some(t) => per >= t * INDEX_KEEPS_AT_MOST,
-                        None => leaf.is_some_and(|l| l.kind == NodeKind::Scan),
-                    }
-            });
+        let rereads = per_read.is_some_and(|per| {
+            per >= 100.0
+                && match table {
+                    Some(t) => per >= t * INDEX_KEEPS_AT_MOST,
+                    None => leaf.is_some_and(|l| l.kind == NodeKind::Scan),
+                }
+        });
         // Each outer row meets every row the cache replays, and the join tests its condition on every pair.
         let per_replay = rows_out(inner) / asked.max(1.0);
         let pairs = cache && n.predicate.is_some() && asked >= MANY_LOOPS && per_replay >= 100.0;

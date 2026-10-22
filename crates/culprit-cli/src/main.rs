@@ -196,11 +196,14 @@ enum Command {
         /// A connection name or a saved report/snapshot .json file.
         connection: String,
         /// Inline SQL or migration script to check.
-        #[arg(long, conflicts_with = "file")]
+        #[arg(long, conflicts_with = "files")]
         sql: Option<String>,
-        /// Path to a .sql migration file to check.
-        #[arg(long, value_name = "PATH")]
-        file: Option<PathBuf>,
+        /// Path to one or more .sql migration files or directories of .sql files to check.
+        #[arg(long = "file", value_name = "PATH")]
+        files: Vec<PathBuf>,
+        /// Rewrite fixable DDL statements in place on the specified --file path(s).
+        #[arg(long)]
+        write: bool,
         /// Saved report or snapshot file to lint against (instead of the connection's latest scan).
         #[arg(long)]
         report: Option<PathBuf>,
@@ -405,6 +408,9 @@ struct ExplainArgs {
     /// Never runs the query.
     #[arg(long, requires = "query_id")]
     last_actual: bool,
+    /// Test one or more virtual indexes (`CREATE INDEX ...`) in planner memory without building them (PostgreSQL `hypopg`).
+    #[arg(long = "with-index", value_name = "CREATE_INDEX_SQL", conflicts_with_all = ["analyze", "last_actual"])]
+    with_index: Vec<String>,
     #[arg(long)]
     yes_execute_on_production: bool,
 }
@@ -661,7 +667,7 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             out.plan(&plan);
             Ok(0)
         }
-        Command::Explain(args) if args.query_id.is_some() && !args.analyze => {
+        Command::Explain(args) if args.query_id.is_some() && !args.analyze && args.with_index.is_empty() => {
             let query_id = args.query_id.as_deref().unwrap_or_default();
             let plan = ws.query_plan(&args.connection, query_id, args.plan_id.as_deref()).await?;
             out.plan(&plan);
@@ -669,8 +675,12 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
         }
         Command::Explain(args) => {
             let sql = explain_sql(&ws, &args)?;
-            let mode = if args.analyze { ExplainMode::Analyze } else { ExplainMode::Estimated };
-            let plan = ws.explain(&args.connection, &sql, mode, args.yes_execute_on_production).await?;
+            let plan = if !args.with_index.is_empty() {
+                ws.explain_hypothetical(&args.connection, &sql, &args.with_index).await?
+            } else {
+                let mode = if args.analyze { ExplainMode::Analyze } else { ExplainMode::Estimated };
+                ws.explain(&args.connection, &sql, mode, args.yes_execute_on_production).await?
+            };
             out.plan(&plan);
             Ok(0)
         }
@@ -794,20 +804,51 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             out.analyzed(&report);
             Ok(0)
         }
-        Command::LintSql { connection, sql, file, report, fail_on } => {
-            let file_uri = file.as_ref().map(|p| p.to_string_lossy().into_owned());
-            let sql_text = match (sql, file) {
-                (Some(s), None) => s,
-                (None, Some(path)) => {
-                    std::fs::read_to_string(&path).map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?
-                }
-                _ => return Err(Error::invalid("Pass --sql <SQL> or --file <PATH>")),
-            };
+        Command::LintSql { connection, sql, files, write, report, fail_on } => {
+            if write && files.is_empty() {
+                return Err(Error::invalid("--write requires --file <PATH>"));
+            }
             let report_path = report.or_else(|| report_file(&connection));
             let mut base_report = load(&ws, &connection, report_path.as_ref())?;
-            let findings = culprit_engine::lint_sql(&base_report.snapshot, &sql_text);
-            base_report.findings = findings;
-            out.lint_sql(&base_report, &sql_text, file_uri.as_deref());
+            let mut batches: Vec<(Option<String>, String, Vec<culprit_core::Finding>)> = Vec::new();
+            let mut all_findings = Vec::new();
+
+            if let Some(s) = sql {
+                let findings = culprit_engine::lint_sql(&base_report.snapshot, &s);
+                all_findings.extend(findings.clone());
+                batches.push((None, s, findings));
+            } else if !files.is_empty() {
+                let resolved = collect_sql_files(&files)?;
+                let multi = resolved.len() > 1;
+                for path in resolved {
+                    let uri = path.to_string_lossy().into_owned();
+                    let raw = std::fs::read_to_string(&path)
+                        .map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
+                    let sql_text = if write {
+                        let (rewritten, applied) = culprit_engine::apply_sql_fixes(&base_report.snapshot, &raw);
+                        if applied > 0 && rewritten != raw {
+                            std::fs::write(&path, &rewritten)
+                                .map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
+                        }
+                        rewritten
+                    } else {
+                        raw
+                    };
+                    let findings = culprit_engine::lint_sql(&base_report.snapshot, &sql_text);
+                    for mut f in findings.clone() {
+                        if multi {
+                            f.title = format!("[{uri}] {}", f.title);
+                        }
+                        all_findings.push(f);
+                    }
+                    batches.push((Some(uri), sql_text, findings));
+                }
+            } else {
+                return Err(Error::invalid("Pass --sql <SQL> or --file <PATH>"));
+            }
+
+            base_report.findings = all_findings;
+            out.lint_sql(&base_report, &batches);
             Ok(fail_code(&base_report, fail_on))
         }
         Command::Mcp(args) => agents::mcp(ws, args).await,
@@ -836,6 +877,55 @@ fn load(ws: &Workspace, connection: &str, path: Option<&PathBuf>) -> culprit_cor
 fn report_file(arg: &str) -> Option<PathBuf> {
     let path = PathBuf::from(arg);
     (arg.ends_with(".json") && path.is_file()).then_some(path)
+}
+
+fn collect_sql_files(inputs: &[PathBuf]) -> culprit_core::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for path in inputs {
+        if path.is_file() {
+            if !out.contains(path) {
+                out.push(path.clone());
+            }
+        } else if path.is_dir() {
+            collect_sql_dir(path, 0, &mut out)?;
+        } else {
+            return Err(Error::invalid(format!("{}: no such file or directory", path.display())));
+        }
+    }
+    if out.is_empty() {
+        return Err(Error::invalid("No .sql files found in the specified --file path(s)"));
+    }
+    Ok(out)
+}
+
+fn collect_sql_dir(dir: &std::path::Path, depth: usize, out: &mut Vec<PathBuf>) -> culprit_core::Result<()> {
+    if depth > 16 {
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(dir).map_err(|e| Error::invalid(format!("{}: {e}", dir.display())))?;
+    let mut items: Vec<(PathBuf, std::fs::FileType)> = entries
+        .filter_map(|e| {
+            let e = e.ok()?;
+            let ft = e.file_type().ok()?;
+            Some((e.path(), ft))
+        })
+        .collect();
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    for (p, ft) in items {
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
+            let is_hidden = p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.'));
+            if !is_hidden {
+                collect_sql_dir(&p, depth + 1, out)?;
+            }
+        } else if ft.is_file() && p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("sql")) && !out.contains(&p)
+        {
+            out.push(p);
+        }
+    }
+    Ok(())
 }
 
 fn explain_sql(ws: &Workspace, args: &ExplainArgs) -> culprit_core::Result<String> {

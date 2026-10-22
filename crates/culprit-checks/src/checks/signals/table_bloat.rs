@@ -85,6 +85,7 @@ pub fn table_bloat(snapshot: &Snapshot) -> Vec<Finding> {
         .collect();
     findings.extend(default_partitions(snapshot));
     findings.extend(expiring_range_partitions(snapshot));
+    findings.extend(brin_opportunities(snapshot));
     findings.sort_by(|a, b| b.impact.score.total_cmp(&a.impact.score));
     findings.truncate(5);
     findings
@@ -265,4 +266,157 @@ fn default_partitions(snapshot: &Snapshot) -> Vec<Finding> {
             Some(f)
         })
         .collect()
+}
+
+fn is_time_series_column(snapshot: &Snapshot, schema: &str, table: &str, col_name: &str) -> bool {
+    if col_name.is_empty() || !col_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return false;
+    }
+    if snapshot.columns.iter().any(|c| {
+        c.schema == schema
+            && c.table == table
+            && c.name.eq_ignore_ascii_case(col_name)
+            && (c.data_type.to_ascii_lowercase().contains("timestamp") || c.data_type.eq_ignore_ascii_case("date"))
+    }) {
+        return true;
+    }
+    matches!(
+        col_name.to_ascii_lowercase().as_str(),
+        "created_at" | "inserted_at" | "occurred_at" | "logged_at" | "recorded_at" | "event_time" | "timestamp"
+    )
+}
+
+fn brin_opportunities(snapshot: &Snapshot) -> Vec<Finding> {
+    if snapshot.server.engine != Engine::Postgres {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for t in &snapshot.tables {
+        let rows = t.rows.or_else(|| t.storage.as_ref().and_then(|s| s.planner_rows)).unwrap_or(0.0);
+        let size = table_heap_bytes(t).unwrap_or(0.0);
+        if !rows.is_finite() || !size.is_finite() || rows < 5_000_000.0 || size < 500.0 * MB {
+            continue;
+        }
+        let table_qual = t.qualified();
+        // Skip partitioned parent tables (where CREATE INDEX CONCURRENTLY is invalid in PostgreSQL).
+        if snapshot.tables.iter().any(|child| child.partition_of.as_deref() == Some(table_qual.as_str()))
+            || t.storage.as_ref().is_some_and(|s| !s.partition_bounds().is_empty() && t.partition_of.is_none())
+        {
+            continue;
+        }
+        let inserts = t.inserts.unwrap_or(0.0);
+        let updates = t.updates.unwrap_or(0.0);
+        let deletes = t.deletes.unwrap_or(0.0);
+        if !inserts.is_finite()
+            || !updates.is_finite()
+            || !deletes.is_finite()
+            || inserts < 0.0
+            || updates < 0.0
+            || deletes < 0.0
+        {
+            continue;
+        }
+        let total_writes = inserts + updates + deletes;
+        if !total_writes.is_finite() || total_writes < 100_000.0 || (updates + deletes) / total_writes > 0.02 {
+            continue;
+        }
+        if t.dead_rows.unwrap_or(0.0) / rows > 0.02 {
+            continue;
+        }
+        for idx in &snapshot.indexes {
+            if idx.schema != t.schema || idx.table != t.name {
+                continue;
+            }
+            // Skip unique/PK/disabled/partial/covering/custom-opclass/partitioned or unused indexes (which unused-index handles).
+            if idx.is_unique
+                || idx.is_primary_key
+                || idx.is_disabled
+                || idx.filter.is_some()
+                || !idx.include.is_empty()
+                || idx.opclasses.is_some()
+                || idx.partition_of.is_some()
+                || idx.reads == Some(0.0)
+                || idx.columns.len() != 1
+                || (!idx.kind.is_empty() && !idx.kind.eq_ignore_ascii_case("btree"))
+            {
+                continue;
+            }
+            let Some(idx_bytes) = idx.size_bytes.filter(|b| b.is_finite() && *b >= 100.0 * MB) else {
+                continue;
+            };
+            let col_name = culprit_core::strip_direction(&idx.columns[0]);
+            if !is_time_series_column(snapshot, &t.schema, &t.name, col_name) {
+                continue;
+            }
+            let has_brin = snapshot.indexes.iter().any(|other| {
+                other.schema == t.schema
+                    && other.table == t.name
+                    && other.kind.eq_ignore_ascii_case("brin")
+                    && other.key_names().first().is_some_and(|k| k.eq_ignore_ascii_case(col_name))
+            });
+            if has_brin {
+                continue;
+            }
+            let mut f = finding(
+                "table-bloat",
+                &format!("brin-candidate:{table_qual}.{}", idx.name),
+                Category::Maintenance,
+                subject(SubjectKind::Index, format!("{table_qual}.{}", idx.name)),
+            );
+            f.title = format!(
+                "{} on append-only {} takes {} as a B-tree (a BRIN index would take < 1%)",
+                idx.name,
+                t.name,
+                format::bytes(idx_bytes)
+            );
+            f.severity = if idx_bytes >= GB { Severity::Medium } else { Severity::Low };
+            severity_score(&mut f);
+            f.impact.label = format!("{} B-tree on append-only time column", format::bytes(idx_bytes));
+            f.confidence = Confidence::Medium;
+            f.summary = format!(
+                "{} holds {} rows ({}) and its recorded writes are {} inserts ({} inserts vs {} updates/deletes). \
+                 {} is a {} B-tree index on `{col_name}`: because rows in an append-only table are stored on heap pages \
+                 in roughly `{col_name}` order, a Block Range Index (BRIN) on `{col_name}` stores only the minimum and \
+                 maximum timestamp per page range — taking kilobytes instead of {} while still skipping non-matching \
+                 heap blocks on time-range queries.",
+                t.name,
+                format::count(rows),
+                format::bytes(size),
+                format::percent(inserts / total_writes),
+                format::count(inserts),
+                format::count(updates + deletes),
+                idx.name,
+                format::bytes(idx_bytes),
+                format::bytes(idx_bytes),
+            );
+            f.metrics = vec![
+                Metric::new("B-tree index size", idx_bytes, Unit::Bytes),
+                Metric::new("Table rows", rows, Unit::Rows),
+                Metric::new("Inserts", inserts, Unit::Rows),
+            ];
+            let target = qualified(Engine::Postgres, &t.schema, &t.name);
+            let brin_name = quote(Engine::Postgres, &format!("ix_{}_{}_brin", t.name, col_name));
+            let quoted_col = quote(Engine::Postgres, col_name);
+            f.fix = Some(Fix {
+                summary: format!(
+                    "If `{col_name}` is queried by time ranges rather than point lookups and rows are inserted in \
+                     timestamp order, build a BRIN index concurrently and verify with `EXPLAIN` that range queries use \
+                     a Bitmap Index Scan on it before retiring `{}`.",
+                    idx.name
+                ),
+                sql: Some(format!("CREATE INDEX CONCURRENTLY {brin_name} ON {target} USING brin ({quoted_col});")),
+                cost: Some(
+                    "CONCURRENTLY scans the table without blocking reads or writes; the resulting BRIN index is tiny."
+                        .into(),
+                ),
+            });
+            f.verify = vec![format!(
+                "Re-scan after building `{}`: verify time-range queries use it before dropping `{}`.",
+                brin_name.trim_matches('"'),
+                idx.name
+            )];
+            out.push(f);
+        }
+    }
+    out
 }

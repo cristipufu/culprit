@@ -384,10 +384,11 @@ impl Out {
         self.findings(report, Severity::Low);
     }
 
-    pub fn lint_sql(&self, report: &Report, sql_text: &str, file_uri: Option<&str>) {
+    pub fn lint_sql(&self, report: &Report, batches: &[(Option<String>, String, Vec<Finding>)]) {
         if self.format == Format::Sarif {
-            let list: Vec<&Finding> = report.findings.iter().collect();
-            return self.json(&sarif::findings_sarif(&list, Some(sql_text), file_uri));
+            let refs: Vec<(Option<&str>, Option<&str>, &[Finding])> =
+                batches.iter().map(|(uri, sql, fs)| (uri.as_deref(), Some(sql.as_str()), fs.as_slice())).collect();
+            return self.json(&sarif::findings_sarif_batches(&refs));
         }
         self.findings(report, Severity::Low);
     }

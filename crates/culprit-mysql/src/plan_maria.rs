@@ -393,7 +393,7 @@ fn table_node(
     node.est_rows = read.map(|r| r * filtered / 100.0).unwrap_or(0.0);
     // A fixed guess for a condition without statistics says nothing about how much the filter keeps.
     let conditions = node.predicate.as_deref().map_or(1, culprit_core::insights::condition_count);
-    if kind == NodeKind::Scan
+    if (kind == NodeKind::Scan || (kind == NodeKind::Seek && node.predicate.is_some()))
         && read.is_some_and(|r| r >= 1_000.0)
         && filtered < 10.0
         && !culprit_core::insights::mysql_guessed_filtered(filtered, conditions)
@@ -421,7 +421,7 @@ fn table_node(
             let total = per_loop * r_loops;
             node.rows_read = Some(total);
             node.act_rows = Some(total * kept.unwrap_or(100.0) / 100.0);
-            if kind == NodeKind::Scan
+            if (kind == NodeKind::Scan || (kind == NodeKind::Seek && node.predicate.is_some()))
                 && total >= 1_000.0
                 && kept.is_some_and(|k| k < 10.0)
                 && !node.warnings.contains(&PlanWarning::ResidualPredicate)

@@ -35,6 +35,14 @@ pub fn predicate_columns(predicate: &str) -> PredicateColumns {
         let conjunct = conjunct.replace(['(', ')'], " ");
         let conjunct = conjunct.split_whitespace().collect::<Vec<_>>().join(" ");
         let upper = conjunct.to_ascii_uppercase();
+        if upper.starts_with("RANGE ON ") {
+            for col in conjunct["range on ".len()..].split(',').filter_map(column_name) {
+                if !out.range.iter().any(|c| c.eq_ignore_ascii_case(&col)) {
+                    out.range.push(col);
+                }
+            }
+            continue;
+        }
         let unquoted = format!(" {} ", upper.split('\'').step_by(2).collect::<Vec<_>>().join("''"));
         if NOT_SEEKABLE.iter().any(|op| unquoted.contains(op)) {
             continue;
@@ -262,6 +270,7 @@ pub(super) fn is_value(side: &str) -> bool {
     let upper = s.to_ascii_uppercase();
     s.starts_with(['$', '@', '\'', '-', '?'])
         || s.chars().next().is_some_and(|c| c.is_ascii_digit())
+        || upper == "CONST"
         || upper.starts_with("NULL")
         || upper.starts_with("N'")
         // MySQL writes typed literals in plans: TIMESTAMP'2026-09-05 00:00:00'.

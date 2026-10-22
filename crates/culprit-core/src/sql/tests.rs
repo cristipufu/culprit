@@ -647,3 +647,26 @@ fn cte_targets_resolve_only_unambiguous_sources_on_every_engine() {
         Some("shop.orders")
     );
 }
+
+#[test]
+fn extract_call_site_reads_marginalia_sqlcommenter_and_file_line_comments() {
+    assert_eq!(
+        extract_call_site(
+            "SELECT * FROM orders WHERE customer_id = $1 /*application='shop',controller='orders',action='index',line='app/models/order.rb:42:in `recent`'*/"
+        )
+        .as_deref(),
+        Some("app/models/order.rb:42:in 'recent' (controller=orders, action=index)")
+    );
+    assert_eq!(
+        extract_call_site("/* file='src/orders/repo.ts', line='88', function='listOrders' */ SELECT * FROM orders")
+            .as_deref(),
+        Some("src/orders/repo.ts:88 (function=listOrders)")
+    );
+    assert_eq!(
+        extract_call_site("-- app/services/checkout.py:142\nSELECT * FROM orders WHERE id = $1").as_deref(),
+        Some("app/services/checkout.py:142")
+    );
+    assert_eq!(extract_call_site("SELECT '/* app/fake.py:10 */' FROM orders /* culprit */"), None);
+    assert_eq!(extract_call_site("SELECT $$/* app/fake.py:10 */$$ FROM orders"), None);
+    assert_eq!(extract_call_site("/* https://example.com/app.js:10 */ SELECT 1"), None);
+}

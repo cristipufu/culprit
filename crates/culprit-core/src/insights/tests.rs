@@ -1963,3 +1963,67 @@ fn prefixed_string_literals_and_quoted_conjunctions_do_not_confuse_predicate_col
     );
     assert_eq!(condition_count("(orders.note = 'a and b' and orders.status = 'open')"), 2);
 }
+
+#[test]
+fn broad_index_seek_with_residual_filter_advises_composite_index() {
+    let mut seek = node(1, "Index Scan", NodeKind::Seek);
+    seek.object = Some("public.orders".into());
+    seek.index = Some("idx_orders_tenant".into());
+    seek.seek_predicate = Some("(orders.tenant_id = $1)".into());
+    seek.predicate = Some("(orders.status = 'open')".into());
+    seek.rows_read = Some(50_000.0);
+    seek.est_rows = 400.0;
+    seek.act_rows = Some(400.0);
+    seek.self_cost = 5_000.0;
+    let p = plan(Engine::Postgres, seek.clone());
+    let found = insights(&p);
+    assert_eq!(found.iter().map(|i| i.rule.as_str()).collect::<Vec<_>>(), vec!["scan-filter"]);
+    let sql = found[0].fix_sql.as_deref().unwrap_or("");
+    assert!(sql.contains("(tenant_id, status)"), "{sql}");
+
+    // When the residual filter on a broad seek is blocked by a function or leading wildcard, non-sargable /
+    // leading-wildcard explains why an index column couldn't narrow it.
+    let mut fn_seek = seek.clone();
+    fn_seek.predicate = Some("(lower(orders.email) = $2)".into());
+    assert_eq!(rules(&plan(Engine::Postgres, fn_seek)), vec!["non-sargable"]);
+
+    let mut wc_seek = seek;
+    wc_seek.predicate = Some("(orders.email ~~ '%@example.com')".into());
+    assert_eq!(rules(&plan(Engine::Postgres, wc_seek)), vec!["leading-wildcard"]);
+}
+
+#[test]
+fn nested_loop_memoize_cache_misses_rereading_inner_table_are_flagged() {
+    let mut outer = node(2, "Seq Scan", NodeKind::Scan);
+    outer.object = Some("public.events".into());
+    outer.est_rows = 20_000.0;
+    outer.act_rows = Some(20_000.0);
+    outer.self_cost = 100.0;
+
+    let mut inner_scan = node(5, "Seq Scan", NodeKind::Scan);
+    inner_scan.object = Some("public.accounts".into());
+    inner_scan.est_rows = 500.0;
+    inner_scan.act_rows = Some(500.0);
+    inner_scan.act_executions = Some(15_000.0);
+    inner_scan.rows_read = Some(15_000.0 * 500.0);
+    inner_scan.table_rows = Some(1_000.0);
+    inner_scan.self_cost = 9_000.0;
+
+    let mut memoize = node(4, "Memoize", NodeKind::Other);
+    memoize.act_rows = Some(20_000.0);
+    memoize.act_executions = Some(20_000.0);
+    memoize.children = vec![inner_scan];
+
+    let mut wrapper = node(3, "Filter", NodeKind::Other);
+    wrapper.act_rows = Some(20_000.0);
+    wrapper.act_executions = Some(20_000.0);
+    wrapper.children = vec![memoize];
+
+    let mut join = node(1, "Nested Loop", NodeKind::Join);
+    join.act_rows = Some(20_000.0);
+    join.self_cost = 500.0;
+    join.children = vec![outer, wrapper];
+
+    let p = plan(Engine::Postgres, join);
+    assert!(rules(&p).contains(&"nested-loops".to_string()), "{:?}", rules(&p));
+}

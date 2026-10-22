@@ -89,10 +89,10 @@ fn build(
         let child = build(lines, index, names, schema, next_id);
         node.children.push(child);
     }
-    // MySQL puts the WHERE condition in a Filter above the scan; checks look for it on the scan itself.
+    // MySQL puts the WHERE condition in a Filter above the scan or seek; checks look for it on the node itself.
     if node.op == "Filter"
         && let [child] = node.children.as_mut_slice()
-        && child.kind == NodeKind::Scan
+        && matches!(child.kind, NodeKind::Scan | NodeKind::Seek)
         && child.predicate.is_none()
     {
         child.predicate = node.predicate.clone();

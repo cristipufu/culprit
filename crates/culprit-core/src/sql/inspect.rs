@@ -569,3 +569,248 @@ pub fn limit_count(text: &str, engine: Engine) -> Option<f64> {
     let ends = tail.chars().next().is_none_or(|c| c.is_ascii_whitespace() || matches!(c, ';' | ')'));
     (ends && (1..=MAX_LIMIT_ROWS).contains(&count)).then_some(count as f64)
 }
+
+/// Extract an application call-site annotation from SQL comments (Marginalia, SqlCommenter, Rails Query Logs, or
+/// `path/to/file.ext:line` comments). Returns `None` when the statement carries no call-site comment.
+pub fn extract_call_site(sql: &str) -> Option<String> {
+    let mut comments = Vec::new();
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' => {
+                let q = bytes[i];
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i = (i + 2).min(bytes.len());
+                        continue;
+                    }
+                    if bytes[i] == q {
+                        i += 1;
+                        if i < bytes.len() && bytes[i] == q {
+                            i += 1;
+                            continue;
+                        }
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'$' => {
+                // Skip PostgreSQL dollar-quoted strings ($tag$...$tag$ or $$...$$)
+                let tag_start = i;
+                i += 1;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                if i < bytes.len() && bytes[i] == b'$' {
+                    i += 1;
+                    let tag = &bytes[tag_start..i];
+                    while i + tag.len() <= bytes.len() {
+                        if &bytes[i..i + tag.len()] == tag {
+                            i += tag.len();
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                let start = i + 2;
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                if let Some(body) = sql.get(start..i) {
+                    comments.push(body.trim());
+                }
+                i = (i + 2).min(bytes.len());
+            }
+            b'-' if i + 1 < bytes.len() && bytes[i + 1] == b'-' => {
+                let start = i + 2;
+                i += 2;
+                while i < bytes.len() && !matches!(bytes[i], b'\n' | b'\r') {
+                    i += 1;
+                }
+                if let Some(body) = sql.get(start..i) {
+                    comments.push(body.trim());
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    for comment in comments {
+        if let Some(site) = parse_comment_call_site(comment) {
+            return Some(site);
+        }
+    }
+    None
+}
+
+fn parse_comment_call_site(comment: &str) -> Option<String> {
+    let mut file = None;
+    let mut line = None;
+    let mut func = None;
+    let mut controller = None;
+    let mut action = None;
+    let mut route = None;
+    let mut job = None;
+
+    for part in split_comment_kv(comment) {
+        let Some((raw_k, raw_v)) = part.split_once('=').or_else(|| {
+            let (k, v) = part.split_once(':')?;
+            // Avoid treating bare `path/to/file.rb:42` as key=`path/to/file.rb`, val=`42`
+            (!has_source_extension(k.trim())).then_some((k, v))
+        }) else {
+            continue;
+        };
+        let k = raw_k.trim().trim_start_matches(['*', '@']).to_ascii_lowercase();
+        let v = unquote_comment_val(raw_v.trim());
+        if v.is_empty() {
+            continue;
+        }
+        match k.as_str() {
+            "file" | "filepath" | "source" => file = Some(v),
+            "line" | "lineno" => line = Some(v),
+            "function" | "func" | "method" => func = Some(v),
+            "controller" => controller = Some(v),
+            "action" => action = Some(v),
+            "route" => route = Some(v),
+            "job" => job = Some(v),
+            _ => {}
+        }
+    }
+
+    let mut location = match (file, line) {
+        (Some(f), Some(l)) if !f.contains(':') && l.chars().all(|c| c.is_ascii_digit()) => Some(format!("{f}:{l}")),
+        (Some(f), _) if is_file_line_token(&f) => Some(f),
+        (_, Some(l)) if is_file_line_token(&l) => Some(l),
+        (Some(f), _) if has_source_extension(&f) => Some(f),
+        _ => None,
+    };
+
+    if location.is_none() {
+        for word in comment.split_whitespace() {
+            let trimmed = word.trim_matches(|c: char| matches!(c, ',' | ';' | '(' | ')' | '\'' | '"' | '`'));
+            if is_file_line_token(trimmed) {
+                location = Some(trimmed.to_string());
+                break;
+            }
+        }
+    }
+
+    let mut context = Vec::new();
+    if let Some(f) = func {
+        context.push(format!("function={f}"));
+    }
+    if let Some(r) = route {
+        context.push(format!("route={r}"));
+    }
+    if let Some(c) = controller {
+        context.push(format!("controller={c}"));
+    }
+    if let Some(a) = action {
+        context.push(format!("action={a}"));
+    }
+    if let Some(j) = job {
+        context.push(format!("job={j}"));
+    }
+
+    match (location, context.is_empty()) {
+        (Some(loc), true) => Some(loc),
+        (Some(loc), false) => Some(format!("{loc} ({})", context.join(", "))),
+        (None, false) => Some(context.join(", ")),
+        (None, true) => None,
+    }
+}
+
+fn split_comment_kv(comment: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let bytes = comment.as_bytes();
+    let mut start = 0;
+    let mut i = 0;
+    let mut in_quote: Option<u8> = None;
+    while i < bytes.len() {
+        match (in_quote, bytes[i]) {
+            (Some(q), b) if b == q => in_quote = None,
+            (None, b'\'' | b'"') => in_quote = Some(bytes[i]),
+            (None, b',' | b'\n' | b'\r' | b';') => {
+                if let Some(slice) = comment.get(start..i) {
+                    let trimmed = slice.trim();
+                    if !trimmed.is_empty() {
+                        out.push(trimmed);
+                    }
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if let Some(slice) = comment.get(start..) {
+        let trimmed = slice.trim();
+        if !trimmed.is_empty() {
+            out.push(trimmed);
+        }
+    }
+    out
+}
+
+fn unquote_comment_val(val: &str) -> String {
+    let val = val.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')).unwrap_or(val);
+    let val = val.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(val);
+    // Url-encoded `%2F` / `%3A` in OpenTelemetry SqlCommenter values; replace backticks with single quotes so markdown code spans never break.
+    val.replace("%2F", "/").replace("%2f", "/").replace("%3A", ":").replace("%3a", ":").replace('`', "'")
+}
+
+fn has_source_extension(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("//") {
+        return false;
+    }
+    let file_part = path.split(':').next().unwrap_or(path);
+    let Some((stem, ext)) = file_part.rsplit_once('.') else {
+        return false;
+    };
+    if stem.is_empty() {
+        return false;
+    }
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "rs" | "py"
+            | "rb"
+            | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "go"
+            | "java"
+            | "kt"
+            | "cs"
+            | "php"
+            | "ex"
+            | "exs"
+            | "scala"
+            | "sql"
+            | "c"
+            | "cc"
+            | "cpp"
+            | "h"
+    )
+}
+
+fn is_file_line_token(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("//") {
+        return false;
+    }
+    let Some((path, rest)) = token.split_once(':') else {
+        return false;
+    };
+    if path.is_empty() || !has_source_extension(path) {
+        return false;
+    }
+    let line_part = rest.split(':').next().unwrap_or(rest);
+    !line_part.is_empty() && line_part.chars().all(|c| c.is_ascii_digit())
+}

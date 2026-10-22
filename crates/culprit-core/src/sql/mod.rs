@@ -13,7 +13,7 @@ mod safety;
 mod tests;
 
 pub use inspect::{
-    creates_index, creates_unfiltered_index, cte_write_target, has_limit, has_mssql_recompile_hint,
+    creates_index, creates_unfiltered_index, cte_write_target, extract_call_site, has_limit, has_mssql_recompile_hint,
     isolated_counter_update, limit_count, mssql_statistics_target, offset_count, resolve_write_targets, table_aliases,
     tables_in,
 };

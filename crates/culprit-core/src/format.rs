@@ -1,6 +1,9 @@
 //! Human formatting shared by checks (for finding prose) and the CLI. The UI formats from raw values.
 
 pub fn duration(ms: f64) -> String {
+    if !ms.is_finite() {
+        return "0 ms".to_string();
+    }
     let ms = ms.max(0.0);
     // Nothing measured reads as 0 ms; cache-fast work in microseconds, as the app shows it ("3 µs", not "0.00 ms").
     if ms == 0.0 {
@@ -43,6 +46,9 @@ pub fn duration(ms: f64) -> String {
 
 /// Days counted, never more than were: a tenth under 10 (9.51 days are "9.5", not "10"), whole days from 10 on.
 pub fn days_counted(days: f64) -> String {
+    if !days.is_finite() {
+        return "0".to_string();
+    }
     // A hair under a whole number from adding hours is that number.
     let days = days + 1e-9;
     if days < 10.0 {
@@ -126,6 +132,9 @@ pub fn age_between(from: &str, to: &str) -> Option<String> {
 }
 
 pub fn bytes(value: f64) -> String {
+    if !value.is_finite() {
+        return "0 B".to_string();
+    }
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut v = value.max(0.0);
     let mut unit = 0;
@@ -140,6 +149,9 @@ pub fn bytes(value: f64) -> String {
 }
 
 pub fn count(value: f64) -> String {
+    if !value.is_finite() {
+        return "0".to_string();
+    }
     // An empty f64 sum is -0.0; it reads as nothing, not as a negative.
     let value = if value == 0.0 { 0.0 } else { value };
     let v = value.abs();
@@ -162,6 +174,9 @@ pub fn count(value: f64) -> String {
 }
 
 pub fn percent(ratio: f64) -> String {
+    if !ratio.is_finite() {
+        return "0%".to_string();
+    }
     let p = ratio * 100.0;
     if p > 0.0 && p < 1.0 {
         return "<1%".to_string();
@@ -187,6 +202,9 @@ pub fn percent_value(value: f64) -> String {
 
 /// "3.4×", "710×": how many times larger, written the way the rest of the product writes it.
 pub fn factor(value: f64) -> String {
+    if !value.is_finite() {
+        return "1.0×".to_string();
+    }
     if value >= 100.0 {
         return format!("{}×", count(value));
     }

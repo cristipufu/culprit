@@ -326,7 +326,7 @@ fn table_node(table: &Map<String, Value>, cx: &Context, id: &mut u32) -> PlanNod
     node.facts_mut().estimated_filtered_percent = filtered.and_then(culprit_core::plan_facts::percentage);
     // MySQL's fixed guesses for conditions it has no statistics on say nothing about how much the filter keeps.
     let conditions = node.predicate.as_deref().map_or(1, culprit_core::insights::condition_count);
-    if kind == NodeKind::Scan
+    if (kind == NodeKind::Scan || (kind == NodeKind::Seek && node.predicate.is_some()))
         && let (Some(examined), Some(filtered)) = (examined, filtered)
         && examined >= 1_000.0
         && filtered < 10.0

@@ -81,6 +81,16 @@ pub trait Provider: Send + Sync {
         self.explain(sql, ExplainMode::Estimated).await
     }
 
+    /// Estimated plan of `sql` with one or more virtual indexes (`CREATE INDEX ...`) registered only in this session's
+    /// planner memory (PostgreSQL `hypopg`). Never creates a real index or modifies the database.
+    async fn explain_hypothetical(&self, _sql: &str, _indexes: &[String]) -> Result<Plan> {
+        Err(Error::new(
+            ErrorCode::Unsupported,
+            format!("{} does not support virtual index planning (--with-index)", self.engine().label()),
+        )
+        .with_hint("Virtual index planning is supported on PostgreSQL when the `hypopg` extension is installed."))
+    }
+
     async fn live(&self) -> Result<LiveState>;
 
     /// Run a statement that reads and return up to `limit` rows, inside a read-only transaction where the engine has one.

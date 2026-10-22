@@ -35,25 +35,91 @@ pub fn lint_sql(snapshot: &Snapshot, sql: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut in_transaction = false;
     for stmt in &statements {
-        let tokens = tokenize(stmt);
-        if tokens.is_empty() {
-            continue;
-        }
-        let upper: Vec<String> = tokens.iter().map(|t| t.to_ascii_uppercase()).collect();
-        if is_transaction_begin(&upper) {
-            in_transaction = true;
-            continue;
-        }
-        if is_transaction_end(&upper) {
-            in_transaction = false;
-            continue;
-        }
-        check_concurrent_in_tx(snapshot, stmt, &tokens, &upper, in_transaction, &mut findings);
-        check_create_index(snapshot, stmt, &tokens, &mut findings);
-        check_drop_or_truncate(snapshot, stmt, &tokens, &upper, &mut findings);
-        check_alter_table(snapshot, stmt, &tokens, &ctx, &mut findings);
+        lint_single_statement(snapshot, stmt, &ctx, &mut in_transaction, &mut findings);
     }
     findings
+}
+
+/// Apply all safe DDL auto-fixes (`Fix.sql`) recommended by [`lint_sql`] to `sql`, returning `(rewritten_sql, fixes_applied)`.
+pub fn apply_sql_fixes(snapshot: &Snapshot, sql: &str) -> (String, usize) {
+    let spans = split_statement_spans(sql);
+    if spans.is_empty() {
+        return (sql.to_string(), 0);
+    }
+    let statements: Vec<String> = spans.iter().map(|(_, _, s)| s.clone()).collect();
+    let mut created_indexes = collect_script_indexes(&statements);
+    let validated_tables = collect_validated_constraint_tables(&statements);
+
+    let mut out = String::with_capacity(sql.len() + 128);
+    let mut last_pos = 0usize;
+    let mut applied = 0usize;
+    let mut in_transaction = false;
+
+    for (start, end, stmt) in &spans {
+        let mut stmt_findings = Vec::new();
+        {
+            let ctx = ScriptContext { created_indexes: &created_indexes, validated_tables: &validated_tables };
+            lint_single_statement(snapshot, stmt, &ctx, &mut in_transaction, &mut stmt_findings);
+        }
+
+        out.push_str(&sql[last_pos..*start]);
+
+        for f in &stmt_findings {
+            if f.id.starts_with("sql-lint:unindexed-fk:")
+                && !(in_transaction && snapshot.server.engine == Engine::Postgres)
+                && let Some(fix_sql) = f.fix.as_ref().and_then(|fix| fix.sql.as_deref())
+            {
+                let trimmed = fix_sql.trim();
+                out.push_str(trimmed);
+                out.push('\n');
+                created_indexes.extend(collect_script_indexes(&split_statements(trimmed)));
+                applied += 1;
+            }
+        }
+
+        let replacements: Vec<&str> = stmt_findings
+            .iter()
+            .filter(|f| !f.id.starts_with("sql-lint:unindexed-fk:"))
+            .filter_map(|f| f.fix.as_ref().and_then(|fix| fix.sql.as_deref()))
+            .collect();
+
+        if let [rep_sql] = replacements.as_slice() {
+            out.push_str(rep_sql.trim());
+            applied += 1;
+        } else {
+            out.push_str(&sql[*start..*end]);
+        }
+        last_pos = *end;
+    }
+    out.push_str(&sql[last_pos..]);
+    (out, applied)
+}
+
+fn lint_single_statement(
+    snapshot: &Snapshot,
+    stmt: &str,
+    ctx: &ScriptContext<'_>,
+    in_transaction: &mut bool,
+    findings: &mut Vec<Finding>,
+) {
+    let tokens = tokenize(stmt);
+    if tokens.is_empty() {
+        return;
+    }
+    let upper: Vec<String> = tokens.iter().map(|t| t.to_ascii_uppercase()).collect();
+    if is_transaction_begin(&upper) {
+        *in_transaction = true;
+        return;
+    }
+    if is_transaction_end(&upper) {
+        *in_transaction = false;
+        return;
+    }
+    check_concurrent_in_tx(snapshot, stmt, &tokens, &upper, *in_transaction, findings);
+    check_create_index(snapshot, stmt, &tokens, *in_transaction, findings);
+    check_drop_or_truncate(snapshot, stmt, &tokens, &upper, *in_transaction, findings);
+    check_maintenance(snapshot, stmt, &tokens, &upper, *in_transaction, findings);
+    check_alter_table(snapshot, stmt, &tokens, ctx, findings);
 }
 
 fn is_transaction_begin(upper: &[String]) -> bool {
@@ -122,11 +188,18 @@ fn check_drop_or_truncate(
     stmt: &str,
     tokens: &[String],
     upper: &[String],
+    in_transaction: bool,
     findings: &mut Vec<Finding>,
 ) {
     match upper.first().map(String::as_str) {
         Some("DROP") if upper.get(1).map(String::as_str) == Some("INDEX") => {
-            if snapshot.server.engine != Engine::Postgres || upper.iter().any(|t| t == "CONCURRENTLY") {
+            let engine = snapshot.server.engine;
+            let is_blocking = match engine {
+                Engine::Postgres => !upper.iter().any(|t| t == "CONCURRENTLY"),
+                Engine::Mysql => !has_mysql_online_ddl(upper),
+                _ => false,
+            };
+            if !is_blocking {
                 return;
             }
             let mut pos = 2;
@@ -138,7 +211,17 @@ fn check_drop_or_truncate(
             let Some(raw_idx) = tokens.get(pos) else { return };
             let idx_clean = unquote_ident(raw_idx);
             let idx_leaf = idx_clean.rsplit('.').next().unwrap_or(&idx_clean);
-            let Some(ix) = snapshot.indexes.iter().find(|i| i.name.eq_ignore_ascii_case(idx_leaf)) else {
+            let on_table = upper
+                .iter()
+                .position(|t| t == "ON")
+                .and_then(|on_pos| tokens.get(on_pos + 1))
+                .and_then(|raw_tbl| find_table(snapshot, raw_tbl));
+            let Some(ix) = snapshot.indexes.iter().find(|i| {
+                i.name.eq_ignore_ascii_case(idx_leaf)
+                    && on_table.is_none_or(|t| {
+                        i.schema.eq_ignore_ascii_case(&t.schema) && i.table.eq_ignore_ascii_case(&t.name)
+                    })
+            }) else {
                 return;
             };
             let Some(table) = snapshot.table(&ix.schema, &ix.table).filter(|t| is_large_table(t)) else {
@@ -158,28 +241,52 @@ fn check_drop_or_truncate(
             f.severity = if rows >= HIGH_TABLE_ROWS || bytes >= GB { Severity::High } else { Severity::Medium };
             f.impact.score = base_score(f.severity);
             f.impact.label = table_size_label(rows, bytes);
-            f.title = format!(
-                "DROP INDEX {} on {} ({}) without CONCURRENTLY acquires an ACCESS EXCLUSIVE lock",
-                ix.name,
-                table.name,
-                table_size_label(rows, bytes)
-            );
-            f.summary = format!(
-                "The statement `{}` drops `{}` on {} ({}) without `CONCURRENTLY`. Standard `DROP INDEX` in PostgreSQL \
-                 acquires an `ACCESS EXCLUSIVE` lock on the table, blocking all concurrent reads and writes until \
-                 in-flight queries finish.",
-                compact_sql(stmt),
-                ix.name,
-                qual,
-                table_size_label(rows, bytes)
-            );
-            f.fix = Some(Fix {
-                summary: "Use `DROP INDEX CONCURRENTLY` (outside a transaction block) so concurrent reads and writes are not blocked.".into(),
-                sql: Some(format!("DROP INDEX CONCURRENTLY IF EXISTS {};", ix.name)),
-                cost: Some("DROP INDEX CONCURRENTLY waits for active transactions using the index and cannot run inside a transaction block.".into()),
-            });
+            if engine == Engine::Mysql {
+                f.title = format!(
+                    "DROP INDEX {} on {} ({}) without LOCK=NONE can block concurrent writes",
+                    ix.name,
+                    table.name,
+                    table_size_label(rows, bytes)
+                );
+                f.summary = format!(
+                    "The statement `{}` drops `{}` on {} ({}) without `ALGORITHM=INPLACE LOCK=NONE`. Specifying \
+                     `ALGORITHM=INPLACE, LOCK=NONE` guarantees an online drop that never falls back to a blocking \
+                     table lock.",
+                    compact_sql(stmt),
+                    ix.name,
+                    qual,
+                    table_size_label(rows, bytes)
+                );
+                f.fix = Some(Fix {
+                    summary: "Drop the index with `ALGORITHM=INPLACE, LOCK=NONE` so concurrent reads and writes are not blocked.".into(),
+                    sql: Some(Engine::Mysql.dialect().drop_index(&ix.schema, &ix.table, &ix.name)),
+                    cost: None,
+                });
+                f.verify = vec!["Re-run `culprit lint-sql` after adding `ALGORITHM=INPLACE, LOCK=NONE`.".into()];
+            } else {
+                f.title = format!(
+                    "DROP INDEX {} on {} ({}) without CONCURRENTLY acquires an ACCESS EXCLUSIVE lock",
+                    ix.name,
+                    table.name,
+                    table_size_label(rows, bytes)
+                );
+                f.summary = format!(
+                    "The statement `{}` drops `{}` on {} ({}) without `CONCURRENTLY`. Standard `DROP INDEX` in PostgreSQL \
+                     acquires an `ACCESS EXCLUSIVE` lock on the table, blocking all concurrent reads and writes until \
+                     in-flight queries finish.",
+                    compact_sql(stmt),
+                    ix.name,
+                    qual,
+                    table_size_label(rows, bytes)
+                );
+                f.fix = Some(Fix {
+                    summary: "Use `DROP INDEX CONCURRENTLY` (outside a transaction block) so concurrent reads and writes are not blocked.".into(),
+                    sql: (!in_transaction).then(|| format!("DROP INDEX CONCURRENTLY IF EXISTS {};", ix.name)),
+                    cost: Some("DROP INDEX CONCURRENTLY waits for active transactions using the index and cannot run inside a transaction block.".into()),
+                });
+                f.verify = vec!["Re-run `culprit lint-sql` after switching to `DROP INDEX CONCURRENTLY`.".into()];
+            }
             push_table_metrics(&mut f, rows, bytes);
-            f.verify = vec!["Re-run `culprit lint-sql` after switching to `DROP INDEX CONCURRENTLY`.".into()];
             findings.push(f);
         }
         Some("DROP") if upper.get(1).map(String::as_str) == Some("TABLE") => {
@@ -317,7 +424,263 @@ fn contains_identifier(sql_text: &str, ident: &str) -> bool {
     })
 }
 
-fn check_create_index(snapshot: &Snapshot, stmt: &str, tokens: &[String], findings: &mut Vec<Finding>) {
+fn check_maintenance(
+    snapshot: &Snapshot,
+    stmt: &str,
+    tokens: &[String],
+    upper: &[String],
+    in_transaction: bool,
+    findings: &mut Vec<Finding>,
+) {
+    if snapshot.server.engine != Engine::Postgres {
+        return;
+    }
+    match upper.first().map(String::as_str) {
+        Some("VACUUM") => {
+            let mut pos = 1;
+            let mut is_full = false;
+            if upper.get(pos).map(String::as_str) == Some("(") {
+                let mut depth = 0usize;
+                for (i, tok) in upper.iter().enumerate().skip(pos) {
+                    match tok.as_str() {
+                        "(" => depth += 1,
+                        ")" => {
+                            depth = depth.saturating_sub(1);
+                            if depth == 0 {
+                                pos = i + 1;
+                                break;
+                            }
+                        }
+                        "FULL" if depth == 1 => {
+                            is_full = true;
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
+                while let Some(tok) = upper.get(pos).map(String::as_str) {
+                    if tok == "FULL" {
+                        is_full = true;
+                        pos += 1;
+                    } else if matches!(tok, "FREEZE" | "VERBOSE" | "ANALYZE" | "ANALYSE") {
+                        pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            if !is_full {
+                return;
+            }
+            let Some(raw_table) = tokens.get(pos) else { return };
+            let Some(table) = find_table(snapshot, raw_table).filter(|t| is_large_table(t)) else {
+                return;
+            };
+            let rows = table_rows(table);
+            let bytes = table_bytes(table);
+            let qual = table.qualified();
+            let mut f = finding(
+                "sql-lint",
+                &format!("vacuum-full:{qual}"),
+                Category::Maintenance,
+                subject(SubjectKind::Table, &qual),
+            );
+            f.actionability = Actionability::NeedsAttention;
+            f.confidence = Confidence::High;
+            f.severity = Severity::High;
+            f.impact.score = base_score(f.severity);
+            f.impact.label = table_size_label(rows, bytes);
+            f.title = format!(
+                "VACUUM FULL on {} ({}) rewrites the entire table under an ACCESS EXCLUSIVE lock",
+                table.name,
+                table_size_label(rows, bytes)
+            );
+            f.summary = format!(
+                "The statement `{}` runs `VACUUM FULL` on {} ({}). Unlike standard `VACUUM`, `VACUUM FULL` rewrites \
+                 every row and index into new disk files while holding an `ACCESS EXCLUSIVE` lock, blocking all \
+                 concurrent reads and writes.",
+                compact_sql(stmt),
+                qual,
+                table_size_label(rows, bytes)
+            );
+            f.fix = Some(Fix {
+                summary: "Run standard `VACUUM (ANALYZE)` (which reclaims dead tuples online without blocking reads or writes), or use `pg_repack` if physical table compaction is required.".into(),
+                sql: Some(format!("VACUUM (ANALYZE) {qual};")),
+                cost: None,
+            });
+            push_table_metrics(&mut f, rows, bytes);
+            f.verify = vec!["Replace `VACUUM FULL` with `VACUUM (ANALYZE)` or `pg_repack`.".into()];
+            findings.push(f);
+        }
+        Some("CLUSTER") => {
+            let mut pos = 1;
+            if upper.get(pos).map(String::as_str) == Some("VERBOSE") {
+                pos += 1;
+            }
+            let Some(raw_table) = tokens.get(pos) else { return };
+            let Some(table) = find_table(snapshot, raw_table).filter(|t| is_large_table(t)) else {
+                return;
+            };
+            let rows = table_rows(table);
+            let bytes = table_bytes(table);
+            let qual = table.qualified();
+            let mut f = finding(
+                "sql-lint",
+                &format!("cluster:{qual}"),
+                Category::Maintenance,
+                subject(SubjectKind::Table, &qual),
+            );
+            f.actionability = Actionability::NeedsAttention;
+            f.confidence = Confidence::High;
+            f.severity = Severity::High;
+            f.impact.score = base_score(f.severity);
+            f.impact.label = table_size_label(rows, bytes);
+            f.title = format!(
+                "CLUSTER on {} ({}) rewrites the table under an ACCESS EXCLUSIVE lock",
+                table.name,
+                table_size_label(rows, bytes)
+            );
+            f.summary = format!(
+                "The statement `{}` runs `CLUSTER` on {} ({}). `CLUSTER` physically reorders and rewrites the table \
+                 while holding an `ACCESS EXCLUSIVE` lock, blocking all concurrent reads and writes.",
+                compact_sql(stmt),
+                qual,
+                table_size_label(rows, bytes)
+            );
+            f.fix = Some(Fix {
+                summary: "Use `pg_repack` to reorder a large production table online without holding an `ACCESS EXCLUSIVE` lock.".into(),
+                sql: None,
+                cost: None,
+            });
+            push_table_metrics(&mut f, rows, bytes);
+            f.verify = vec!["Avoid running `CLUSTER` directly on large production tables during traffic.".into()];
+            findings.push(f);
+        }
+        Some("REINDEX") => {
+            if upper.iter().any(|t| t == "CONCURRENTLY") {
+                return;
+            }
+            let mut pos = 1;
+            if upper.get(pos).map(String::as_str) == Some("(") {
+                let mut depth = 0usize;
+                for (i, tok) in upper.iter().enumerate().skip(pos) {
+                    match tok.as_str() {
+                        "(" => depth += 1,
+                        ")" => {
+                            depth = depth.saturating_sub(1);
+                            if depth == 0 {
+                                pos = i + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let kind = upper.get(pos).map(String::as_str).unwrap_or("");
+            let Some(raw_target) = tokens.get(pos + 1) else { return };
+            match kind {
+                "TABLE" => {
+                    let Some(table) = find_table(snapshot, raw_target).filter(|t| is_large_table(t)) else {
+                        return;
+                    };
+                    let rows = table_rows(table);
+                    let bytes = table_bytes(table);
+                    let qual = table.qualified();
+                    let mut f = finding(
+                        "sql-lint",
+                        &format!("blocking-reindex:{qual}"),
+                        Category::Indexes,
+                        subject(SubjectKind::Table, &qual),
+                    );
+                    f.actionability = Actionability::NeedsAttention;
+                    f.confidence = Confidence::High;
+                    f.severity = if rows >= HIGH_TABLE_ROWS || bytes >= GB { Severity::High } else { Severity::Medium };
+                    f.impact.score = base_score(f.severity);
+                    f.impact.label = table_size_label(rows, bytes);
+                    f.title = format!(
+                        "REINDEX TABLE {} ({}) without CONCURRENTLY blocks reads and writes",
+                        table.name,
+                        table_size_label(rows, bytes)
+                    );
+                    f.summary = format!(
+                        "The statement `{}` rebuilds all indexes on {} ({}) without `CONCURRENTLY`. Standard `REINDEX \
+                         TABLE` holds `SHARE` and `ACCESS EXCLUSIVE` locks that block concurrent writes and reads.",
+                        compact_sql(stmt),
+                        qual,
+                        table_size_label(rows, bytes)
+                    );
+                    f.fix = Some(Fix {
+                        summary: "Use `REINDEX TABLE CONCURRENTLY` (outside a transaction block) so concurrent reads and writes can continue.".into(),
+                        sql: (!in_transaction).then(|| format!("REINDEX TABLE CONCURRENTLY {qual};")),
+                        cost: Some("REINDEX CONCURRENTLY cannot run inside a transaction block.".into()),
+                    });
+                    push_table_metrics(&mut f, rows, bytes);
+                    f.verify =
+                        vec!["Re-run `culprit lint-sql` after switching to `REINDEX TABLE CONCURRENTLY`.".into()];
+                    findings.push(f);
+                }
+                "INDEX" => {
+                    let idx_clean = unquote_ident(raw_target);
+                    let idx_leaf = idx_clean.rsplit('.').next().unwrap_or(&idx_clean);
+                    let Some(ix) = snapshot.indexes.iter().find(|i| i.name.eq_ignore_ascii_case(idx_leaf)) else {
+                        return;
+                    };
+                    let Some(table) = snapshot.table(&ix.schema, &ix.table).filter(|t| is_large_table(t)) else {
+                        return;
+                    };
+                    let rows = table_rows(table);
+                    let bytes = table_bytes(table);
+                    let qual = table.qualified();
+                    let mut f = finding(
+                        "sql-lint",
+                        &format!("blocking-reindex:{}", ix.name),
+                        Category::Indexes,
+                        subject(SubjectKind::Index, format!("{qual}.{}", ix.name)),
+                    );
+                    f.actionability = Actionability::NeedsAttention;
+                    f.confidence = Confidence::High;
+                    f.severity = if rows >= HIGH_TABLE_ROWS || bytes >= GB { Severity::High } else { Severity::Medium };
+                    f.impact.score = base_score(f.severity);
+                    f.impact.label = table_size_label(rows, bytes);
+                    f.title = format!(
+                        "REINDEX INDEX {} on {} ({}) without CONCURRENTLY blocks writes",
+                        ix.name,
+                        table.name,
+                        table_size_label(rows, bytes)
+                    );
+                    f.summary = format!(
+                        "The statement `{}` rebuilds `{}` on {} ({}) without `CONCURRENTLY`. Standard `REINDEX INDEX` \
+                         blocks writes on the parent table and reads of the index until the rebuild finishes.",
+                        compact_sql(stmt),
+                        ix.name,
+                        qual,
+                        table_size_label(rows, bytes)
+                    );
+                    f.fix = Some(Fix {
+                        summary: "Use `REINDEX INDEX CONCURRENTLY` (outside a transaction block) so concurrent reads and writes can continue.".into(),
+                        sql: (!in_transaction).then(|| format!("REINDEX INDEX CONCURRENTLY {};", ix.name)),
+                        cost: Some("REINDEX CONCURRENTLY cannot run inside a transaction block.".into()),
+                    });
+                    push_table_metrics(&mut f, rows, bytes);
+                    f.verify =
+                        vec!["Re-run `culprit lint-sql` after switching to `REINDEX INDEX CONCURRENTLY`.".into()];
+                    findings.push(f);
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+fn check_create_index(
+    snapshot: &Snapshot,
+    stmt: &str,
+    tokens: &[String],
+    in_transaction: bool,
+    findings: &mut Vec<Finding>,
+) {
     let upper: Vec<String> = tokens.iter().map(|t| t.to_ascii_uppercase()).collect();
     if upper.first().map(String::as_str) != Some("CREATE") {
         return;
@@ -346,6 +709,7 @@ fn check_create_index(snapshot: &Snapshot, stmt: &str, tokens: &[String], findin
     let is_blocking = match engine {
         Engine::Postgres => !has_concurrently,
         Engine::Mssql => supports_online_index(snapshot) && !has_mssql_online_on(&upper),
+        Engine::Mysql => !has_mysql_online_ddl(&upper),
         _ => false,
     };
     if !is_blocking {
@@ -378,7 +742,7 @@ fn check_create_index(snapshot: &Snapshot, stmt: &str, tokens: &[String], findin
             );
             f.fix = Some(Fix {
                 summary: "Use `CREATE INDEX CONCURRENTLY` (outside a transaction block) so writes continue while the index builds.".into(),
-                sql: Some(suggest_concurrent_index(stmt)),
+                sql: (!in_transaction).then(|| suggest_concurrent_index(stmt)).flatten(),
                 cost: Some("CONCURRENTLY performs two table scans and cannot run inside a transaction block.".into()),
             });
         }
@@ -399,8 +763,28 @@ fn check_create_index(snapshot: &Snapshot, stmt: &str, tokens: &[String], findin
                 summary:
                     "Add `WITH (ONLINE = ON)` to the `CREATE INDEX` statement so concurrent reads and writes continue."
                         .into(),
-                sql: None,
+                sql: suggest_mssql_online_index(stmt, &upper),
                 cost: Some("Online index builds use additional tempdb version store space while running.".into()),
+            });
+        }
+        Engine::Mysql => {
+            f.title = format!(
+                "CREATE INDEX on {} ({}) without LOCK=NONE can fall back to a table lock",
+                table.name,
+                table_size_label(rows, bytes)
+            );
+            f.summary = format!(
+                "The statement `{}` builds an index on {} ({}) without `ALGORITHM=INPLACE LOCK=NONE`. Without \
+                 explicit `LOCK=NONE`, MySQL/MariaDB can fall back to `LOCK=SHARED` or `ALGORITHM=COPY` if an online \
+                 build is not supported, blocking concurrent writes until the build finishes.",
+                compact_sql(stmt),
+                qual,
+                table_size_label(rows, bytes)
+            );
+            f.fix = Some(Fix {
+                summary: "Add `ALGORITHM=INPLACE LOCK=NONE` so the server guarantees an online build and fails immediately instead of locking the table.".into(),
+                sql: suggest_mysql_online_index(stmt, &upper),
+                cost: Some("Online InnoDB index builds buffer concurrent DML in innodb_online_alter_log_max_size while running.".into()),
             });
         }
         _ => {}
@@ -465,8 +849,60 @@ fn check_alter_table(
         return;
     }
 
+    let before_count = findings.len();
     for (clause_tokens, clause_upper) in split_top_level_commas(&tokens[pos + 1..], &upper[pos + 1..]) {
         check_alter_table_action(snapshot, stmt, table, clause_tokens, clause_upper, ctx, findings);
+    }
+    if snapshot.server.engine == Engine::Mysql
+        && is_large_table(table)
+        && !has_mysql_online_ddl(&upper)
+        && !findings[before_count..].iter().any(|f| {
+            f.id.starts_with("sql-lint:table-rewrite:")
+                || f.id.starts_with("sql-lint:volatile-default:")
+                || f.id.starts_with("sql-lint:not-null-without-default:")
+        })
+    {
+        let rows = table_rows(table);
+        let bytes = table_bytes(table);
+        let qual = table.qualified();
+        let mut f = finding(
+            "sql-lint",
+            &format!("mysql-online-ddl:{qual}"),
+            Category::Maintenance,
+            subject(SubjectKind::Table, &qual),
+        );
+        f.actionability = Actionability::NeedsAttention;
+        f.confidence = Confidence::High;
+        f.severity = if rows >= HIGH_TABLE_ROWS || bytes >= GB { Severity::High } else { Severity::Medium };
+        f.impact.score = base_score(f.severity);
+        f.impact.label = table_size_label(rows, bytes);
+        f.title = format!(
+            "ALTER TABLE on {} ({}) without LOCK=NONE or ALGORITHM=INSTANT can lock the table",
+            table.name,
+            table_size_label(rows, bytes)
+        );
+        f.summary = format!(
+            "The statement `{}` alters {} ({}) without specifying `ALGORITHM=INSTANT` or `ALGORITHM=INPLACE, \
+             LOCK=NONE`. Without an explicit online DDL clause, MySQL/MariaDB can fall back to `ALGORITHM=COPY` or \
+             `LOCK=SHARED`, blocking concurrent writes while rebuilding the table.",
+            compact_sql(stmt),
+            qual,
+            table_size_label(rows, bytes)
+        );
+        let can_append = !upper.iter().any(|t| matches!(t.as_str(), "ALGORITHM" | "LOCK"));
+        f.fix = Some(Fix {
+            summary: "Append `ALGORITHM=INPLACE, LOCK=NONE` (or `ALGORITHM=INSTANT` for compatible column additions on MySQL 8.0+) so the database rejects any blocking table copy immediately.".into(),
+            sql: can_append.then(|| {
+                let trimmed = stmt.trim().trim_end_matches(';').trim_end();
+                format!("{trimmed}, ALGORITHM=INPLACE, LOCK=NONE;")
+            }),
+            cost: None,
+        });
+        push_table_metrics(&mut f, rows, bytes);
+        f.verify = vec![
+            "Re-run `culprit lint-sql` after adding `ALGORITHM=INPLACE, LOCK=NONE` or `ALGORITHM=INSTANT`.".into(),
+        ];
+        findings.push(f);
     }
 }
 
@@ -797,13 +1233,27 @@ fn check_alter_table_action(
         }
     }
 
-    // 2c. ALTER [COLUMN] <col> [SET DATA] TYPE <new_type> or SET NOT NULL
+    // 2c. ALTER [COLUMN] <col> [SET DATA] TYPE <new_type>, MODIFY <col> <new_type>, SQL Server ALTER COLUMN <col> <new_type>, or SET NOT NULL
     if let Some(alter_col_pos) = upper.iter().position(|t| t == "ALTER" || t == "MODIFY") {
         let idx = alter_col_pos;
-        let has_type = upper[idx..].iter().any(|t| t == "TYPE") || upper.get(idx).map(String::as_str) == Some("MODIFY");
         let has_set_not_null = upper[idx..].windows(3).any(|w| w == ["SET", "NOT", "NULL"]);
         let table_validated = ctx.validated_tables.iter().any(|raw| table_matches(table, raw));
-        if has_type && !findings.iter().any(|f| f.id == format!("sql-lint:table-rewrite:{qual}")) {
+        let type_change = parse_column_type_change(tokens, upper, idx);
+        let is_rewrite = type_change.is_some_and(|(col_name, new_type, has_using_or_collate)| {
+            if has_using_or_collate {
+                return true;
+            }
+            let existing = snapshot.columns.iter().find(|c| {
+                c.schema.eq_ignore_ascii_case(&table.schema)
+                    && c.table.eq_ignore_ascii_case(&table.name)
+                    && c.name.eq_ignore_ascii_case(&col_name)
+            });
+            match existing {
+                Some(col) => !is_metadata_only_type_change(snapshot.server.engine, &col.data_type, &new_type),
+                None => true,
+            }
+        });
+        if is_rewrite && !findings.iter().any(|f| f.id == format!("sql-lint:table-rewrite:{qual}")) {
             let mut f = finding(
                 "sql-lint",
                 &format!("table-rewrite:{qual}"),
@@ -1116,19 +1566,171 @@ fn has_mssql_online_on(upper: &[String]) -> bool {
     upper.windows(3).any(|w| w == ["ONLINE", "=", "ON"])
 }
 
-fn suggest_concurrent_index(stmt: &str) -> String {
-    let trimmed = stmt.trim();
-    for prefix in ["CREATE UNIQUE INDEX ", "create unique index ", "CREATE INDEX ", "create index "] {
-        if let Some(rest) = trimmed.strip_prefix(prefix) {
-            let head = if prefix.to_ascii_uppercase().contains("UNIQUE") {
-                "CREATE UNIQUE INDEX CONCURRENTLY "
-            } else {
-                "CREATE INDEX CONCURRENTLY "
-            };
-            return format!("{head}{rest};");
+fn has_mysql_online_ddl(upper: &[String]) -> bool {
+    upper.windows(3).any(|w| w == ["LOCK", "=", "NONE"] || w == ["ALGORITHM", "=", "INSTANT"])
+        || upper.windows(2).any(|w| w == ["LOCK", "NONE"] || w == ["ALGORITHM", "INSTANT"])
+}
+
+fn suggest_mysql_online_index(stmt: &str, upper: &[String]) -> Option<String> {
+    if upper.iter().any(|t| matches!(t.as_str(), "ALGORITHM" | "LOCK")) {
+        return None;
+    }
+    let trimmed = stmt.trim().trim_end_matches(';').trim_end();
+    Some(format!("{trimmed} ALGORITHM=INPLACE LOCK=NONE;"))
+}
+
+fn suggest_concurrent_index(stmt: &str) -> Option<String> {
+    let trimmed = stmt.trim().trim_end_matches(';').trim_end();
+    let lower = trimmed.to_ascii_lowercase();
+    if !lower.starts_with("create") {
+        return None;
+    }
+    let idx_pos = lower.find("index")?;
+    let is_unique = lower["create".len()..idx_pos].contains("unique");
+    let rest = trimmed[idx_pos + "index".len()..].trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+    let head = if is_unique { "CREATE UNIQUE INDEX CONCURRENTLY " } else { "CREATE INDEX CONCURRENTLY " };
+    Some(format!("{head}{rest};"))
+}
+
+fn suggest_mssql_online_index(stmt: &str, upper: &[String]) -> Option<String> {
+    if upper.iter().any(|t| t == "WITH") {
+        return None;
+    }
+    let trimmed = stmt.trim().trim_end_matches(';').trim_end();
+    Some(format!("{trimmed} WITH (ONLINE = ON);"))
+}
+
+/// Parse an `ALTER [COLUMN] <col> [SET DATA] TYPE <new_type>`, `MODIFY [COLUMN] <col> <new_type>`, or SQL Server
+/// `ALTER COLUMN <col> <new_type>` clause into `(column_name, new_type_spec, has_using_or_collate)`.
+fn parse_column_type_change(tokens: &[String], upper: &[String], idx: usize) -> Option<(String, String, bool)> {
+    let head = upper.get(idx)?.as_str();
+    let mut pos = idx + 1;
+    let had_column_kw = upper.get(pos).map(String::as_str) == Some("COLUMN");
+    if had_column_kw {
+        pos += 1;
+    }
+    let col_name = unquote_ident(tokens.get(pos)?);
+    pos += 1;
+    let type_start = if head == "MODIFY" {
+        pos
+    } else if let Some(type_offset) = upper[pos..].iter().position(|t| t == "TYPE") {
+        let between = &upper[pos..pos + type_offset];
+        if !between.is_empty() && between != ["SET", "DATA"] {
+            return None;
+        }
+        pos + type_offset + 1
+    } else if head == "ALTER"
+        && had_column_kw
+        && let Some(next_kw) = upper.get(pos).map(String::as_str)
+        && !matches!(next_kw, "SET" | "DROP" | "RESET" | "ADD" | "TYPE")
+    {
+        pos
+    } else {
+        return None;
+    };
+    if type_start >= tokens.len() {
+        return None;
+    }
+    let has_using_or_collate = upper[type_start..].iter().any(|t| matches!(t.as_str(), "USING" | "COLLATE"));
+    let type_end = upper[type_start..]
+        .iter()
+        .position(|t| {
+            matches!(
+                t.as_str(),
+                "USING"
+                    | "COLLATE"
+                    | "NULL"
+                    | "NOT"
+                    | "DEFAULT"
+                    | "COMMENT"
+                    | "FIRST"
+                    | "AFTER"
+                    | "GENERATED"
+                    | "IDENTITY"
+            )
+        })
+        .map_or(tokens.len(), |off| type_start + off);
+    if type_start >= type_end {
+        return None;
+    }
+    let mut new_type = String::new();
+    for tok in &tokens[type_start..type_end] {
+        if matches!(tok.as_str(), "(" | ")" | ",") {
+            new_type.push_str(tok);
+        } else {
+            if !new_type.is_empty() && !new_type.ends_with(['(', ',']) {
+                new_type.push(' ');
+            }
+            new_type.push_str(tok);
         }
     }
-    trimmed.to_string()
+    Some((col_name, new_type, has_using_or_collate))
+}
+
+fn parse_type_spec(raw: &str) -> (String, Option<(u32, Option<u32>)>) {
+    let lower = raw.trim().to_ascii_lowercase();
+    let (base_part, params_part) = match lower.split_once('(') {
+        Some((b, p)) => (b, p.split(')').next()),
+        None => (lower.as_str(), None),
+    };
+    let base_collapsed = base_part.split_whitespace().collect::<Vec<_>>().join(" ");
+    let base = match base_collapsed.as_str() {
+        "character varying" | "varchar" => "varchar".to_string(),
+        "national character varying" | "nvarchar" => "nvarchar".to_string(),
+        "decimal" | "numeric" => "numeric".to_string(),
+        "bit varying" | "varbit" => "varbit".to_string(),
+        other => other.to_string(),
+    };
+    let params = params_part.and_then(|p| {
+        let mut parts = p.split(',');
+        let p1 = parts.next()?.trim().parse::<u32>().ok()?;
+        let p2 = parts.next().and_then(|s| s.trim().parse::<u32>().ok());
+        Some((p1, p2))
+    });
+    (base, params)
+}
+
+fn is_metadata_only_type_change(engine: Engine, old_type: &str, new_type: &str) -> bool {
+    let (old_base, old_params) = parse_type_spec(old_type);
+    let (new_base, new_params) = parse_type_spec(new_type);
+    match engine {
+        Engine::Postgres => match (old_base.as_str(), new_base.as_str()) {
+            ("varchar", "varchar") => match (old_params, new_params) {
+                (Some((old_len, None)), Some((new_len, None))) => new_len >= old_len,
+                (_, None) => true,
+                _ => false,
+            },
+            ("varchar" | "text", "text") => new_params.is_none(),
+            ("numeric", "numeric") => match (old_params, new_params) {
+                (Some((old_p, old_s)), Some((new_p, new_s))) => {
+                    new_p >= old_p && old_s.unwrap_or(0) == new_s.unwrap_or(0)
+                }
+                (_, None) => true,
+                _ => false,
+            },
+            ("varbit", "varbit") => match (old_params, new_params) {
+                (Some((old_len, None)), Some((new_len, None))) => new_len >= old_len,
+                (_, None) => true,
+                _ => false,
+            },
+            _ => false,
+        },
+        Engine::Mssql => match (old_base.as_str(), new_base.as_str()) {
+            ("varchar", "varchar") => matches!(
+                (old_params, new_params),
+                (Some((old_len, None)), Some((new_len, None))) if new_len >= old_len && new_len <= 8000
+            ),
+            ("nvarchar", "nvarchar") => matches!(
+                (old_params, new_params),
+                (Some((old_len, None)), Some((new_len, None))) if new_len >= old_len && new_len <= 4000
+            ),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 fn compact_sql(stmt: &str) -> String {
@@ -1136,15 +1738,21 @@ fn compact_sql(stmt: &str) -> String {
 }
 
 fn split_statements(sql: &str) -> Vec<String> {
+    split_statement_spans(sql).into_iter().map(|(_, _, s)| s).collect()
+}
+
+fn split_statement_spans(sql: &str) -> Vec<(usize, usize, String)> {
     let mut out = Vec::new();
     let mut current = String::new();
-    let mut chars = sql.chars().peekable();
+    let mut stmt_start: Option<usize> = None;
+    let mut stmt_end: usize = 0;
+    let mut chars = sql.char_indices().peekable();
     let mut in_single = false;
     let mut in_double = false;
-    while let Some(c) = chars.next() {
+    while let Some((idx, c)) = chars.next() {
         if !in_single && !in_double {
-            if c == '-' && chars.peek() == Some(&'-') {
-                for ch in chars.by_ref() {
+            if c == '-' && chars.peek().map(|(_, ch)| *ch) == Some('-') {
+                for (_, ch) in chars.by_ref() {
                     if ch == '\n' {
                         current.push('\n');
                         break;
@@ -1152,10 +1760,10 @@ fn split_statements(sql: &str) -> Vec<String> {
                 }
                 continue;
             }
-            if c == '/' && chars.peek() == Some(&'*') {
+            if c == '/' && chars.peek().map(|(_, ch)| *ch) == Some('*') {
                 chars.next();
-                while let Some(ch) = chars.next() {
-                    if ch == '*' && chars.peek() == Some(&'/') {
+                while let Some((_, ch)) = chars.next() {
+                    if ch == '*' && chars.peek().map(|(_, next_ch)| *next_ch) == Some('/') {
                         chars.next();
                         break;
                     }
@@ -1165,10 +1773,13 @@ fn split_statements(sql: &str) -> Vec<String> {
             }
             if c == ';' {
                 let trimmed = current.trim();
-                if !trimmed.is_empty() {
-                    out.push(trimmed.to_string());
+                if !trimmed.is_empty()
+                    && let Some(start) = stmt_start.take()
+                {
+                    out.push((start, idx + 1, trimmed.to_string()));
                 }
                 current.clear();
+                stmt_start = None;
                 continue;
             }
         }
@@ -1177,11 +1788,19 @@ fn split_statements(sql: &str) -> Vec<String> {
         } else if c == '"' && !in_single {
             in_double = !in_double;
         }
+        if !c.is_whitespace() {
+            if stmt_start.is_none() {
+                stmt_start = Some(idx);
+            }
+            stmt_end = idx + c.len_utf8();
+        }
         current.push(c);
     }
     let trimmed = current.trim();
-    if !trimmed.is_empty() {
-        out.push(trimmed.to_string());
+    if !trimmed.is_empty()
+        && let Some(start) = stmt_start.take()
+    {
+        out.push((start, stmt_end, trimmed.to_string()));
     }
     out
 }
@@ -1413,5 +2032,124 @@ mod tests {
              ALTER TABLE {table} ADD CONSTRAINT uq_code UNIQUE USING INDEX idx_uq_code;"
         );
         assert!(lint_sql(&s, &safe_sql).is_empty());
+    }
+
+    #[test]
+    fn skips_metadata_only_type_widenings_and_flags_rewriting_type_changes() {
+        let mut s = postgres_snapshot();
+        s.tables[0].rows = Some(500_000.0);
+        let table = s.tables[0].name.clone();
+        let schema = s.tables[0].schema.clone();
+        s.columns.push(culprit_core::ColumnInfo {
+            schema: schema.clone(),
+            table: table.clone(),
+            name: "short_code".into(),
+            data_type: "character varying(50)".into(),
+            nullable: true,
+            default: None,
+            generated: false,
+            ordinal: 90,
+        });
+        s.columns.push(culprit_core::ColumnInfo {
+            schema: schema.clone(),
+            table: table.clone(),
+            name: "amount".into(),
+            data_type: "numeric(10,2)".into(),
+            nullable: true,
+            default: None,
+            generated: false,
+            ordinal: 91,
+        });
+
+        // Metadata-only widenings in PostgreSQL do not rewrite the table.
+        let widen_sql = format!(
+            "ALTER TABLE {table} ALTER COLUMN short_code TYPE varchar(120);\n\
+             ALTER TABLE {table} ALTER COLUMN short_code TYPE text;\n\
+             ALTER TABLE {table} ALTER COLUMN amount TYPE numeric(14, 2);\n\
+             ALTER TABLE {table} ALTER COLUMN amount TYPE numeric;"
+        );
+        assert!(lint_sql(&s, &widen_sql).is_empty());
+
+        // Narrowing length, changing scale, or supplying a USING clause rewrites the table.
+        let narrow_sql = format!("ALTER TABLE {table} ALTER COLUMN short_code TYPE varchar(20);");
+        assert!(lint_sql(&s, &narrow_sql).iter().any(|f| f.id.starts_with("sql-lint:table-rewrite:")));
+
+        let scale_sql = format!("ALTER TABLE {table} ALTER COLUMN amount TYPE numeric(14, 4);");
+        assert!(lint_sql(&s, &scale_sql).iter().any(|f| f.id.starts_with("sql-lint:table-rewrite:")));
+
+        let using_sql = format!("ALTER TABLE {table} ALTER COLUMN short_code TYPE text USING trim(short_code);");
+        assert!(lint_sql(&s, &using_sql).iter().any(|f| f.id.starts_with("sql-lint:table-rewrite:")));
+    }
+
+    #[test]
+    fn flags_vacuum_full_cluster_blocking_reindex_and_suppresses_concurrent_quick_fix_in_tx() {
+        let mut s = postgres_snapshot();
+        s.tables[0].rows = Some(500_000.0);
+        let table = s.tables[0].name.clone();
+        let schema = s.tables[0].schema.clone();
+        let idx_name =
+            s.indexes.iter().find(|i| i.schema == schema && i.table == table).map(|i| i.name.clone()).unwrap();
+
+        let maint_sql = format!(
+            "VACUUM FULL {table};\n\
+             CLUSTER {table} USING {idx_name};\n\
+             REINDEX TABLE {table};\n\
+             REINDEX INDEX {idx_name};"
+        );
+        let out = lint_sql(&s, &maint_sql);
+        assert!(out.iter().any(|f| f.id == format!("sql-lint:vacuum-full:{schema}.{table}")), "{out:#?}");
+        assert!(out.iter().any(|f| f.id == format!("sql-lint:cluster:{schema}.{table}")));
+        assert!(out.iter().any(|f| f.id == format!("sql-lint:blocking-reindex:{schema}.{table}")));
+        assert!(out.iter().any(|f| f.id == format!("sql-lint:blocking-reindex:{idx_name}")));
+
+        // Inside BEGIN ... COMMIT, CREATE INDEX omits the CONCURRENTLY quick-fix SQL.
+        let tx_sql = format!("BEGIN;\ncreate  unique\n  index idx_new on {table} (id);\nCOMMIT;");
+        let tx_out = lint_sql(&s, &tx_sql);
+        assert_eq!(tx_out.len(), 1);
+        assert!(tx_out[0].fix.as_ref().unwrap().sql.is_none());
+
+        // Outside a transaction, mixed-case / multiline CREATE UNIQUE INDEX gets a clean CONCURRENTLY quick fix.
+        let non_tx_sql = format!("create  unique\n  index idx_new on {table} (id);");
+        let non_tx_out = lint_sql(&s, &non_tx_sql);
+        assert_eq!(
+            non_tx_out[0].fix.as_ref().unwrap().sql.as_deref(),
+            Some(format!("CREATE UNIQUE INDEX CONCURRENTLY idx_new on {table} (id);").as_str())
+        );
+
+        // MySQL online DDL: CREATE INDEX, DROP INDEX, and ALTER TABLE without LOCK=NONE or ALGORITHM=INSTANT are flagged.
+        let mut mysql_s = s.clone();
+        mysql_s.server.engine = Engine::Mysql;
+        let mysql_sql = format!(
+            "CREATE INDEX idx_mysql_test ON {table} (created_at);\n\
+             DROP INDEX {idx_name} ON {table};\n\
+             ALTER TABLE {table} ADD COLUMN notes varchar(120);"
+        );
+        let mysql_out = lint_sql(&mysql_s, &mysql_sql);
+        assert!(
+            mysql_out.iter().any(|f| f.id == format!("sql-lint:blocking-index:{schema}.{table}")),
+            "{mysql_out:#?}"
+        );
+        assert!(mysql_out.iter().any(|f| f.id == format!("sql-lint:blocking-drop-index:{idx_name}")));
+        assert!(mysql_out.iter().any(|f| f.id == format!("sql-lint:mysql-online-ddl:{schema}.{table}")));
+
+        let mysql_safe = format!(
+            "CREATE INDEX idx_mysql_test ON {table} (created_at) ALGORITHM=INPLACE LOCK=NONE;\n\
+             DROP INDEX {idx_name} ON {table} ALGORITHM=INPLACE LOCK=NONE;\n\
+             ALTER TABLE {table} ADD COLUMN notes varchar(120), ALGORITHM=INSTANT;"
+        );
+        assert!(lint_sql(&mysql_s, &mysql_safe).is_empty());
+
+        // Auto-fixing rewrites fixable statements in place and resolves their lint findings.
+        let raw_migration = format!(
+            "-- migration header\n\
+             CREATE INDEX idx_auto_fix ON {table} (created_at);\n\
+             DROP INDEX {idx_name};\n"
+        );
+        let (rewritten, count) = apply_sql_fixes(&s, &raw_migration);
+        assert_eq!(count, 2);
+        assert!(rewritten.contains("-- migration header"));
+        assert!(rewritten.contains("CREATE INDEX CONCURRENTLY idx_auto_fix"));
+        assert!(rewritten.contains(&format!("DROP INDEX CONCURRENTLY IF EXISTS {idx_name};")));
+        assert!(lint_sql(&s, &rewritten).is_empty(), "{:?}", lint_sql(&s, &rewritten));
     }
 }

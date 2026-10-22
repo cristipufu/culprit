@@ -55,10 +55,16 @@ pub(crate) fn scan_groups(snapshot: &Snapshot) -> Vec<ScanGroup<'_>> {
             continue;
         }
         for node in plan.nodes() {
-            if node.kind != culprit_core::NodeKind::Scan {
+            if !matches!(node.kind, culprit_core::NodeKind::Scan | culprit_core::NodeKind::Seek) {
                 continue;
             }
-            let (Some(object), Some(predicate)) = (&node.object, &node.predicate) else { continue };
+            if node.kind == culprit_core::NodeKind::Seek && node.seek_predicate.is_none() {
+                continue;
+            }
+            let filter_parent =
+                plan.nodes().into_iter().find(|p| p.op == "Filter" && p.children.iter().any(|c| c.id == node.id));
+            let predicate = node.predicate.as_ref().or_else(|| filter_parent.and_then(|p| p.predicate.as_ref()));
+            let (Some(object), Some(predicate)) = (&node.object, predicate) else { continue };
             // A partition a run would prune isn't read; a columnstore is read by segments, never sought.
             if node.facts().partition_pruning.is_some()
                 || node.facts().storage.as_ref().is_some_and(|s| s.eq_ignore_ascii_case("ColumnStore"))
@@ -66,7 +72,9 @@ pub(crate) fn scan_groups(snapshot: &Snapshot) -> Vec<ScanGroup<'_>> {
                 continue;
             }
             let Some((schema, table)) = split_object(object) else { continue };
-            let rows = scan_rows(snapshot, node, &schema, &table).unwrap_or(0.0);
+            let rows = scan_rows(snapshot, node, &schema, &table)
+                .or_else(|| filter_parent.and(node.act_rows).map(|read| read / node.runs()))
+                .unwrap_or(0.0);
             // An estimate is the optimizer's word only where it isn't a default guess: PostgreSQL's for a parameter
             // compared by range, MySQL's fixed 10% for an equality it has no statistics for.
             let guessed = node.facts().selectivity_guess.is_some()
@@ -77,23 +85,59 @@ pub(crate) fn scan_groups(snapshot: &Snapshot) -> Vec<ScanGroup<'_>> {
                             culprit_core::insights::condition_count(predicate),
                         )
                     }));
+            let kept_share = if let (Some(read), Some(filter)) = (node.act_rows, filter_parent)
+                && node.rows_read.is_none()
+            {
+                filter.act_rows.filter(|_| read > 0.0).map(|kept| (kept / read).min(1.0))
+            } else {
+                node.kept_share()
+            };
             let estimate_keeps_few = if node.act_rows.is_some() {
-                node.kept_share().is_some_and(|kept| kept <= culprit_core::INDEX_KEEPS_AT_MOST)
+                kept_share.is_some_and(|kept| kept <= culprit_core::INDEX_KEEPS_AT_MOST)
+            } else if node.kind == culprit_core::NodeKind::Seek {
+                !guessed && kept_share.is_some_and(|kept| kept <= culprit_core::INDEX_KEEPS_AT_MOST)
             } else {
                 !guessed
                     && node.est_rows_total() <= rows * node.est_executions.max(1.0) * culprit_core::INDEX_KEEPS_AT_MOST
             };
             // What the runs measured, where they can say, outweighs the estimate either way.
-            let keeps_few = measured_keeps_few(snapshot, q, rows).unwrap_or(estimate_keeps_few);
+            let keeps_few = if node.kind == culprit_core::NodeKind::Seek {
+                estimate_keeps_few
+            } else {
+                measured_keeps_few(snapshot, q, rows).unwrap_or(estimate_keeps_few)
+            };
             if rows < 10_000.0 || !keeps_few {
                 continue;
             }
-            let cols = predicate_columns(predicate);
-            let mut keys = cols.equality.clone();
-            keys.extend(cols.range.into_iter().take(1));
-            if keys.is_empty() || leading_index_exists(snapshot, &schema, &table, &cols.equality, &keys) {
-                continue;
-            }
+            let keys = if node.kind == culprit_core::NodeKind::Seek {
+                let Some(seek_pred) = node.seek_predicate.as_deref() else { continue };
+                let seek_cols = predicate_columns(seek_pred);
+                let filter_cols = predicate_columns(predicate);
+                let seek_all: Vec<&String> = seek_cols.equality.iter().chain(&seek_cols.range).collect();
+                let filter_all: Vec<&String> = filter_cols.equality.iter().chain(&filter_cols.range).collect();
+                if seek_all.is_empty()
+                    || filter_all.is_empty()
+                    || filter_all.iter().all(|fc| seek_all.iter().any(|sc| sc.eq_ignore_ascii_case(fc)))
+                {
+                    continue;
+                }
+                let combined = format!("{seek_pred} AND {predicate}");
+                let cols = predicate_columns(&combined);
+                let mut keys = cols.equality.clone();
+                keys.extend(cols.range.into_iter().take(1));
+                if keys.is_empty() || leading_index_exists(snapshot, &schema, &table, &keys, &keys) {
+                    continue;
+                }
+                keys
+            } else {
+                let cols = predicate_columns(predicate);
+                let mut keys = cols.equality.clone();
+                keys.extend(cols.range.into_iter().take(1));
+                if keys.is_empty() || leading_index_exists(snapshot, &schema, &table, &cols.equality, &keys) {
+                    continue;
+                }
+                keys
+            };
             match groups
                 .iter_mut()
                 .find(|g| g.schema == schema && g.table == table && lower_set(&g.keys) == lower_set(&keys))
@@ -122,6 +166,9 @@ pub(crate) fn scan_groups(snapshot: &Snapshot) -> Vec<ScanGroup<'_>> {
 /// queue's "pending" rows, say) look like a read of every row. Any other scan is taken at the table's size: under a
 /// TOP, the estimate of rows read assumes matches come early, which is exactly when a costly scan would hide.
 pub(crate) fn scan_rows(snapshot: &Snapshot, node: &culprit_core::PlanNode, schema: &str, table: &str) -> Option<f64> {
+    if node.kind == culprit_core::NodeKind::Seek {
+        return node.rows_read.map(|read| read / node.runs());
+    }
     let filtered = node.index.as_deref().is_some_and(|index| {
         let name = index.trim_matches(['[', ']', '"']);
         snapshot.indexes.iter().any(|i| {
@@ -302,7 +349,13 @@ pub(crate) fn split_object(object: &str) -> Option<(String, String)> {
 /// not to build its twin.
 pub(crate) fn disabled_leading_index<'a>(snapshot: &'a Snapshot, g: &ScanGroup) -> Option<&'a IndexStat> {
     let cols = predicate_columns(&g.predicate);
-    let wanted: &[String] = if cols.equality.is_empty() { g.keys.get(..1)? } else { &cols.equality };
+    let wanted: &[String] = if g.keys.len() > cols.equality.len() + cols.range.len().min(1) {
+        &g.keys
+    } else if cols.equality.is_empty() {
+        g.keys.get(..1)?
+    } else {
+        &cols.equality
+    };
     snapshot.indexes.iter().find(|i| {
         let existing = i.key_names();
         i.schema.eq_ignore_ascii_case(&g.schema)

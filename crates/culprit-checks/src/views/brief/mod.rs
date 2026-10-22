@@ -77,6 +77,9 @@ pub fn agent_brief(report: &Report, finding: &Finding) -> String {
                 // A statement that stopped running: these are what it ran before, not what it runs now.
                 if finding.inactive { " (it no longer runs)" } else { "" }
             );
+            if let Some(site) = culprit_core::sql::extract_call_site(&q.text) {
+                let _ = writeln!(out, "Call site: `{site}`\n");
+            }
             let _ = writeln!(out, "```sql\n{}\n```\n", q.text.trim());
             if let Some(plan) = &q.plan {
                 plan_line(&mut out, finding, r, q, plan);

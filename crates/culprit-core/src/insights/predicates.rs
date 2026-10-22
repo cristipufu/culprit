@@ -95,6 +95,7 @@ const NOT_COLUMNS: &[&str] = &[
     "character",
     "varying",
     "precision",
+    "const",
 ];
 
 /// Identifiers in a condition, in order: bracketed (SQL Server), backticked (MySQL) or bare/qualified (Postgres, MySQL
@@ -203,6 +204,13 @@ pub(super) fn seekable_keys(text: &str) -> (Vec<String>, Vec<String>) {
     for part in top_level_and(text) {
         let lower = part.to_ascii_lowercase();
         if lower.contains("probe(") {
+            continue;
+        }
+        if lower.trim().starts_with("range on ") {
+            let offset = part.len() - part.trim_start().len() + "range on ".len();
+            for col in identifiers(&part[offset..]) {
+                push_unique(&mut range, &col);
+            }
             continue;
         }
         let ids = identifiers(part);
@@ -323,6 +331,19 @@ pub(super) fn filter_keeps(cx: &Cx, n: &PlanNode) -> Option<f64> {
 /// the join in. The join-buffer rule speaks for it.
 pub(super) fn index_could_pay(cx: &Cx, n: &PlanNode) -> bool {
     n.kind == NodeKind::Scan
+        && !n.facts().storage.as_ref().is_some_and(|s| s.eq_ignore_ascii_case("ColumnStore"))
+        && !n.facts().join_buffer.is_some()
+        && rows_read(n) >= MANY_ROWS
+        && !conditions(n).to_ascii_lowercase().contains("probe(")
+        && filter_keeps(cx, n).is_some_and(|k| k <= INDEX_KEEPS_AT_MOST)
+}
+
+/// Whether a broader composite index could pay off for a seek that still discards >= 90% of the rows it reads via a
+/// residual filter (`PlanWarning::ResidualPredicate`). Requires a seek with a known `seek_predicate` that reads at
+/// least `MANY_ROWS` rows and keeps at most `INDEX_KEEPS_AT_MOST` of them.
+pub(super) fn seek_filter_could_pay(cx: &Cx, n: &PlanNode) -> bool {
+    n.kind == NodeKind::Seek
+        && n.seek_predicate.is_some()
         && !n.facts().storage.as_ref().is_some_and(|s| s.eq_ignore_ascii_case("ColumnStore"))
         && !n.facts().join_buffer.is_some()
         && rows_read(n) >= MANY_ROWS

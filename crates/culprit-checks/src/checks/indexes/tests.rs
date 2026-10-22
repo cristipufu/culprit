@@ -221,4 +221,44 @@ fn foreign_key_column_type_mismatch_is_flagged_without_false_positives_on_aliase
     let coll_mismatch =
         findings.iter().find(|f| f.id.starts_with("unindexed-fk:type-mismatch:")).expect("collation mismatch");
     assert!(coll_mismatch.title.contains("COLLATE utf8mb4_unicode_ci"), "{}", coll_mismatch.title);
+
+    // A broad Index Seek with a selective residual filter on an unindexed second column produces a filtered-scan finding.
+    let mut seek_snap: Snapshot =
+        serde_json::from_str(include_str!("../../../../../fixtures/postgres-demo.json")).unwrap();
+    let target_schema = seek_snap.tables[0].schema.clone();
+    let target_table = seek_snap.tables[0].name.clone();
+    let mut tenant_ix = seek_snap.indexes[0].clone();
+    tenant_ix.schema = target_schema.clone();
+    tenant_ix.table = target_table.clone();
+    tenant_ix.name = "ix_tenant".into();
+    tenant_ix.columns = vec!["tenant_id".into()];
+    tenant_ix.is_disabled = false;
+    seek_snap.indexes.retain(|i| !(i.schema == target_schema && i.table == target_table));
+    seek_snap.indexes.push(tenant_ix);
+    if let Some(w) = seek_snap.workload.as_mut()
+        && let Some(q) = w.queries.iter_mut().find(|q| q.plan.is_some())
+    {
+        q.total_time_ms = w.total_time_ms * 0.5;
+        q.mean_time_ms = 250.0;
+        q.executions = 500.0;
+        if let Some(plan) = q.plan.as_mut() {
+            plan.root.kind = NodeKind::Seek;
+            plan.root.op = "Index Scan".into();
+            plan.root.object = Some(format!("{target_schema}.{target_table}"));
+            plan.root.index = Some("ix_tenant".into());
+            plan.root.seek_predicate = Some("(tenant_id = $1)".into());
+            plan.root.predicate = Some("(status = 'open')".into());
+            plan.root.rows_read = Some(50_000.0);
+            plan.root.est_rows = 50.0;
+            plan.root.act_rows = Some(50.0);
+            plan.root.est_executions = 1.0;
+            plan.root.act_executions = Some(1.0);
+            plan.root.children.clear();
+        }
+    }
+    let scan_findings = filtered_scan(&seek_snap);
+    assert!(
+        scan_findings.iter().any(|f| f.id == format!("filtered-scan:{target_schema}.{target_table}(tenant_id,status)")),
+        "{scan_findings:#?}"
+    );
 }
