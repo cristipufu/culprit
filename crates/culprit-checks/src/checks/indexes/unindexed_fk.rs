@@ -248,17 +248,38 @@ fn canonical_fk_type(engine: Engine, raw: &str) -> Option<String> {
         }
     }
     let mut unsigned = false;
-    let words: Vec<&str> = stripped
-        .split_whitespace()
-        .filter(|w| match *w {
+    let mut collation: Option<String> = None;
+    let mut charset: Option<String> = None;
+    let raw_words: Vec<&str> = stripped.split_whitespace().collect();
+    let mut words = Vec::with_capacity(raw_words.len());
+    let mut i = 0;
+    while i < raw_words.len() {
+        match raw_words[i] {
             "unsigned" => {
                 unsigned = true;
-                false
+                i += 1;
             }
-            "signed" | "zerofill" => false,
-            _ => true,
-        })
-        .collect();
+            "signed" | "zerofill" => {
+                i += 1;
+            }
+            "collate" if i + 1 < raw_words.len() => {
+                collation = Some(raw_words[i + 1].to_string());
+                i += 2;
+            }
+            "character" if raw_words.get(i + 1) == Some(&"set") && i + 2 < raw_words.len() => {
+                charset = Some(raw_words[i + 2].to_string());
+                i += 3;
+            }
+            "charset" if i + 1 < raw_words.len() => {
+                charset = Some(raw_words[i + 1].to_string());
+                i += 2;
+            }
+            other => {
+                words.push(other);
+                i += 1;
+            }
+        }
+    }
     let base = words.join(" ");
     if base.is_empty() {
         return None;
@@ -285,7 +306,14 @@ fn canonical_fk_type(engine: Engine, raw: &str) -> Option<String> {
         "timestamp without time zone" | "timestamp" => "timestamp",
         other => other,
     };
-    Some(if unsigned { format!("{family} unsigned") } else { family.to_string() })
+    let mut out = if unsigned { format!("{family} unsigned") } else { family.to_string() };
+    if let Some(cs) = charset {
+        out.push_str(&format!(" charset {cs}"));
+    }
+    if let Some(coll) = collation {
+        out.push_str(&format!(" collate {coll}"));
+    }
+    Some(out)
 }
 
 /// Foreign keys whose child and parent columns have incompatible data types (`int` vs `bigint`, `int unsigned` vs

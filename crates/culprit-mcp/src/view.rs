@@ -561,10 +561,46 @@ pub fn table(report: &Report, wanted: &str) -> Result<Value> {
         .foreign_keys
         .iter()
         .filter(|f| mine(&f.schema, &f.table))
-        .map(|f| json!({ "name": f.name, "columns": f.columns, "references": format!("{}.{}({})", f.ref_schema, f.ref_table, f.ref_columns.join(", ")) }))
+        .map(|f| {
+            let mut obj = json!({
+                "name": f.name,
+                "columns": f.columns,
+                "references": format!("{}.{}({})", f.ref_schema, f.ref_table, f.ref_columns.join(", ")),
+            });
+            if let Some(rule) = &f.delete_rule {
+                obj["delete_rule"] = json!(rule);
+            }
+            obj
+        })
         .collect();
+    let referenced_by: Vec<Value> = s
+        .foreign_keys
+        .iter()
+        .filter(|f| mine(&f.ref_schema, &f.ref_table))
+        .map(|f| {
+            let mut obj = json!({
+                "name": f.name,
+                "from": format!("{}.{}({})", f.schema, f.table, f.columns.join(", ")),
+                "columns": f.ref_columns,
+            });
+            if let Some(rule) = &f.delete_rule {
+                obj["delete_rule"] = json!(rule);
+            }
+            obj
+        })
+        .collect();
+    let triggers: Vec<Value> = t
+        .storage
+        .as_ref()
+        .map(|st| st.triggers().into_iter().map(|(name, events)| json!({ "name": name, "events": events })).collect())
+        .unwrap_or_default();
+    let partition_bounds: Vec<&str> = t
+        .storage
+        .as_ref()
+        .map(|st| st.options.iter().filter_map(|o| o.strip_prefix("partition_bound=")).collect())
+        .unwrap_or_default();
     let planned = s.workload.as_ref().map(|w| w.queries.iter().filter(|q| q.plan.is_some()).count()).unwrap_or(0);
-    Ok(json!({
+    let mut out = json!({
         "scan": scan_header(report),
         "table": format!("{}.{}", t.schema, t.name),
         "rows": t.rows,
@@ -574,7 +610,20 @@ pub fn table(report: &Report, wanted: &str) -> Result<Value> {
         "indexes": indexes,
         "foreign_keys": foreign_keys,
         "note": format!("used_by_captured_plans covers the {planned} query plans captured in this scan; an index missing there may still serve other queries."),
-    }))
+    });
+    if !referenced_by.is_empty() {
+        out["referenced_by"] = json!(referenced_by);
+    }
+    if !triggers.is_empty() {
+        out["triggers"] = json!(triggers);
+    }
+    if let Some(parent) = &t.partition_of {
+        out["partition_of"] = json!(parent);
+    }
+    if !partition_bounds.is_empty() {
+        out["partition_bounds"] = json!(partition_bounds);
+    }
+    Ok(out)
 }
 
 /// For each index on the table: which captured query plans read it, and with which operators.

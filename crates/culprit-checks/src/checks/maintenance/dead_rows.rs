@@ -215,5 +215,77 @@ fn large_table_autovacuum_scale(snapshot: &Snapshot, existing: &[Finding]) -> Ve
             )];
             Some(f)
         })
+        .chain(disabled_autovacuum(snapshot))
+        .collect()
+}
+
+/// PostgreSQL tables where per-table `autovacuum_enabled` (or `toast.autovacuum_enabled`) was explicitly set to
+/// `false` / `off` in `reloptions`.
+fn disabled_autovacuum(snapshot: &Snapshot) -> Vec<Finding> {
+    if snapshot.server.engine != Engine::Postgres {
+        return Vec::new();
+    }
+    snapshot
+        .tables
+        .iter()
+        .filter_map(|t| {
+            let options = &t.storage.as_ref()?.options;
+            let disabled_opt = options.iter().find(|o| {
+                let lower = o.trim().to_ascii_lowercase();
+                matches!(
+                    lower.as_str(),
+                    "autovacuum_enabled=false"
+                        | "autovacuum_enabled=off"
+                        | "autovacuum_enabled=0"
+                        | "toast.autovacuum_enabled=false"
+                        | "toast.autovacuum_enabled=off"
+                        | "toast.autovacuum_enabled=0"
+                )
+            })?;
+            let is_toast = disabled_opt.to_ascii_lowercase().starts_with("toast.");
+            let param = if is_toast { "toast.autovacuum_enabled" } else { "autovacuum_enabled" };
+            let table_name = t.qualified();
+            let live = t.rows.unwrap_or(0.0);
+            let dead = t.dead_rows.unwrap_or(0.0);
+            let mut f = finding(
+                "dead-rows",
+                &format!("autovacuum-disabled:{table_name}"),
+                Category::Maintenance,
+                subject(SubjectKind::Table, &table_name),
+            );
+            f.actionability = culprit_core::Actionability::NeedsAttention;
+            f.confidence = Confidence::High;
+            f.severity = if dead >= 10_000.0 || live >= 100_000.0 || t.xid_age.unwrap_or(0.0) >= 50_000_000.0 {
+                Severity::High
+            } else {
+                Severity::Medium
+            };
+            f.impact.score = base_score(f.severity);
+            f.impact.label = format!("{param} = false");
+            f.title = format!("Autovacuum is disabled on {} ({param} = false)", t.name);
+            f.summary = format!(
+                "{table_name} has `{disabled_opt}` set in its table storage parameters (`reloptions`). While \
+                 `{param}` is disabled, PostgreSQL never automatically vacuums dead tuples or updates planner \
+                 statistics on {}, allowing bloat to accumulate until transaction ID wraparound forces an emergency \
+                 anti-wraparound vacuum.",
+                if is_toast { "its TOAST table" } else { &t.name }
+            );
+            if live > 0.0 {
+                f.metrics.push(Metric::new("Live rows", live, Unit::Rows));
+            }
+            if dead > 0.0 {
+                f.metrics.push(Metric::new("Dead rows", dead, Unit::Rows));
+            }
+            let target = qualified(Engine::Postgres, &t.schema, &t.name);
+            f.fix = Some(Fix {
+                summary: format!("Re-enable autovacuum on {table_name} by resetting `{param}`."),
+                sql: Some(format!("ALTER TABLE {target} RESET ({param});")),
+                cost: Some("Re-enabling autovacuum schedules a background vacuum pass if dead rows exceed the table's threshold.".into()),
+            });
+            f.verify = vec![format!(
+                "Re-scan after resetting `{param}`: `{disabled_opt}` should no longer appear on {table_name}."
+            )];
+            Some(f)
+        })
         .collect()
 }

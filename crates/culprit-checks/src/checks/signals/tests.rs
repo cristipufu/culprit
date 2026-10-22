@@ -966,6 +966,16 @@ fn dead_rows_and_heavy_query_surface_scale_factor_and_triggers() {
     let hq = crate::queries::heavy_query(&s);
     let write_finding = hq.iter().find(|f| f.summary.contains("fires a trigger")).expect("trigger attribution");
     assert!(write_finding.summary.contains("trg_audit_row"), "{}", write_finding.summary);
+
+    // Explicitly disabled per-table autovacuum is flagged with RESET fix SQL.
+    s.tables[0].storage.as_mut().unwrap().options.push("autovacuum_enabled=false".into());
+    let maint = crate::checks::maintenance::dead_rows(&s);
+    let disabled = maint
+        .iter()
+        .find(|f| f.id == format!("dead-rows:autovacuum-disabled:{qual}"))
+        .expect("autovacuum disabled finding");
+    assert!(disabled.title.contains("Autovacuum is disabled"), "{}", disabled.title);
+    assert!(disabled.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("RESET (autovacuum_enabled)"));
 }
 
 #[test]

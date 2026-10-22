@@ -206,4 +206,19 @@ fn foreign_key_column_type_mismatch_is_flagged_without_false_positives_on_aliase
         .find(|f| f.id == format!("unindexed-fk:uuid-text:{tbl_schema}.{tbl_name}(external_uuid)"))
         .expect("uuid text finding");
     assert!(uuid_f.title.contains("stores UUIDs as varchar(36)"), "{}", uuid_f.title);
+
+    // Collation/charset mismatch on string foreign keys is also caught by fk_type_mismatches.
+    let child_col =
+        s.columns.iter_mut().find(|c| c.schema == fk.schema && c.table == fk.table && c.name == fk.columns[0]).unwrap();
+    child_col.data_type = "varchar(36) COLLATE utf8mb4_unicode_ci".into();
+    let parent_col = s
+        .columns
+        .iter_mut()
+        .find(|c| c.schema == fk.ref_schema && c.table == fk.ref_table && c.name == fk.ref_columns[0])
+        .unwrap();
+    parent_col.data_type = "varchar(36)".into();
+    let findings = unindexed_fk(&s);
+    let coll_mismatch =
+        findings.iter().find(|f| f.id.starts_with("unindexed-fk:type-mismatch:")).expect("collation mismatch");
+    assert!(coll_mismatch.title.contains("COLLATE utf8mb4_unicode_ci"), "{}", coll_mismatch.title);
 }

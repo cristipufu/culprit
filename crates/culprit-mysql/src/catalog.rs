@@ -102,25 +102,46 @@ pub(crate) async fn tables(conn: &mut Conn, db: &str) -> Result<Vec<TableStat>> 
 }
 
 pub(crate) async fn columns(conn: &mut Conn, db: &str) -> Result<Vec<ColumnInfo>> {
-    let rows = query_with(
-        conn,
-        "SELECT TABLE_NAME AS table_name, COLUMN_NAME AS name, COLUMN_TYPE AS data_type, IS_NULLABLE AS nullable,
-                COLUMN_DEFAULT AS default_value, EXTRA AS extra, ORDINAL_POSITION AS ordinal
-           FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION",
-        vec![Value::from(db)],
-    )
-    .await?;
+    let with_collation = "SELECT TABLE_NAME AS table_name, COLUMN_NAME AS name, COLUMN_TYPE AS data_type,
+                IS_NULLABLE AS nullable, COLUMN_DEFAULT AS default_value, EXTRA AS extra,
+                ORDINAL_POSITION AS ordinal, COLLATION_NAME AS collation_name
+           FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION";
+    let without_collation = "SELECT TABLE_NAME AS table_name, COLUMN_NAME AS name, COLUMN_TYPE AS data_type,
+                IS_NULLABLE AS nullable, COLUMN_DEFAULT AS default_value, EXTRA AS extra,
+                ORDINAL_POSITION AS ordinal
+           FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION";
+    let rows = match query_with(conn, with_collation, vec![Value::from(db)]).await {
+        Ok(rows) => rows,
+        Err(_) => query_with(conn, without_collation, vec![Value::from(db)]).await?,
+    };
+    let mut collation_counts: HashMap<String, usize> = HashMap::new();
+    for r in &rows {
+        if let Some(coll) = r.text("collation_name").filter(|s| !s.is_empty()) {
+            *collation_counts.entry(coll.to_ascii_lowercase()).or_default() += 1;
+        }
+    }
+    let dominant_collation = collation_counts.iter().max_by_key(|(_, count)| *count).map(|(coll, _)| coll.clone());
+    let mixed_collations = collation_counts.len() > 1;
     Ok(rows
         .iter()
-        .map(|r| ColumnInfo {
-            schema: db.to_string(),
-            table: r.string("table_name"),
-            name: r.string("name"),
-            data_type: r.string("data_type"),
-            nullable: r.string("nullable").eq_ignore_ascii_case("YES"),
-            default: r.text("default_value"),
-            generated: r.string("extra").to_ascii_lowercase().contains("auto_increment"),
-            ordinal: r.number("ordinal").unwrap_or(0.0) as u32,
+        .map(|r| {
+            let mut data_type = r.string("data_type");
+            if mixed_collations
+                && let Some(coll) = r.text("collation_name").filter(|s| !s.is_empty())
+                && dominant_collation.as_deref() != Some(&coll.to_ascii_lowercase())
+            {
+                data_type.push_str(&format!(" COLLATE {coll}"));
+            }
+            ColumnInfo {
+                schema: db.to_string(),
+                table: r.string("table_name"),
+                name: r.string("name"),
+                data_type,
+                nullable: r.string("nullable").eq_ignore_ascii_case("YES"),
+                default: r.text("default_value"),
+                generated: r.string("extra").to_ascii_lowercase().contains("auto_increment"),
+                ordinal: r.number("ordinal").unwrap_or(0.0) as u32,
+            }
         })
         .collect())
 }

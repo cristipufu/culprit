@@ -43,6 +43,7 @@ pub fn lint_sql(snapshot: &Snapshot, sql: &str) -> Vec<Finding> {
         }
         check_concurrent_in_tx(snapshot, stmt, &tokens, &upper, in_transaction, &mut findings);
         check_create_index(snapshot, stmt, &tokens, &mut findings);
+        check_drop_or_truncate(snapshot, stmt, &tokens, &upper, &mut findings);
         check_alter_table(snapshot, stmt, &tokens, &created_indexes, &mut findings);
     }
     findings
@@ -107,6 +108,206 @@ fn check_concurrent_in_tx(
     });
     f.verify = vec!["Remove the surrounding `BEGIN`/`COMMIT` and re-run `culprit lint-sql`.".into()];
     findings.push(f);
+}
+
+fn check_drop_or_truncate(
+    snapshot: &Snapshot,
+    stmt: &str,
+    tokens: &[String],
+    upper: &[String],
+    findings: &mut Vec<Finding>,
+) {
+    match upper.first().map(String::as_str) {
+        Some("DROP") if upper.get(1).map(String::as_str) == Some("INDEX") => {
+            if snapshot.server.engine != Engine::Postgres || upper.iter().any(|t| t == "CONCURRENTLY") {
+                return;
+            }
+            let mut pos = 2;
+            if upper.get(pos).map(String::as_str) == Some("IF")
+                && upper.get(pos + 1).map(String::as_str) == Some("EXISTS")
+            {
+                pos += 2;
+            }
+            let Some(raw_idx) = tokens.get(pos) else { return };
+            let idx_clean = unquote_ident(raw_idx);
+            let idx_leaf = idx_clean.rsplit('.').next().unwrap_or(&idx_clean);
+            let Some(ix) = snapshot.indexes.iter().find(|i| i.name.eq_ignore_ascii_case(idx_leaf)) else {
+                return;
+            };
+            let Some(table) = snapshot.table(&ix.schema, &ix.table).filter(|t| is_large_table(t)) else {
+                return;
+            };
+            let rows = table_rows(table);
+            let bytes = table_bytes(table);
+            let qual = table.qualified();
+            let mut f = finding(
+                "sql-lint",
+                &format!("blocking-drop-index:{}", ix.name),
+                Category::Indexes,
+                subject(SubjectKind::Index, format!("{qual}.{}", ix.name)),
+            );
+            f.actionability = Actionability::NeedsAttention;
+            f.confidence = Confidence::High;
+            f.severity = if rows >= HIGH_TABLE_ROWS || bytes >= GB { Severity::High } else { Severity::Medium };
+            f.impact.score = base_score(f.severity);
+            f.impact.label = table_size_label(rows, bytes);
+            f.title = format!(
+                "DROP INDEX {} on {} ({}) without CONCURRENTLY acquires an ACCESS EXCLUSIVE lock",
+                ix.name,
+                table.name,
+                table_size_label(rows, bytes)
+            );
+            f.summary = format!(
+                "The statement `{}` drops `{}` on {} ({}) without `CONCURRENTLY`. Standard `DROP INDEX` in PostgreSQL \
+                 acquires an `ACCESS EXCLUSIVE` lock on the table, blocking all concurrent reads and writes until \
+                 in-flight queries finish.",
+                compact_sql(stmt),
+                ix.name,
+                qual,
+                table_size_label(rows, bytes)
+            );
+            f.fix = Some(Fix {
+                summary: "Use `DROP INDEX CONCURRENTLY` (outside a transaction block) so concurrent reads and writes are not blocked.".into(),
+                sql: Some(format!("DROP INDEX CONCURRENTLY IF EXISTS {};", ix.name)),
+                cost: Some("DROP INDEX CONCURRENTLY waits for active transactions using the index and cannot run inside a transaction block.".into()),
+            });
+            push_table_metrics(&mut f, rows, bytes);
+            f.verify = vec!["Re-run `culprit lint-sql` after switching to `DROP INDEX CONCURRENTLY`.".into()];
+            findings.push(f);
+        }
+        Some("DROP") if upper.get(1).map(String::as_str) == Some("TABLE") => {
+            let mut pos = 2;
+            if upper.get(pos).map(String::as_str) == Some("IF")
+                && upper.get(pos + 1).map(String::as_str) == Some("EXISTS")
+            {
+                pos += 2;
+            }
+            if let Some(raw_table) = tokens.get(pos)
+                && let Some(table) = find_table(snapshot, raw_table)
+            {
+                check_workload_references(snapshot, stmt, table, None, "DROP TABLE", findings);
+            }
+        }
+        Some("TRUNCATE") => {
+            let mut pos = 1;
+            if upper.get(pos).map(String::as_str) == Some("TABLE") {
+                pos += 1;
+            }
+            if upper.get(pos).map(String::as_str) == Some("ONLY") {
+                pos += 1;
+            }
+            let Some(raw_table) = tokens.get(pos) else { return };
+            let Some(table) = find_table(snapshot, raw_table).filter(|t| is_large_table(t)) else {
+                return;
+            };
+            let rows = table_rows(table);
+            let bytes = table_bytes(table);
+            let qual = table.qualified();
+            let mut f = finding(
+                "sql-lint",
+                &format!("truncate:{qual}"),
+                Category::Maintenance,
+                subject(SubjectKind::Table, &qual),
+            );
+            f.actionability = Actionability::NeedsAttention;
+            f.confidence = Confidence::High;
+            f.severity = Severity::High;
+            f.impact.score = base_score(f.severity);
+            f.impact.label = table_size_label(rows, bytes);
+            f.title = format!(
+                "TRUNCATE on {} ({}) acquires an exclusive table lock and deletes all rows",
+                table.name,
+                table_size_label(rows, bytes)
+            );
+            f.summary = format!(
+                "The statement `{}` truncates {} ({}). `TRUNCATE` acquires an `ACCESS EXCLUSIVE` / schema-modification \
+                 lock on the table, blocking all concurrent queries while deallocating its storage.",
+                compact_sql(stmt),
+                qual,
+                table_size_label(rows, bytes)
+            );
+            push_table_metrics(&mut f, rows, bytes);
+            f.verify = vec!["Confirm `TRUNCATE` is intended for this environment before running.".into()];
+            findings.push(f);
+        }
+        _ => {}
+    }
+}
+
+fn check_workload_references(
+    snapshot: &Snapshot,
+    stmt: &str,
+    table: &TableStat,
+    column: Option<&str>,
+    action: &str,
+    findings: &mut Vec<Finding>,
+) {
+    let active: Vec<&culprit_core::QueryStat> = crate::support::queries_touching(snapshot, &table.schema, &table.name)
+        .into_iter()
+        .filter(|q| {
+            !crate::support::is_monitoring_query(q)
+                && !crate::query_is_history(snapshot, q)
+                && column.is_none_or(|col| contains_identifier(&q.text, col))
+        })
+        .collect();
+    if active.is_empty() {
+        return;
+    }
+    let qual = table.qualified();
+    let target = match column {
+        Some(col) => format!("{qual}.{col}"),
+        None => qual.clone(),
+    };
+    let target_short = match column {
+        Some(col) => format!("{}.{col}", table.name),
+        None => table.name.clone(),
+    };
+    let mut f =
+        finding("sql-lint", &format!("workload-break:{target}"), Category::Queries, subject(SubjectKind::Table, &qual));
+    f.actionability = Actionability::NeedsAttention;
+    f.confidence = Confidence::High;
+    f.severity = Severity::High;
+    f.impact.score = base_score(f.severity);
+    f.impact.label = format!("{} active {}", active.len(), if active.len() == 1 { "query" } else { "queries" });
+    f.queries = crate::support::query_refs(&active);
+    f.title = format!(
+        "{action} on {target_short} breaks {} active workload {}",
+        active.len(),
+        if active.len() == 1 { "query" } else { "queries" }
+    );
+    f.summary = format!(
+        "The migration statement `{}` runs `{action}` on `{target_short}`, which is referenced by {} active \
+         {} in the captured workload. Deploying this DDL while the current application code is running will cause \
+         immediate query errors.",
+        compact_sql(stmt),
+        active.len(),
+        if active.len() == 1 { "statement" } else { "statements" }
+    );
+    f.fix = Some(Fix {
+        summary: format!(
+            "Stop reading/writing `{target_short}` in application code and deploy that change before running `{action}` in a later migration."
+        ),
+        sql: None,
+        cost: None,
+    });
+    f.verify = vec![format!(
+        "Verify no active queries in `culprit top` reference `{target_short}` before applying `{action}`."
+    )];
+    findings.push(f);
+}
+
+fn contains_identifier(sql_text: &str, ident: &str) -> bool {
+    let lower_sql = sql_text.to_ascii_lowercase();
+    let lower_ident = ident.to_ascii_lowercase();
+    if lower_ident.is_empty() {
+        return false;
+    }
+    lower_sql.match_indices(&lower_ident).any(|(at, _)| {
+        let is_word = |ch: Option<char>| ch.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+        let before = lower_sql[..at].chars().last();
+        let after = lower_sql[at + lower_ident.len()..].chars().next();
+        !is_word(before) && !is_word(after)
+    })
 }
 
 fn check_create_index(snapshot: &Snapshot, stmt: &str, tokens: &[String], findings: &mut Vec<Finding>) {
@@ -285,6 +486,33 @@ fn check_alter_table_action(
                 created_indexes,
                 findings,
             );
+        }
+    }
+
+    // 1b. Check DROP [COLUMN] <col> or RENAME [COLUMN] <col> against active workload queries.
+    if upper.first().map(String::as_str) == Some("DROP") {
+        let second = upper.get(1).map(String::as_str).unwrap_or("");
+        if !matches!(second, "CONSTRAINT" | "FOREIGN" | "CHECK" | "PRIMARY" | "UNIQUE" | "INDEX") {
+            let mut col_idx = if second == "COLUMN" { 2 } else { 1 };
+            if upper.get(col_idx).map(String::as_str) == Some("IF")
+                && upper.get(col_idx + 1).map(String::as_str) == Some("EXISTS")
+            {
+                col_idx += 2;
+            }
+            if let Some(raw_col) = tokens.get(col_idx) {
+                let col_name = unquote_ident(raw_col);
+                check_workload_references(snapshot, stmt, table, Some(&col_name), "DROP COLUMN", findings);
+            }
+        }
+    } else if upper.first().map(String::as_str) == Some("RENAME") {
+        let second = upper.get(1).map(String::as_str).unwrap_or("");
+        if second == "COLUMN" {
+            if let Some(raw_col) = tokens.get(2) {
+                let col_name = unquote_ident(raw_col);
+                check_workload_references(snapshot, stmt, table, Some(&col_name), "RENAME COLUMN", findings);
+            }
+        } else if second == "TO" {
+            check_workload_references(snapshot, stmt, table, None, "RENAME TABLE", findings);
         }
     }
 
@@ -973,5 +1201,31 @@ mod tests {
         // Adding NOT VALID to the CHECK constraint suppresses the unvalidated-constraint warning.
         let valid_sql = format!("ALTER TABLE {table} ADD CONSTRAINT chk_positive CHECK (amount > 0) NOT VALID;");
         assert!(lint_sql(&s, &valid_sql).is_empty());
+    }
+
+    #[test]
+    fn flags_blocking_drop_index_truncate_and_workload_breaking_ddl() {
+        let mut s = postgres_snapshot();
+        s.tables[0].rows = Some(500_000.0);
+        let table = s.tables[0].name.clone();
+        let schema = s.tables[0].schema.clone();
+        let idx_name =
+            s.indexes.iter().find(|i| i.schema == schema && i.table == table).map(|i| i.name.clone()).unwrap();
+        if let Some(w) = s.workload.as_mut()
+            && let Some(q) = w.queries.first_mut()
+        {
+            q.text = format!("SELECT id, legacy_col FROM {schema}.{table} WHERE id = $1");
+            q.plan = None;
+            q.last_seen = None;
+        }
+        let sql = format!(
+            "DROP INDEX {idx_name};\n\
+             TRUNCATE TABLE {table};\n\
+             ALTER TABLE {table} DROP COLUMN legacy_col;"
+        );
+        let out = lint_sql(&s, &sql);
+        assert!(out.iter().any(|f| f.id == format!("sql-lint:blocking-drop-index:{idx_name}")), "{out:#?}");
+        assert!(out.iter().any(|f| f.id == format!("sql-lint:truncate:{schema}.{table}")));
+        assert!(out.iter().any(|f| f.id == format!("sql-lint:workload-break:{schema}.{table}.legacy_col")));
     }
 }

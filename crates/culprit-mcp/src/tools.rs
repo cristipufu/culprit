@@ -238,6 +238,14 @@ pub struct SchemaArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct DriftArgs {
+    /// First connection name from list_connections (e.g. staging).
+    pub a: String,
+    /// Second connection name from list_connections (e.g. production).
+    pub b: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct WaitsArgs {
     /// A connection name from list_connections.
     pub connection: String,
@@ -491,6 +499,15 @@ pub fn definitions() -> Vec<Tool> {
                  a supporting index or with mismatched column types, and table-rewriting ALTER TABLE statements.{DATA_NOTE}"
             ),
         ),
+        tool::<DriftArgs>(
+            "drift",
+            "Schema drift",
+            format!(
+                "Compare two connections of the same engine (latest saved scans, no database access): differences in \
+                 tables, columns, indexes, foreign keys, constraints, triggers, settings and server version, with \
+                 CREATE INDEX SQL to align missing indexes.{DATA_NOTE}"
+            ),
+        ),
         Tool::new(
             "run_query",
             format!(
@@ -727,6 +744,15 @@ impl CulpritMcp {
                 report.findings = culprit_engine::lint_sql(&report.snapshot, &a.sql);
                 Ok(view::findings(&report, None, Severity::Low, 50))
             }
+            "drift" => {
+                let a: DriftArgs = args(value)?;
+                self.allowed(&a.a)?;
+                self.allowed(&a.b)?;
+                let ra = self.report(&a.a)?;
+                let rb = self.report(&a.b)?;
+                let d = culprit_engine::drift_reports(&ra, &rb)?;
+                serde_json::to_value(&d).map_err(|e| Error::internal(e.to_string()))
+            }
             "run_query" => {
                 let a: SqlArgs = args(value)?;
                 self.run_query(client, &a.connection, &a.sql).await
@@ -873,6 +899,7 @@ mod tests {
                 "verify",
                 "export_finding",
                 "lint_sql",
+                "drift",
                 "run_query"
             ]
         );

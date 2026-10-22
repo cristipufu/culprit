@@ -426,6 +426,15 @@ fn check_statement(engine: culprit_core::Engine, sql: String) -> culprit_core::s
     culprit_core::sql::check(&sql, engine)
 }
 
+/// Lint migration or DDL SQL offline against the connection's latest saved snapshot (no database access).
+#[tauri::command]
+fn lint_sql(ws: Ws<'_>, name: String, sql: String) -> Result<Vec<culprit_core::Finding>> {
+    let Some(report) = ws.latest_report(&name, None)? else {
+        return Ok(Vec::new());
+    };
+    Ok(culprit_engine::lint_sql(&report.snapshot, &sql))
+}
+
 #[tauri::command]
 async fn catalog(ws: Ws<'_>, name: String) -> Result<culprit_engine::catalog::Catalog> {
     ws.catalog(&name).await
@@ -696,6 +705,7 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
             deadlocks,
             parse_deadlock,
             check_statement,
+            lint_sql,
             checks,
             catalog,
             saved_queries,
