@@ -1017,3 +1017,35 @@ fn checksum_failures_raise_high_database_attention_while_shared_connection_failu
     assert_eq!(conn.severity, Severity::Low);
     assert_eq!(conn.actionability, Actionability::Information);
 }
+
+#[test]
+fn sequence_capacity_flags_32bit_int_primary_keys_on_hundred_million_row_tables() {
+    let mut s = snapshot_with(Engine::Postgres);
+    let schema = s.tables[0].schema.clone();
+    let table = s.tables[0].name.clone();
+    let qual = s.tables[0].qualified();
+    s.tables[0].rows = Some(600_000_000.0);
+    let mut pk = s.indexes[0].clone();
+    pk.schema = schema.clone();
+    pk.table = table.clone();
+    pk.name = format!("{table}_pkey");
+    pk.columns = vec!["id".into()];
+    pk.is_unique = true;
+    pk.is_primary_key = true;
+    s.indexes.push(pk);
+    s.columns.retain(|c| !(c.schema == schema && c.table == table && c.name == "id"));
+    s.columns.push(culprit_core::ColumnInfo {
+        schema: schema.clone(),
+        table: table.clone(),
+        name: "id".into(),
+        data_type: "integer".into(),
+        nullable: false,
+        default: None,
+        generated: false,
+        ordinal: 1,
+    });
+    let out = sequence_capacity::sequence_capacity(&s);
+    let f = out.iter().find(|f| f.id == format!("sequence-capacity:int32-pk:{qual}.id")).expect("int32 pk finding");
+    assert_eq!(f.severity, Severity::High);
+    assert!(f.title.contains("32-bit integer primary key"), "{}", f.title);
+}

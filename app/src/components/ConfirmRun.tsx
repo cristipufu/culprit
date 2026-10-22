@@ -1,17 +1,18 @@
 import { TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
+import type { Finding } from "../gen/Finding";
 import type { StatementCheck } from "../gen/StatementCheck";
 
-export type PendingRun = { kind: "run"; sql: string; check: StatementCheck };
+export type PendingRun = { kind: "run"; sql: string; check: StatementCheck; lint?: Finding[] };
 
 /**
  * Asked before a statement that changes data runs on production. Cancel has focus; a statement that touches every row
  * or removes an object also needs the connection's name typed, so a reflexive Enter can't run it.
  */
 export function ConfirmRun({ pending, connection, onCancel, onConfirm }: { pending: PendingRun; connection: ConnectionInfo; onCancel: () => void; onConfirm: () => void }) {
-  const { check, sql } = pending;
-  const risky = Boolean(check.warning || check.problem);
+  const { check, sql, lint = [] } = pending;
+  const risky = Boolean(check.warning || check.problem || lint.length > 0);
   const [typed, setTyped] = useState("");
   const cancel = useRef<HTMLButtonElement>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -41,6 +42,14 @@ export function ConfirmRun({ pending, connection, onCancel, onConfirm }: { pendi
           </div>
         </div>
         {(check.warning || check.problem) && <div className="confirm-warning">{check.problem ?? check.warning}</div>}
+        {lint.map((f) => (
+          <div key={f.id} className="confirm-warning">
+            <div>
+              <b>{f.title}</b>
+            </div>
+            {f.fix?.summary && <div className="muted" style={{ marginTop: 2 }}>{f.fix.summary}</div>}
+          </div>
+        ))}
         <pre className="confirm-sql">{preview}</pre>
         {risky && (
           <label className="confirm-type">

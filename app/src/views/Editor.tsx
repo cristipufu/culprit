@@ -196,7 +196,10 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
     const client = await api();
     if (production && !confirmed) {
       const check = await client.checkStatement(connection.engine, sql);
-      if (!check.reads_only) return setPending({ kind: "run", sql, check });
+      if (!check.reads_only) {
+        const lint = await client.lintSql(connection.name, sql).catch(() => []);
+        return setPending({ kind: "run", sql, check, lint });
+      }
     }
     setOutput(tab, { kind: "busy", label: "Running…" });
     try {
@@ -207,9 +210,12 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
     } catch (e) {
       const error = errorMessage(e);
       if (error.code === "confirmation_required") {
-        const check = await client.checkStatement(connection.engine, sql);
+        const [check, lint] = await Promise.all([
+          client.checkStatement(connection.engine, sql),
+          client.lintSql(connection.name, sql).catch(() => []),
+        ]);
         setOutput(tab, { kind: "none" });
-        return setPending({ kind: "run", sql, check });
+        return setPending({ kind: "run", sql, check, lint });
       }
       setOutput(tab, { kind: "error", error });
     }

@@ -21,10 +21,17 @@ const MB: f64 = 1024.0 * 1024.0;
 const GB: f64 = 1024.0 * MB;
 const LARGE_TABLE_BYTES: f64 = 100.0 * MB;
 
+struct ScriptContext<'a> {
+    created_indexes: &'a [(String, Vec<String>)],
+    validated_tables: &'a [String],
+}
+
 /// Lint one or more SQL statements (such as a migration file) against the catalog and table sizes in `snapshot`.
 pub fn lint_sql(snapshot: &Snapshot, sql: &str) -> Vec<Finding> {
     let statements = split_statements(sql);
     let created_indexes = collect_script_indexes(&statements);
+    let validated_tables = collect_validated_constraint_tables(&statements);
+    let ctx = ScriptContext { created_indexes: &created_indexes, validated_tables: &validated_tables };
     let mut findings = Vec::new();
     let mut in_transaction = false;
     for stmt in &statements {
@@ -44,7 +51,7 @@ pub fn lint_sql(snapshot: &Snapshot, sql: &str) -> Vec<Finding> {
         check_concurrent_in_tx(snapshot, stmt, &tokens, &upper, in_transaction, &mut findings);
         check_create_index(snapshot, stmt, &tokens, &mut findings);
         check_drop_or_truncate(snapshot, stmt, &tokens, &upper, &mut findings);
-        check_alter_table(snapshot, stmt, &tokens, &created_indexes, &mut findings);
+        check_alter_table(snapshot, stmt, &tokens, &ctx, &mut findings);
     }
     findings
 }
@@ -404,11 +411,37 @@ fn check_create_index(snapshot: &Snapshot, stmt: &str, tokens: &[String], findin
     findings.push(f);
 }
 
+fn collect_validated_constraint_tables(statements: &[String]) -> Vec<String> {
+    let mut tables = Vec::new();
+    for stmt in statements {
+        let tokens = tokenize(stmt);
+        let upper: Vec<String> = tokens.iter().map(|t| t.to_ascii_uppercase()).collect();
+        if upper.first().map(String::as_str) == Some("ALTER")
+            && upper.get(1).map(String::as_str) == Some("TABLE")
+            && upper.windows(2).any(|w| w == ["VALIDATE", "CONSTRAINT"])
+        {
+            let mut pos = 2;
+            if upper.get(pos).map(String::as_str) == Some("IF")
+                && upper.get(pos + 1).map(String::as_str) == Some("EXISTS")
+            {
+                pos += 2;
+            }
+            if upper.get(pos).map(String::as_str) == Some("ONLY") {
+                pos += 1;
+            }
+            if let Some(raw_table) = tokens.get(pos) {
+                tables.push(unquote_ident(raw_table));
+            }
+        }
+    }
+    tables
+}
+
 fn check_alter_table(
     snapshot: &Snapshot,
     stmt: &str,
     tokens: &[String],
-    created_indexes: &[(String, Vec<String>)],
+    ctx: &ScriptContext<'_>,
     findings: &mut Vec<Finding>,
 ) {
     let upper: Vec<String> = tokens.iter().map(|t| t.to_ascii_uppercase()).collect();
@@ -433,7 +466,7 @@ fn check_alter_table(
     }
 
     for (clause_tokens, clause_upper) in split_top_level_commas(&tokens[pos + 1..], &upper[pos + 1..]) {
-        check_alter_table_action(snapshot, stmt, table, clause_tokens, clause_upper, created_indexes, findings);
+        check_alter_table_action(snapshot, stmt, table, clause_tokens, clause_upper, ctx, findings);
     }
 }
 
@@ -466,7 +499,7 @@ fn check_alter_table_action(
     table: &TableStat,
     tokens: &[String],
     upper: &[String],
-    created_indexes: &[(String, Vec<String>)],
+    ctx: &ScriptContext<'_>,
     findings: &mut Vec<Finding>,
 ) {
     // 1. Check FOREIGN KEY additions for missing child index or column type mismatch.
@@ -483,7 +516,7 @@ fn check_alter_table_action(
                 &child_cols,
                 raw_parent,
                 &parent_cols,
-                created_indexes,
+                ctx.created_indexes,
                 findings,
             );
         }
@@ -516,6 +549,83 @@ fn check_alter_table_action(
         }
     }
 
+    // 1c. Check ADD [COLUMN] <col> <type> NOT NULL without DEFAULT on non-empty tables.
+    if upper.first().map(String::as_str) == Some("ADD") && table_rows(table) >= 1.0 {
+        let second = upper.get(1).map(String::as_str).unwrap_or("");
+        if !matches!(second, "CONSTRAINT" | "FOREIGN" | "CHECK" | "PRIMARY" | "UNIQUE" | "EXCLUDE") {
+            let mut col_idx = if second == "COLUMN" { 2 } else { 1 };
+            if upper.get(col_idx).map(String::as_str) == Some("IF")
+                && upper.get(col_idx + 1).map(String::as_str) == Some("NOT")
+                && upper.get(col_idx + 2).map(String::as_str) == Some("EXISTS")
+            {
+                col_idx += 3;
+            }
+            if let Some(raw_col) = tokens.get(col_idx) {
+                let rest = &upper[col_idx + 1..];
+                let has_not_null = rest.windows(2).any(|w| w == ["NOT", "NULL"]);
+                let has_default = rest.iter().any(|t| {
+                    matches!(
+                        t.as_str(),
+                        "DEFAULT"
+                            | "GENERATED"
+                            | "IDENTITY"
+                            | "SERIAL"
+                            | "BIGSERIAL"
+                            | "SMALLSERIAL"
+                            | "SERIAL4"
+                            | "SERIAL8"
+                            | "SERIAL2"
+                            | "AUTO_INCREMENT"
+                    )
+                });
+                if has_not_null && !has_default {
+                    let rows = table_rows(table);
+                    let bytes = table_bytes(table);
+                    let qual = table.qualified();
+                    let col_name = unquote_ident(raw_col);
+                    let mut f = finding(
+                        "sql-lint",
+                        &format!("not-null-without-default:{qual}.{col_name}"),
+                        Category::Maintenance,
+                        subject(SubjectKind::Table, &qual),
+                    );
+                    f.actionability = Actionability::NeedsAttention;
+                    f.confidence = Confidence::High;
+                    f.severity = Severity::High;
+                    f.impact.score = base_score(f.severity);
+                    f.impact.label = "fails on existing rows".into();
+                    f.title = format!(
+                        "ADD COLUMN {}.{} NOT NULL without DEFAULT fails on non-empty table ({})",
+                        table.name,
+                        col_name,
+                        table_size_label(rows, bytes)
+                    );
+                    f.summary = format!(
+                        "The statement `{}` adds `{col_name}` as `NOT NULL` without a `DEFAULT` clause to {} ({}). \
+                         Because existing rows would receive `NULL` for `{col_name}`, the database rejects the \
+                         statement immediately at runtime.",
+                        compact_sql(stmt),
+                        qual,
+                        table_size_label(rows, bytes)
+                    );
+                    f.fix = Some(Fix {
+                        summary: format!(
+                            "Either supply a non-volatile `DEFAULT` value, or add `{col_name}` as nullable first, backfill existing rows, and then enforce `NOT NULL`."
+                        ),
+                        sql: None,
+                        cost: None,
+                    });
+                    push_table_metrics(&mut f, rows, bytes);
+                    f.verify = vec![
+                        "Re-run `culprit lint-sql` after adding a `DEFAULT` or making the initial column nullable."
+                            .into(),
+                    ];
+                    findings.push(f);
+                }
+            }
+        }
+    }
+
     // 2. Check table-rewriting or full-scan ALTER TABLE operations on large tables.
     if !is_large_table(table) {
         return;
@@ -524,11 +634,15 @@ fn check_alter_table_action(
     let bytes = table_bytes(table);
     let qual = table.qualified();
 
-    // 2a. Unvalidated FOREIGN KEY or CHECK constraint addition on PostgreSQL without NOT VALID.
+    // 2a. Unvalidated FOREIGN KEY or CHECK constraint addition on PostgreSQL without NOT VALID,
+    // or UNIQUE / PRIMARY KEY constraint addition without USING INDEX.
     if snapshot.server.engine == Engine::Postgres && upper.first().map(String::as_str) == Some("ADD") {
         let is_fk = upper.windows(2).any(|w| w == ["FOREIGN", "KEY"]);
         let is_check = upper.iter().any(|t| t == "CHECK");
         let has_not_valid = upper.windows(2).any(|w| w == ["NOT", "VALID"]);
+        let is_unique = upper.iter().any(|t| t == "UNIQUE");
+        let is_pk = upper.windows(2).any(|w| w == ["PRIMARY", "KEY"]);
+        let has_using_index = upper.windows(2).any(|w| w == ["USING", "INDEX"]);
         if (is_fk || is_check) && !has_not_valid {
             let kind = if is_fk { "FOREIGN KEY" } else { "CHECK" };
             let cname = if upper.get(1).map(String::as_str) == Some("CONSTRAINT") {
@@ -570,6 +684,50 @@ fn check_alter_table_action(
             });
             push_table_metrics(&mut f, rows, bytes);
             f.verify = vec!["Re-run `culprit lint-sql` after adding `NOT VALID` to the constraint definition.".into()];
+            findings.push(f);
+        } else if (is_unique || is_pk) && !has_using_index {
+            let kind = if is_pk { "PRIMARY KEY" } else { "UNIQUE" };
+            let cname = if upper.get(1).map(String::as_str) == Some("CONSTRAINT") {
+                tokens.get(2).map(|s| unquote_ident(s)).unwrap_or_else(|| kind.to_ascii_lowercase().replace(' ', "-"))
+            } else {
+                kind.to_ascii_lowercase().replace(' ', "-")
+            };
+            let mut f = finding(
+                "sql-lint",
+                &format!("blocking-unique-constraint:{qual}:{cname}"),
+                Category::Indexes,
+                subject(SubjectKind::Table, &qual),
+            );
+            f.actionability = Actionability::NeedsAttention;
+            f.confidence = Confidence::High;
+            f.severity = if rows >= HIGH_TABLE_ROWS || bytes >= GB { Severity::High } else { Severity::Medium };
+            f.impact.score = base_score(f.severity);
+            f.impact.label = table_size_label(rows, bytes);
+            f.title = format!(
+                "ADD {kind} constraint on {} ({}) without USING INDEX builds the index under an ACCESS EXCLUSIVE lock",
+                table.name,
+                table_size_label(rows, bytes)
+            );
+            f.summary = format!(
+                "The statement `{}` adds a {kind} constraint on {} ({}) directly. PostgreSQL builds the backing unique \
+                 index while holding an `ACCESS EXCLUSIVE` lock on {}, blocking all reads and writes until the index \
+                 build finishes.",
+                compact_sql(stmt),
+                qual,
+                table_size_label(rows, bytes),
+                table.name
+            );
+            f.fix = Some(Fix {
+                summary: format!(
+                    "Build the unique index first with `CREATE UNIQUE INDEX CONCURRENTLY`, then attach it with `ALTER TABLE {qual} ADD CONSTRAINT {cname} {kind} USING INDEX <index_name>;`."
+                ),
+                sql: None,
+                cost: None,
+            });
+            push_table_metrics(&mut f, rows, bytes);
+            f.verify = vec![
+                "Re-run `culprit lint-sql` after switching to `CREATE UNIQUE INDEX CONCURRENTLY` + `ADD CONSTRAINT ... USING INDEX`.".into(),
+            ];
             findings.push(f);
         }
     }
@@ -644,6 +802,7 @@ fn check_alter_table_action(
         let idx = alter_col_pos;
         let has_type = upper[idx..].iter().any(|t| t == "TYPE") || upper.get(idx).map(String::as_str) == Some("MODIFY");
         let has_set_not_null = upper[idx..].windows(3).any(|w| w == ["SET", "NOT", "NULL"]);
+        let table_validated = ctx.validated_tables.iter().any(|raw| table_matches(table, raw));
         if has_type && !findings.iter().any(|f| f.id == format!("sql-lint:table-rewrite:{qual}")) {
             let mut f = finding(
                 "sql-lint",
@@ -680,6 +839,7 @@ fn check_alter_table_action(
             findings.push(f);
         } else if has_set_not_null
             && snapshot.server.engine == Engine::Postgres
+            && !table_validated
             && !findings.iter().any(|f| f.id == format!("sql-lint:set-not-null:{qual}"))
         {
             let mut f = finding(
@@ -1227,5 +1387,31 @@ mod tests {
         assert!(out.iter().any(|f| f.id == format!("sql-lint:blocking-drop-index:{idx_name}")), "{out:#?}");
         assert!(out.iter().any(|f| f.id == format!("sql-lint:truncate:{schema}.{table}")));
         assert!(out.iter().any(|f| f.id == format!("sql-lint:workload-break:{schema}.{table}.legacy_col")));
+    }
+
+    #[test]
+    fn flags_not_null_without_default_blocking_unique_and_recognizes_validated_not_null() {
+        let mut s = postgres_snapshot();
+        s.tables[0].rows = Some(500_000.0);
+        let table = s.tables[0].name.clone();
+        let schema = s.tables[0].schema.clone();
+        let sql = format!(
+            "ALTER TABLE {table} ADD COLUMN required_code text NOT NULL;\n\
+             ALTER TABLE {table} ADD CONSTRAINT uq_code UNIQUE (required_code);"
+        );
+        let out = lint_sql(&s, &sql);
+        assert!(
+            out.iter().any(|f| f.id == format!("sql-lint:not-null-without-default:{schema}.{table}.required_code"))
+        );
+        assert!(out.iter().any(|f| f.id == format!("sql-lint:blocking-unique-constraint:{schema}.{table}:uq_code")));
+
+        let safe_sql = format!(
+            "ALTER TABLE {table} ADD CONSTRAINT chk_status_nn CHECK (status IS NOT NULL) NOT VALID;\n\
+             ALTER TABLE {table} VALIDATE CONSTRAINT chk_status_nn;\n\
+             ALTER TABLE {table} ALTER COLUMN status SET NOT NULL;\n\
+             CREATE UNIQUE INDEX CONCURRENTLY idx_uq_code ON {table} (required_code);\n\
+             ALTER TABLE {table} ADD CONSTRAINT uq_code UNIQUE USING INDEX idx_uq_code;"
+        );
+        assert!(lint_sql(&s, &safe_sql).is_empty());
     }
 }

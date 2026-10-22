@@ -473,6 +473,15 @@ fn explains(recorded: &ChangeEvent, e: &ChangeEvent) -> bool {
                         .zip(e.object.as_deref())
                         .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
             }
+            (EventKind::Code, EventKind::Code) => {
+                same_table
+                    && (recorded.action == e.action || recorded.action == Some(EventAction::Changed))
+                    && recorded.object.as_deref().zip(e.object.as_deref()).is_some_and(|(a, b)| {
+                        let a_leaf = a.rsplit('.').next().unwrap_or(a);
+                        let b_leaf = b.rsplit('.').next().unwrap_or(b);
+                        a_leaf.eq_ignore_ascii_case(b_leaf)
+                    })
+            }
             (EventKind::Setting, EventKind::Setting) => match (&recorded.object, &e.object) {
                 (None, _) => true,
                 (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
@@ -1660,5 +1669,22 @@ mod tests {
         assert_eq!(trig_event.title, "Trigger trg_orders_audit was created on public.orders");
         assert_eq!(trig_event.table.as_deref(), Some("public.orders"));
         assert_eq!(trig_event.detail.as_deref(), Some("INSERT OR UPDATE"));
+
+        let recorded_trig = ChangeEvent::new(
+            EventKind::Code,
+            EventSource::Database,
+            "public.trg_orders_audit",
+            "2026-10-11T10:30:00Z",
+            "Trigger trg_orders_audit on public.orders was created",
+        )
+        .action(EventAction::Created)
+        .table("public.orders")
+        .object("public.trg_orders_audit");
+        let merged = diff(Some(&before), &after, vec![recorded_trig]);
+        let code_events: Vec<&ChangeEvent> = merged.iter().filter(|e| e.kind == EventKind::Code).collect();
+        assert_eq!(code_events.len(), 1, "recorded trigger event should date the scan-diffed trigger event");
+        assert_eq!(code_events[0].at, "2026-10-11T10:30:00Z");
+        assert_eq!(code_events[0].source, EventSource::Database);
+        assert_eq!(code_events[0].detail.as_deref(), Some("INSERT OR UPDATE"));
     }
 }

@@ -652,6 +652,7 @@ export async function demoApi(): Promise<Api> {
       const every = (verb === "UPDATE" || verb === "DELETE") && !/\bwhere\b/i.test(sql);
       return { reads_only, verb, warning: every ? "There is no WHERE clause, so this changes every row in the table." : null, problem: null };
     },
+    lintSql: async () => [],
     catalog: async (name) => {
       const snapshot = byConnection(name)?.snapshot;
       if (!snapshot) return { databases: [], tables: [], truncated: false };

@@ -733,6 +733,16 @@ impl TableStorage {
             })
             .collect()
     }
+
+    /// Partition bound expressions recorded on the table or partition (`partition_bound=<expr>`).
+    pub fn partition_bounds(&self) -> Vec<&str> {
+        self.options.iter().filter_map(|o| o.strip_prefix("partition_bound=")).collect()
+    }
+
+    /// Whether this partition is a declarative `DEFAULT` partition (`partition_bound=DEFAULT`).
+    pub fn is_default_partition(&self) -> bool {
+        self.partition_bounds().iter().any(|b| b.eq_ignore_ascii_case("default"))
+    }
 }
 
 #[cfg(test)]

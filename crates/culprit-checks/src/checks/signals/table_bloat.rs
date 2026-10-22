@@ -97,21 +97,17 @@ pub(crate) fn expiring_range_partitions(snapshot: &Snapshot) -> Vec<Finding> {
     let mut by_parent: std::collections::BTreeMap<String, Vec<(String, String)>> = std::collections::BTreeMap::new();
     for t in &snapshot.tables {
         if let Some(parent) = t.partition_of.as_deref() {
-            if let Some(bound) =
-                t.storage.as_ref().and_then(|s| s.options.iter().find_map(|o| o.strip_prefix("partition_bound=")))
-            {
+            if let Some(bound) = t.storage.as_ref().and_then(|s| s.partition_bounds().into_iter().next()) {
                 by_parent.entry(parent.to_string()).or_default().push((t.name.clone(), bound.to_string()));
             }
         } else if let Some(storage) = t.storage.as_ref() {
             let parent = t.qualified();
-            for opt in &storage.options {
-                if let Some(bound) = opt.strip_prefix("partition_bound=") {
-                    let (expr, part_name) = bound
-                        .rsplit_once("):")
-                        .map(|(left, right)| (format!("{left})"), right.to_string()))
-                        .unwrap_or_else(|| (bound.to_string(), t.name.clone()));
-                    by_parent.entry(parent.clone()).or_default().push((part_name, expr));
-                }
+            for bound in storage.partition_bounds() {
+                let (expr, part_name) = bound
+                    .rsplit_once("):")
+                    .map(|(left, right)| (format!("{left})"), right.to_string()))
+                    .unwrap_or_else(|| (bound.to_string(), t.name.clone()));
+                by_parent.entry(parent.clone()).or_default().push((part_name, expr));
             }
         }
     }
@@ -215,10 +211,7 @@ fn default_partitions(snapshot: &Snapshot) -> Vec<Finding> {
         .iter()
         .filter_map(|t| {
             let parent = t.partition_of.as_deref()?;
-            let is_default = t
-                .storage
-                .as_ref()
-                .is_some_and(|s| s.options.iter().any(|o| o.eq_ignore_ascii_case("partition_bound=default")));
+            let is_default = t.storage.as_ref().is_some_and(|s| s.is_default_partition());
             if !is_default {
                 return None;
             }

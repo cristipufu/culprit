@@ -19,6 +19,7 @@ import type { ExplainMode } from "../gen/ExplainMode";
 import type { ExportFile } from "../gen/ExportFile";
 import type { ExportFormat } from "../gen/ExportFormat";
 import type { ExportOptions } from "../gen/ExportOptions";
+import type { Finding } from "../gen/Finding";
 import type { ImportCandidate } from "../gen/ImportCandidate";
 import type { ImportSource } from "../gen/ImportSource";
 import type { LiveState } from "../gen/LiveState";
@@ -120,6 +121,7 @@ export interface Api {
   /** Deadlocks in pasted text: SQL Server .xdl XML, InnoDB status, PostgreSQL log lines. */
   parseDeadlock(text: string): Promise<Deadlock[]>;
   checkStatement(engine: Engine, sql: string): Promise<StatementCheck>;
+  lintSql(name: string, sql: string): Promise<Finding[]>;
   checks(): Promise<CheckInfo[]>;
   catalog(name: string): Promise<Catalog>;
   savedQueries(): Promise<SavedQuery[]>;
@@ -214,6 +216,7 @@ async function desktopApi(): Promise<Api> {
     deadlocks: (name, sinceHours) => invoke("deadlocks", { name, sinceHours }),
     parseDeadlock: (text) => invoke("parse_deadlock", { text }),
     checkStatement: (engine, sql) => invoke("check_statement", { engine, sql }),
+    lintSql: (name, sql) => invoke("lint_sql", { name, sql }),
     checks: () => invoke("checks"),
     catalog: (name) => invoke("catalog", { name }),
     savedQueries: () => invoke("saved_queries"),

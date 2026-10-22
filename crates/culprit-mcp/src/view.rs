@@ -594,11 +594,7 @@ pub fn table(report: &Report, wanted: &str) -> Result<Value> {
         .as_ref()
         .map(|st| st.triggers().into_iter().map(|(name, events)| json!({ "name": name, "events": events })).collect())
         .unwrap_or_default();
-    let partition_bounds: Vec<&str> = t
-        .storage
-        .as_ref()
-        .map(|st| st.options.iter().filter_map(|o| o.strip_prefix("partition_bound=")).collect())
-        .unwrap_or_default();
+    let partition_bounds: Vec<&str> = t.storage.as_ref().map(|st| st.partition_bounds()).unwrap_or_default();
     let planned = s.workload.as_ref().map(|w| w.queries.iter().filter(|q| q.plan.is_some()).count()).unwrap_or(0);
     let mut out = json!({
         "scan": scan_header(report),
