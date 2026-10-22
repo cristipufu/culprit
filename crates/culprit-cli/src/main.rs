@@ -190,6 +190,24 @@ enum Command {
         #[arg(long)]
         connection: Option<String>,
     },
+    /// Lint migration or DDL SQL offline against a connection's latest saved snapshot (or a saved report/snapshot file).
+    #[command(visible_alias = "check-sql")]
+    LintSql {
+        /// A connection name or a saved report/snapshot .json file.
+        connection: String,
+        /// Inline SQL or migration script to check.
+        #[arg(long, conflicts_with = "file")]
+        sql: Option<String>,
+        /// Path to a .sql migration file to check.
+        #[arg(long, value_name = "PATH")]
+        file: Option<PathBuf>,
+        /// Saved report or snapshot file to lint against (instead of the connection's latest scan).
+        #[arg(long)]
+        report: Option<PathBuf>,
+        /// Exit with code 3 if any finding is at least this severe (for CI).
+        #[arg(long, value_enum)]
+        fail_on: Option<SeverityArg>,
+    },
     /// Serve Culprit to coding agents over MCP (stdio). Findings, statistics, schema and estimated plans; statements
     /// only on connections with `--agent query` and after approval in the desktop app. Every call is audited.
     Mcp(agents::McpArgs),
@@ -756,6 +774,21 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             }
             out.analyzed(&report);
             Ok(0)
+        }
+        Command::LintSql { connection, sql, file, report, fail_on } => {
+            let sql_text = match (sql, file) {
+                (Some(s), None) => s,
+                (None, Some(path)) => {
+                    std::fs::read_to_string(&path).map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?
+                }
+                _ => return Err(Error::invalid("Pass --sql <SQL> or --file <PATH>")),
+            };
+            let report_path = report.or_else(|| report_file(&connection));
+            let mut base_report = load(&ws, &connection, report_path.as_ref())?;
+            let findings = culprit_engine::lint_sql(&base_report.snapshot, &sql_text);
+            base_report.findings = findings;
+            out.findings(&base_report, Severity::Low);
+            Ok(fail_code(&base_report, fail_on))
         }
         Command::Mcp(args) => agents::mcp(ws, args).await,
         Command::Audit(args) => agents::audit(&ws, args, out),

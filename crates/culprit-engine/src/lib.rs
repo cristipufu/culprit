@@ -674,6 +674,11 @@ pub fn explain_waits(snapshot: &culprit_core::Snapshot) -> Option<culprit_core::
     reporting::explain_waits(snapshot)
 }
 
+/// Lint migration or DDL SQL offline against a saved snapshot's catalog, table sizes and indexes.
+pub fn lint_sql(snapshot: &culprit_core::Snapshot, sql: &str) -> Vec<culprit_core::Finding> {
+    culprit_checks::lint_sql(snapshot, sql)
+}
+
 /// PostgreSQL and MySQL providers already run reads inside a read-only transaction. SQL Server has no read-only
 /// transactions, so a read runs inside one that is always rolled back.
 pub fn read_only_batch(engine: Engine, statement: &str) -> String {

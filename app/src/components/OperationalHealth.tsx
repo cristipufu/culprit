@@ -13,6 +13,8 @@ const COUNTERS: Record<OperationalCounterKind, string> = {
   "subscription-sync-errors": "Subscription synchronization errors",
   "standby-conflicts": "Standby recovery cancellations",
   "redo-log-waits": "Redo buffer waits",
+  "checksum-failures": "Page checksum or I/O corruption",
+  "connection-failures": "Failed connection handshakes",
 };
 
 /** Display the source's measurements and period. Findings determine whether they need attention. */

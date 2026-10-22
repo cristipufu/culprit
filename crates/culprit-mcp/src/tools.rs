@@ -482,6 +482,15 @@ pub fn definitions() -> Vec<Tool> {
                  includes connection names, hosts or credentials.{DATA_NOTE}"
             ),
         ),
+        tool::<SqlArgs>(
+            "lint_sql",
+            "Lint migration SQL",
+            format!(
+                "Lint migration or DDL SQL offline against the connection's latest saved snapshot (without touching \
+                 the database): flags non-concurrent/offline CREATE INDEX on large tables, foreign keys added without \
+                 a supporting index or with mismatched column types, and table-rewriting ALTER TABLE statements.{DATA_NOTE}"
+            ),
+        ),
         Tool::new(
             "run_query",
             format!(
@@ -711,6 +720,13 @@ impl CulpritMcp {
                 )?;
                 Ok(json!({ "markdown": file.contents, "redacted": options.redact }))
             }
+            "lint_sql" => {
+                let a: SqlArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                let mut report = self.report(&a.connection)?;
+                report.findings = culprit_engine::lint_sql(&report.snapshot, &a.sql);
+                Ok(view::findings(&report, None, Severity::Low, 50))
+            }
             "run_query" => {
                 let a: SqlArgs = args(value)?;
                 self.run_query(client, &a.connection, &a.sql).await
@@ -856,6 +872,7 @@ mod tests {
                 "index_advice",
                 "verify",
                 "export_finding",
+                "lint_sql",
                 "run_query"
             ]
         );

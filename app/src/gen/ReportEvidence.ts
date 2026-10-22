@@ -5,5 +5,7 @@ import type { Snapshot } from "./Snapshot";
 /**
  * Replay inputs are distinct from the prepared snapshot used by views. A collection is retained only when the
  * caller actually supplied the provider's picture before history enrichment; an ordinary snapshot isn't one.
+ * When the collected snapshot is identical to `input`, serialization writes `"same-as-input"` instead of duplicating
+ * the full snapshot payload on disk, and deserialization restores `Some(input.clone())`.
  */
 export type ReportEvidence = { input: Snapshot, collected: Snapshot | null, recorded_changes: Array<ChangeEvent>, };
