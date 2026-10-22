@@ -40,22 +40,28 @@ fn otlp_value(v: &Value) -> &Value {
 /// Look up a key at the top level, under `fields` (`tracing-subscriber`), or under `attributes` / `spanAttributes`
 /// (OpenTelemetry JSON spans, both flat maps and OTLP key-value arrays).
 fn lookup<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
-    if let Some(found) = v.get(key) {
+    if let Some(found) = v.get(key).filter(|f| !f.is_null()) {
         return Some(found);
     }
-    if let Some(found) = v.get("fields").and_then(|f| f.get(key)) {
+    if let Some(found) = v.get("fields").and_then(|f| f.get(key)).filter(|f| !f.is_null()) {
         return Some(found);
     }
     for container in ["attributes", "spanAttributes"] {
         let Some(attrs) = v.get(container) else { continue };
         if let Some(found) = attrs.get(key) {
-            return Some(otlp_value(found));
+            let unwrapped = otlp_value(found);
+            if !unwrapped.is_null() {
+                return Some(unwrapped);
+            }
         }
         if let Some(arr) = attrs.as_array()
             && let Some(item) = arr.iter().find(|item| item.get("key").and_then(Value::as_str) == Some(key))
             && let Some(val) = item.get("value")
         {
-            return Some(otlp_value(val));
+            let unwrapped = otlp_value(val);
+            if !unwrapped.is_null() {
+                return Some(unwrapped);
+            }
         }
     }
     None
@@ -92,18 +98,50 @@ fn span_duration_ms(v: &Value) -> Option<f64> {
 
 fn moment_from_value(v: &Value) -> Option<Moment> {
     if let Some(s) = v.as_str() {
-        let epoch = culprit_core::format::epoch_seconds(s)?;
-        let zoned = s.ends_with('Z') || s.rfind(['+', '-']).is_some_and(|p| p > 10);
-        return Some(Moment { epoch, zoned });
+        if let Some(epoch) = culprit_core::format::epoch_seconds(s) {
+            let zoned = s.ends_with('Z') || s.rfind(['+', '-']).is_some_and(|p| p > 10);
+            return Some(Moment { epoch, zoned });
+        }
+        if let Ok(n) = s.trim().parse::<f64>()
+            && let Some(m) = moment_from_epoch_number(n)
+        {
+            return Some(m);
+        }
+        return None;
     }
-    let n = v.as_f64().filter(|n| n.is_finite())?;
+    v.as_f64().and_then(moment_from_epoch_number)
+}
+
+fn moment_from_epoch_number(n: f64) -> Option<Moment> {
+    if !n.is_finite() {
+        return None;
+    }
     if (1_000_000_000.0..100_000_000_000.0).contains(&n) {
         Some(Moment { epoch: n, zoned: true })
     } else if (1_000_000_000_000.0..100_000_000_000_000.0).contains(&n) {
         Some(Moment { epoch: n / 1_000.0, zoned: true })
+    } else if (1_000_000_000_000_000.0..100_000_000_000_000_000.0).contains(&n) {
+        Some(Moment { epoch: n / 1_000_000.0, zoned: true })
+    } else if n >= 1_000_000_000_000_000_000.0 {
+        Some(Moment { epoch: n / 1_000_000_000.0, zoned: true })
     } else {
         None
     }
+}
+
+fn is_non_ok_error(v: &&Value) -> bool {
+    !v.is_null()
+        && **v != Value::Bool(false)
+        && v.as_u64() != Some(0)
+        && v.as_str().is_none_or(|s| {
+            let u = s.trim().to_ascii_uppercase();
+            !u.is_empty()
+                && !matches!(
+                    u.as_str(),
+                    "0" | "00000" | "SQLITE_OK" | "OK" | "STATUS_CODE_OK" | "UNSET" | "STATUS_CODE_UNSET" | "NO_ERROR"
+                )
+        })
+        && v.as_object().is_none_or(|o| !o.is_empty())
 }
 
 fn entry(line: &str) -> Option<Entry> {
@@ -128,53 +166,46 @@ fn entry(line: &str) -> Option<Entry> {
         is_err.then(|| s.get("message").or_else(|| s.get("description")).unwrap_or(code))
     });
     let raw_error = lookup(&v, "error_code")
-        .or_else(|| v.pointer("/error/code"))
-        .or_else(|| lookup(&v, "db.response.status_code"))
-        .or_else(|| lookup(&v, "error"))
-        .or(otel_error);
-    let error_code = raw_error
-        .filter(|v| {
-            !v.is_null()
-                && **v != Value::Bool(false)
-                && v.as_u64() != Some(0)
-                && v.as_str().is_none_or(|s| !s.is_empty() && !matches!(s, "0" | "SQLITE_OK" | "OK" | "STATUS_CODE_OK"))
-                && v.as_object().is_none_or(|o| !o.is_empty())
-        })
-        .map(|value| {
-            let code = value
-                .as_str()
-                .map(str::to_ascii_uppercase)
-                .or_else(|| value.as_u64().map(|n| n.to_string()))
-                .unwrap_or_default();
-            match code.as_str() {
-                "SQLITE_BUSY" | "5" => "SQLITE_BUSY",
-                "SQLITE_LOCKED" | "6" => "SQLITE_LOCKED",
-                "SQLITE_BUSY_SNAPSHOT" | "517" => "SQLITE_BUSY_SNAPSHOT",
-                "SQLITE_CONSTRAINT" | "19" => "SQLITE_CONSTRAINT",
-                "SQLITE_FULL" | "13" => "SQLITE_FULL",
-                "SQLITE_READONLY" | "8" => "SQLITE_READONLY",
-                "SQLITE_IOERR" | "10" => "SQLITE_IOERR",
-                "SQLITE_CORRUPT" | "11" => "SQLITE_CORRUPT",
-                c if c.contains("SQLITE_CONSTRAINT") => "SQLITE_CONSTRAINT",
-                c if c.contains("SQLITE_READONLY") => "SQLITE_READONLY",
-                c if c.contains("SQLITE_IOERR") => "SQLITE_IOERR",
-                c if c.contains("SQLITE_BUSY_SNAPSHOT") => "SQLITE_BUSY_SNAPSHOT",
-                c if c.contains("SQLITE_BUSY") || c.contains("DATABASE IS LOCKED") => "SQLITE_BUSY",
-                c if c.contains("SQLITE_LOCKED") => "SQLITE_LOCKED",
-                c if c.contains("SQLITE_FULL") => "SQLITE_FULL",
-                c if c.contains("SQLITE_CORRUPT") => "SQLITE_CORRUPT",
-                c if c.parse::<u64>().is_ok_and(|n| n > 255) => match c.parse::<u64>().unwrap() & 255 {
-                    5 => "SQLITE_BUSY",
-                    6 => "SQLITE_LOCKED",
-                    19 => "SQLITE_CONSTRAINT",
-                    8 => "SQLITE_READONLY",
-                    10 => "SQLITE_IOERR",
-                    11 => "SQLITE_CORRUPT",
-                    _ => "Logged SQL error",
-                },
+        .filter(is_non_ok_error)
+        .or_else(|| v.pointer("/error/code").filter(is_non_ok_error))
+        .or_else(|| lookup(&v, "db.response.status_code").filter(is_non_ok_error))
+        .or_else(|| lookup(&v, "error").filter(is_non_ok_error))
+        .or_else(|| otel_error.filter(is_non_ok_error));
+    let error_code = raw_error.map(|value| {
+        let code = value
+            .as_str()
+            .map(str::to_ascii_uppercase)
+            .or_else(|| value.as_u64().map(|n| n.to_string()))
+            .unwrap_or_default();
+        match code.as_str() {
+            "SQLITE_BUSY" | "5" => "SQLITE_BUSY",
+            "SQLITE_LOCKED" | "6" => "SQLITE_LOCKED",
+            "SQLITE_BUSY_SNAPSHOT" | "517" => "SQLITE_BUSY_SNAPSHOT",
+            "SQLITE_CONSTRAINT" | "19" => "SQLITE_CONSTRAINT",
+            "SQLITE_FULL" | "13" => "SQLITE_FULL",
+            "SQLITE_READONLY" | "8" => "SQLITE_READONLY",
+            "SQLITE_IOERR" | "10" => "SQLITE_IOERR",
+            "SQLITE_CORRUPT" | "11" => "SQLITE_CORRUPT",
+            c if c.contains("SQLITE_CONSTRAINT") => "SQLITE_CONSTRAINT",
+            c if c.contains("SQLITE_READONLY") => "SQLITE_READONLY",
+            c if c.contains("SQLITE_IOERR") => "SQLITE_IOERR",
+            c if c.contains("SQLITE_BUSY_SNAPSHOT") => "SQLITE_BUSY_SNAPSHOT",
+            c if c.contains("SQLITE_BUSY") || c.contains("DATABASE IS LOCKED") => "SQLITE_BUSY",
+            c if c.contains("SQLITE_LOCKED") => "SQLITE_LOCKED",
+            c if c.contains("SQLITE_FULL") => "SQLITE_FULL",
+            c if c.contains("SQLITE_CORRUPT") => "SQLITE_CORRUPT",
+            c if c.parse::<u64>().is_ok_and(|n| n > 255) => match c.parse::<u64>().unwrap() & 255 {
+                5 => "SQLITE_BUSY",
+                6 => "SQLITE_LOCKED",
+                19 => "SQLITE_CONSTRAINT",
+                8 => "SQLITE_READONLY",
+                10 => "SQLITE_IOERR",
+                11 => "SQLITE_CORRUPT",
                 _ => "Logged SQL error",
-            }
-        });
+            },
+            _ => "Logged SQL error",
+        }
+    });
     let timed_ms = ["ms", "duration_ms", "elapsed_ms", "time_ms", "query_time_ms", "durationMs", "elapsedMs"]
         .iter()
         .find_map(|k| number_value(lookup(&v, k)?))
@@ -266,5 +297,12 @@ mod tests {
         assert!((e.ms - 0.85).abs() < 1e-6);
         assert!(e.at.is_some_and(|m| m.zoned && (m.epoch - 1_760_529_600.5).abs() < 1e-3));
         assert_eq!(e.request_id.as_deref(), Some("req-100"));
+
+        // Null error_code or SQLSTATE "00000" does not shadow a real error or trigger a false error
+        let fallback_err =
+            r#"{"sql":"INSERT INTO orders (id) VALUES (?)","ms":1.1,"error_code":null,"error":"SQLITE_BUSY"}"#;
+        assert_eq!(entry(fallback_err).unwrap().error_code, Some("SQLITE_BUSY"));
+        let sqlstate_ok = r#"{"sql":"SELECT 1","ms":0.4,"attributes":{"db.response.status_code":"00000"}}"#;
+        assert_eq!(entry(sqlstate_ok).unwrap().error_code, None);
     }
 }

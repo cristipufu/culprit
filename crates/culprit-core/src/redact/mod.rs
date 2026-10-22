@@ -255,18 +255,21 @@ fn redact_partition_bound(bound: &str, engine: Engine) -> String {
     while let Some(open) = rest.find('\'') {
         masked.push_str(&rest[..open]);
         let after_open = &rest[open + 1..];
-        if let Some(close) = after_open.find('\'') {
+        if let Some(close) = find_closing_single_quote(after_open) {
             let candidate = &after_open[..close];
             if is_iso_date_or_timestamp(candidate) {
                 let idx = dates.len();
                 dates.push(format!("'{candidate}'"));
                 masked.push_str(&format!("__culprit_date_{idx}__"));
-                rest = &after_open[close + 1..];
-                continue;
+            } else {
+                masked.push_str(&rest[open..open + 1 + close + 1]);
             }
+            rest = &after_open[close + 1..];
+            continue;
         }
-        masked.push('\'');
-        rest = after_open;
+        masked.push_str(&rest[open..]);
+        rest = "";
+        break;
     }
     masked.push_str(rest);
     let mut redacted = redact_sql(&masked, engine);
@@ -274,6 +277,26 @@ fn redact_partition_bound(bound: &str, engine: Engine) -> String {
         redacted = redacted.replace(&format!("__culprit_date_{idx}__"), date_lit);
     }
     redacted
+}
+
+fn find_closing_single_quote(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'\'' {
+            if bytes.get(i + 1) == Some(&b'\'') {
+                i += 2;
+                continue;
+            }
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 fn is_iso_date_or_timestamp(s: &str) -> bool {

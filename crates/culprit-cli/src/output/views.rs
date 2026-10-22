@@ -59,7 +59,14 @@ impl Out {
                 "{}",
                 self.paint(DIM, &format!("{:?} plan · the access path only: no row or cost estimates", plan.kind))
             ),
-            _ => println!("{}", self.paint(DIM, &format!("{:?} plan · total cost {:.2}", plan.kind, plan.total_cost))),
+            _ => {
+                let virt =
+                    plan.props.get("VirtualIndexes").map(|v| format!(" · virtual indexes: {v}")).unwrap_or_default();
+                println!(
+                    "{}",
+                    self.paint(DIM, &format!("{:?} plan · total cost {:.2}{virt}", plan.kind, plan.total_cost))
+                );
+            }
         }
         if let Some(s) = &summary {
             if let Some(granted) = s.memory_granted_kb

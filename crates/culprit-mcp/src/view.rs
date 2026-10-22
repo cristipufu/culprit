@@ -438,6 +438,7 @@ fn plan_value(plan: &Plan) -> Value {
         "kind": plan.kind,
         "total_cost": round(plan.total_cost, 4),
         "operators": plan.nodes().len(),
+        "virtual_indexes": plan.props.get("VirtualIndexes"),
         "warnings": warnings(plan),
         "index_hints": plan.index_hints.iter().map(|h| json!({
             "table": h.table,

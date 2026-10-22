@@ -823,14 +823,30 @@ fn check_create_index(
 }
 
 fn collect_validated_constraint_tables(statements: &[String]) -> Vec<String> {
+    let mut fk_constraints = Vec::new();
+    for stmt in statements {
+        let tokens = tokenize(stmt);
+        let upper: Vec<String> = tokens.iter().map(|t| t.to_ascii_uppercase()).collect();
+        if upper.windows(2).any(|w| w == ["FOREIGN", "KEY"]) {
+            for (i, w) in upper.windows(2).enumerate() {
+                if w[0] == "CONSTRAINT" {
+                    fk_constraints.push(unquote_ident(&tokens[i + 1]).to_ascii_lowercase());
+                }
+            }
+        }
+    }
     let mut tables = Vec::new();
     for stmt in statements {
         let tokens = tokenize(stmt);
         let upper: Vec<String> = tokens.iter().map(|t| t.to_ascii_uppercase()).collect();
         if upper.first().map(String::as_str) == Some("ALTER")
             && upper.get(1).map(String::as_str) == Some("TABLE")
-            && upper.windows(2).any(|w| w == ["VALIDATE", "CONSTRAINT"])
+            && let Some(val_pos) = upper.windows(2).position(|w| w == ["VALIDATE", "CONSTRAINT"])
         {
+            let cname = tokens.get(val_pos + 2).map(|c| unquote_ident(c).to_ascii_lowercase()).unwrap_or_default();
+            if !cname.is_empty() && fk_constraints.contains(&cname) {
+                continue;
+            }
             let mut pos = 2;
             if upper.get(pos).map(String::as_str) == Some("IF")
                 && upper.get(pos + 1).map(String::as_str) == Some("EXISTS")
@@ -880,9 +896,11 @@ fn check_alter_table(
     for (clause_tokens, clause_upper) in split_top_level_commas(&tokens[pos + 1..], &upper[pos + 1..]) {
         check_alter_table_action(snapshot, stmt, table, clause_tokens, clause_upper, ctx, findings);
     }
+    let adds_fk = upper.windows(2).any(|w| w == ["FOREIGN", "KEY"]);
     if snapshot.server.engine == Engine::Mysql
         && is_large_table(table)
         && !has_mysql_online_ddl(&upper)
+        && !adds_fk
         && !findings[before_count..].iter().any(|f| {
             f.id.starts_with("sql-lint:table-rewrite:")
                 || f.id.starts_with("sql-lint:volatile-default:")
@@ -1607,13 +1625,13 @@ fn suggest_mysql_online_index(stmt: &str, upper: &[String]) -> Option<String> {
 
 fn suggest_concurrent_index(stmt: &str) -> Option<String> {
     let trimmed = stmt.trim().trim_end_matches(';').trim_end();
-    let lower = trimmed.to_ascii_lowercase();
-    if !lower.starts_with("create") {
+    let create_pos = find_keyword_outside_comments(trimmed, "CREATE")?;
+    let idx_pos = find_keyword_outside_comments(trimmed, "INDEX")?;
+    if idx_pos <= create_pos || find_keyword_outside_comments(trimmed, "CONCURRENTLY").is_some() {
         return None;
     }
-    let idx_pos = lower.find("index")?;
-    let is_unique = lower["create".len()..idx_pos].contains("unique");
-    let rest = trimmed[idx_pos + "index".len()..].trim_start();
+    let is_unique = find_keyword_outside_comments(&trimmed[create_pos..idx_pos], "UNIQUE").is_some();
+    let rest = trimmed[idx_pos + "INDEX".len()..].trim_start();
     if rest.is_empty() {
         return None;
     }
@@ -1802,6 +1820,13 @@ fn rewrite_preserving_comments(orig_span: &str, rep_sql: &str) -> String {
             let body = orig_span.trim_end().strip_suffix(';').unwrap_or(orig_span.trim_end());
             return format!("{body}{suffix}");
         }
+    }
+    // 3. Preserve leading comments before a rewritten statement (DROP INDEX CONCURRENTLY, REINDEX CONCURRENTLY, VACUUM)
+    if let Some(first_kw) =
+        ["DROP", "REINDEX", "VACUUM"].into_iter().find_map(|kw| find_keyword_outside_comments(orig_span, kw))
+        && first_kw > 0
+    {
+        return format!("{}{rep_sql}", &orig_span[..first_kw]);
     }
     rep_sql.to_string()
 }
@@ -2330,5 +2355,13 @@ mod tests {
              CREATE INDEX CONCURRENTLY idx_after_fn ON {table} (created_at);\n"
         );
         assert!(lint_sql(&s, &plpgsql_sql).is_empty());
+
+        // Validating a foreign key constraint does not suppress SET NOT NULL on the same table.
+        let fk_val_sql = format!(
+            "ALTER TABLE {table} ADD CONSTRAINT fk_ref FOREIGN KEY (id) REFERENCES {table} (id) NOT VALID;\n\
+             ALTER TABLE {table} VALIDATE CONSTRAINT fk_ref;\n\
+             ALTER TABLE {table} ALTER COLUMN status SET NOT NULL;"
+        );
+        assert!(lint_sql(&s, &fk_val_sql).iter().any(|f| f.id.starts_with("sql-lint:set-not-null:")));
     }
 }

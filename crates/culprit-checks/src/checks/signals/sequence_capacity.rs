@@ -60,7 +60,7 @@ fn int32_primary_keys_near_limit(s: &Snapshot) -> Vec<Finding> {
         let Some(pk) = s.indexes_on(&t.schema, &t.name).find(|ix| ix.is_primary_key && ix.columns.len() == 1) else {
             continue;
         };
-        let pk_col_name = &pk.columns[0];
+        let pk_col_name = culprit_core::strip_direction(&pk.columns[0]);
         let Some(col) = s.columns.iter().find(|c| {
             c.schema.eq_ignore_ascii_case(&t.schema)
                 && c.table.eq_ignore_ascii_case(&t.name)

@@ -350,7 +350,7 @@ fn fk_type_mismatches(snapshot: &Snapshot) -> Vec<Finding> {
             }
             let child = format!("{}.{}", fk.schema, fk.table);
             let parent = format!("{}.{}", fk.ref_schema, fk.ref_table);
-            let id_key = format!("type-mismatch:{child}({})", fk.columns.join(","));
+            let id_key = format!("type-mismatch:{child}({})", c_col.name);
             if out.iter().any(|f: &Finding| f.id == format!("unindexed-fk:{id_key}")) {
                 continue;
             }
@@ -529,8 +529,8 @@ pub(super) fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::Forei
     let parent_cold = (snapshot.server.engine == Engine::Postgres)
         .then(|| {
             let pt = snapshot.table(&fk.ref_schema, &fk.ref_table)?;
-            let updates = pt.updates.filter(|u| *u >= 10_000.0)?;
-            let hot = pt.storage.as_ref()?.hot_updates?;
+            let updates = pt.updates.filter(|u| u.is_finite() && *u >= 10_000.0)?;
+            let hot = pt.storage.as_ref()?.hot_updates.filter(|h| h.is_finite() && *h >= 0.0 && *h <= updates)?;
             let ratio = hot / updates;
             (ratio < 0.5).then_some((updates - hot, ratio))
         })

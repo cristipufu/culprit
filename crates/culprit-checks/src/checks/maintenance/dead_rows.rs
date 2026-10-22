@@ -250,27 +250,23 @@ fn disabled_autovacuum(snapshot: &Snapshot, existing: &[Finding]) -> Vec<Finding
         .tables
         .iter()
         .filter_map(|t| {
-            let options = &t.storage.as_ref()?.options;
-            let disabled_opt = options.iter().find(|o| {
-                let lower = o.trim().to_ascii_lowercase();
-                matches!(
-                    lower.as_str(),
-                    "autovacuum_enabled=false"
-                        | "autovacuum_enabled=off"
-                        | "autovacuum_enabled=0"
-                        | "toast.autovacuum_enabled=false"
-                        | "toast.autovacuum_enabled=off"
-                        | "toast.autovacuum_enabled=0"
-                )
-            })?;
-            let is_toast = disabled_opt.to_ascii_lowercase().starts_with("toast.");
-            let param = if is_toast { "toast.autovacuum_enabled" } else { "autovacuum_enabled" };
             let table_name = t.qualified();
             // A table whose main heap already triggered `dead-rows:<table>` includes `autovacuum_enabled = true` in that
             // finding's fix; emit a separate finding only when `dead-rows:<table>` didn't fire or `toast.autovacuum_enabled` is off.
-            if !is_toast && existing.iter().any(|f| f.id.eq_ignore_ascii_case(&format!("dead-rows:{table_name}"))) {
-                return None;
-            }
+            let has_main_dead_rows =
+                existing.iter().any(|f| f.id.eq_ignore_ascii_case(&format!("dead-rows:{table_name}")));
+            let options = &t.storage.as_ref()?.options;
+            let disabled_opt = options.iter().find(|o| {
+                let Some((k, v)) = o.split_once('=') else { return false };
+                let k = k.trim();
+                let v = v.trim();
+                let is_main = k.eq_ignore_ascii_case("autovacuum_enabled");
+                let is_toast = k.eq_ignore_ascii_case("toast.autovacuum_enabled");
+                ((is_main && !has_main_dead_rows) || is_toast)
+                    && matches!(v.to_ascii_lowercase().as_str(), "false" | "off" | "no" | "0")
+            })?;
+            let is_toast = disabled_opt.trim().to_ascii_lowercase().starts_with("toast.");
+            let param = if is_toast { "toast.autovacuum_enabled" } else { "autovacuum_enabled" };
             let live = t.rows.unwrap_or(0.0);
             let dead = t.dead_rows.unwrap_or(0.0);
             let mut f = finding(

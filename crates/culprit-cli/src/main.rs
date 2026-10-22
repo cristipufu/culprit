@@ -867,6 +867,9 @@ fn load(ws: &Workspace, connection: &str, path: Option<&PathBuf>) -> culprit_cor
     if let Some(path) = path {
         return ws.analyze_file(path);
     }
+    if connection.to_ascii_lowercase().ends_with(".json") && ws.connection(connection).is_err() {
+        return ws.analyze_file(std::path::Path::new(connection));
+    }
     ws.latest_report(connection, None)?.ok_or_else(|| {
         Error::not_found(format!("No saved report for '{connection}'"))
             .with_hint(format!("Run `culprit scan {connection}` first"))

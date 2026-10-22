@@ -83,11 +83,12 @@ pub fn table_bloat(snapshot: &Snapshot) -> Vec<Finding> {
             f
         })
         .collect();
+    findings.sort_by(|a, b| b.impact.score.total_cmp(&a.impact.score));
+    findings.truncate(5);
     findings.extend(default_partitions(snapshot));
     findings.extend(expiring_range_partitions(snapshot));
     findings.extend(brin_opportunities(snapshot));
     findings.sort_by(|a, b| b.impact.score.total_cmp(&a.impact.score));
-    findings.truncate(5);
     findings
 }
 
@@ -99,7 +100,15 @@ pub(crate) fn expiring_range_partitions(snapshot: &Snapshot) -> Vec<Finding> {
     for t in &snapshot.tables {
         if let Some(parent) = t.partition_of.as_deref() {
             if let Some(bound) = t.storage.as_ref().and_then(|s| s.partition_bounds().into_iter().next()) {
-                by_parent.entry(parent.to_string()).or_default().push((t.name.clone(), bound.to_string()));
+                let parent_qual = if parent.contains('.') || t.schema.is_empty() {
+                    parent.to_string()
+                } else {
+                    format!("{}.{parent}", t.schema)
+                };
+                let entry = by_parent.entry(parent_qual).or_default();
+                if !entry.iter().any(|(name, _)| name == &t.name) {
+                    entry.push((t.name.clone(), bound.to_string()));
+                }
             }
         } else if let Some(storage) = t.storage.as_ref() {
             let parent = t.qualified();
@@ -108,7 +117,10 @@ pub(crate) fn expiring_range_partitions(snapshot: &Snapshot) -> Vec<Finding> {
                     .rsplit_once("):")
                     .map(|(left, right)| (format!("{left})"), right.to_string()))
                     .unwrap_or_else(|| (bound.to_string(), t.name.clone()));
-                by_parent.entry(parent.clone()).or_default().push((part_name, expr));
+                let entry = by_parent.entry(parent.clone()).or_default();
+                if !entry.iter().any(|(name, _)| name == &part_name) {
+                    entry.push((part_name, expr));
+                }
             }
         }
     }
