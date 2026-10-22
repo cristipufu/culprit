@@ -526,7 +526,19 @@ pub(super) fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::Forei
     let deletes_a_day = parent_deletes.and_then(|d| counter_rate_per_day(snapshot, d));
     let measured = deletes_a_day.is_some_and(|d| d >= FK_MEDIUM_PARENT_DELETES_A_DAY);
     let cascading = matches!(fk.delete_rule.as_deref(), Some("CASCADE" | "SET NULL" | "SET DEFAULT"));
-    f.severity = if ((rows >= FK_MEDIUM_ROWS && measured) || (rows >= 100_000.0 && cascading && quiet_parent.is_none()))
+    let parent_cold = (snapshot.server.engine == Engine::Postgres)
+        .then(|| {
+            let pt = snapshot.table(&fk.ref_schema, &fk.ref_table)?;
+            let updates = pt.updates.filter(|u| *u >= 10_000.0)?;
+            let hot = pt.storage.as_ref()?.hot_updates?;
+            let ratio = hot / updates;
+            (ratio < 0.5).then_some((updates - hot, ratio))
+        })
+        .flatten();
+    let parent_cold_measured =
+        parent_cold.is_some_and(|(cold, _)| counter_rate_per_day(snapshot, cold).is_some_and(|d| d >= 10_000.0));
+    f.severity = if ((rows >= FK_MEDIUM_ROWS && (measured || parent_cold_measured))
+        || (rows >= 100_000.0 && cascading && quiet_parent.is_none()))
         && !sqlite
     {
         Severity::Medium
@@ -538,6 +550,15 @@ pub(super) fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::Forei
         f.summary.push_str(&format!(
             " This foreign key is declared ON DELETE {rule}: deleting a row from {parent} not only reads all of {child} \
              without an index, it also locks and {action} every matching row in {child} in the same transaction."
+        ));
+    }
+    if let Some((cold, hot_ratio)) = parent_cold {
+        f.summary.push_str(&format!(
+            " {parent} has also had {} non-HOT updates ({} HOT): in PostgreSQL, non-HOT updates on a referenced parent \
+             table contend with FOR KEY SHARE locks from concurrent writes on {child}, and any key update scans \
+             {child} in full while holding row locks.",
+            format::count(cold),
+            format::percent(hot_ratio)
         ));
     }
     if let (Some(deletes), Some(days)) = (parent_deletes.filter(|_| measured), counter_days(snapshot)) {

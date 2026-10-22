@@ -1,4 +1,5 @@
 mod diff;
+pub(crate) mod sarif;
 #[cfg(test)]
 mod tests;
 mod views;
@@ -22,12 +23,13 @@ pub(crate) fn age(taken_at: &str) -> Option<String> {
     Some(if seconds < 60.0 { "just now".into() } else { format!("{} ago", format::duration(seconds * 1000.0)) })
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Format {
     Text,
     Json,
     #[value(alias = "markdown")]
     Md,
+    Sarif,
 }
 
 pub struct Out {
@@ -336,6 +338,10 @@ impl Out {
             }
             return self.json(&compact_report(report, &path));
         }
+        if self.format == Format::Sarif {
+            let list: Vec<&Finding> = report.findings.iter().collect();
+            return self.json(&sarif::findings_sarif(&list, None, None));
+        }
         if self.format == Format::Md {
             return print!("{}", markdown_report(report));
         }
@@ -378,10 +384,21 @@ impl Out {
         self.findings(report, Severity::Low);
     }
 
+    pub fn lint_sql(&self, report: &Report, sql_text: &str, file_uri: Option<&str>) {
+        if self.format == Format::Sarif {
+            let list: Vec<&Finding> = report.findings.iter().collect();
+            return self.json(&sarif::findings_sarif(&list, Some(sql_text), file_uri));
+        }
+        self.findings(report, Severity::Low);
+    }
+
     pub fn findings(&self, report: &Report, min: Severity) {
         let list: Vec<&Finding> = report.findings.iter().filter(|f| f.severity >= min).collect();
         if self.format == Format::Json {
             return self.json(&json!({ "summary": report.summary, "findings": list, "locked": report.locked, "assessments": report.assessments }));
+        }
+        if self.format == Format::Sarif {
+            return self.json(&sarif::findings_sarif(&list, None, None));
         }
         if self.format == Format::Md {
             return print!("{}", markdown_report(report));

@@ -45,6 +45,9 @@ impl Out {
         if self.format == Format::Json {
             return self.json(&json!(drift));
         }
+        if self.format == Format::Sarif {
+            return self.json(&super::sarif::drift_sarif(drift));
+        }
         let side = |s: &culprit_core::DriftSide| {
             format!("{} ({}, {})", s.connection, format!("{:?}", s.environment).to_lowercase(), s.server())
         };

@@ -38,6 +38,12 @@ impl Reports<'_> {
         }))
     }
 
+    /// The newest saved snapshot for `name`, without re-parsing execution plans or re-running the check pipeline.
+    pub(crate) fn latest_snapshot(&self, name: &str) -> Result<Option<culprit_core::Snapshot>> {
+        let dir = self.paths.reports_dir(name);
+        Ok(reports::latest(&dir, None)?.map(|r| r.snapshot))
+    }
+
     pub(crate) fn report_history(&self, name: &str) -> Result<Vec<ReportSummary>> {
         reports::list(&self.paths.reports_dir(name))
     }

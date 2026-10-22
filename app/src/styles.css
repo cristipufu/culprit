@@ -12973,3 +12973,49 @@ li code,
 .operational-card dl > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; padding: 4px 0; }
 .operational-card dt { color: var(--text-3); }
 .operational-card dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+/* Live migration linter squiggly underlines and quick-fix strip in Editor */
+.cm-lint-warn {
+  text-decoration: wavy underline var(--warn, #d97706);
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+}
+.cm-lint-error {
+  text-decoration: wavy underline var(--danger, #dc2626);
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+}
+.editor-lint {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--warn, #d97706) 8%, var(--surface));
+  font-size: var(--fs-ui-sm);
+}
+.editor-lint-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.editor-lint-icon {
+  color: var(--warn, #d97706);
+  flex-shrink: 0;
+}
+.editor-lint-copy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  flex: 1;
+  min-width: 0;
+}
+.editor-lint-copy strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.editor-lint-copy span {
+  color: var(--text-2);
+}

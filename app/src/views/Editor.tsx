@@ -2,10 +2,10 @@ import type { CompletionSource } from "@codemirror/autocomplete";
 import { MariaSQL, MSSQL, MySQL, PostgreSQL, SQLite, keywordCompletionSource, schemaCompletionSource } from "@codemirror/lang-sql";
 import { HighlightStyle, LanguageSupport, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
-import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
-import { keymap } from "@codemirror/view";
+import { Compartment, EditorState, Prec, StateEffect, StateField, type Extension } from "@codemirror/state";
+import { Decoration, keymap, type DecorationSet } from "@codemirror/view";
 import { EditorView, basicSetup } from "codemirror";
-import { Bookmark, PanelLeftClose, PanelLeftOpen, Play, Plus, RefreshCw, Save, ScanSearch, X, Zap } from "lucide-react";
+import { Bookmark, PanelLeftClose, PanelLeftOpen, Play, Plus, RefreshCw, Save, ScanSearch, TriangleAlert, WandSparkles, X, Zap } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ConfirmRun, type PendingRun } from "../components/ConfirmRun";
 import { LookToggle, PlanSurface, rememberLook, rememberedLook, type PlanLook } from "../components/PlanSurface";
@@ -14,6 +14,7 @@ import { SavedRail } from "../components/SavedRail";
 import type { Catalog } from "../gen/Catalog";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
 import type { ExplainMode } from "../gen/ExplainMode";
+import type { Finding } from "../gen/Finding";
 import type { Plan } from "../gen/Plan";
 import type { ResultSet } from "../gen/ResultSet";
 import type { SavedQuery } from "../gen/SavedQuery";
@@ -39,6 +40,55 @@ const SPLIT_KEY = "culprit.editor.split";
 const RAIL_KEY = "culprit.editor.rail";
 const ROW_LIMIT = 1000;
 const PLACEHOLDER = keys("-- Write a query. ⌘↵ runs it (or the selection), ⌘E shows its plan without running it, ⌘S saves it.\n");
+const HAS_DDL = /\b(create|alter|drop|truncate|rename|reindex)\b/i;
+
+const setLintEffect = StateEffect.define<Finding[]>();
+
+function locateFindingSpan(docText: string, f: Finding): [number, number] | null {
+  const lines = docText.split("\n");
+  const quoted = f.summary.split("`")[1];
+  const prefix = quoted ? quoted.trim().split(/\s+/).slice(0, 4).join(" ").toLowerCase() : "";
+  const leaf = (f.subject.name.split(".").pop() ?? f.subject.name).toLowerCase();
+
+  let offset = 0;
+  for (const line of lines) {
+    const norm = line.trim().replace(/\s+/g, " ").toLowerCase();
+    const matchesPrefix = prefix.length > 0 && norm.includes(prefix);
+    const matchesLeaf = !matchesPrefix && leaf.length > 0 && HAS_DDL.test(norm) && norm.includes(leaf);
+    if (matchesPrefix || matchesLeaf) {
+      const leading = line.length - line.trimStart().length;
+      const from = offset + leading;
+      const to = offset + line.trimEnd().length;
+      if (to > from) return [from, to];
+    }
+    offset += line.length + 1;
+  }
+  return null;
+}
+
+const lintField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(decorations, tr) {
+    decorations = decorations.map(tr.changes);
+    for (const effect of tr.effects) {
+      if (effect.is(setLintEffect)) {
+        const docText = tr.state.doc.toString();
+        const marks = effect.value
+          .map((f) => {
+            const span = locateFindingSpan(docText, f);
+            if (!span) return null;
+            const cls = f.severity === "high" ? "cm-lint-error" : "cm-lint-warn";
+            return Decoration.mark({ class: cls, attributes: { title: f.title } }).range(span[0], span[1]);
+          })
+          .filter((r): r is NonNullable<typeof r> => r !== null)
+          .sort((a, b) => a.from - b.from);
+        decorations = Decoration.set(marks, true);
+      }
+    }
+    return decorations;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
 
 /** SQL colors from the same tokens as every other code block, so they follow light and dark mode. */
 const sqlColors = syntaxHighlighting(
@@ -111,6 +161,7 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
   tabsRef.current = tabs;
   const [outputs, setOutputs] = useState<Record<string, Output>>({});
   const [pending, setPending] = useState<PendingRun | null>(null);
+  const [liveLint, setLiveLint] = useState<Finding[]>([]);
   const [naming, setNaming] = useState<string | null>(null);
   const [rail, setRail] = useState(() => remembered(RAIL_KEY, "open", ["open", "closed"] as const));
   const [look, setLook] = useState<PlanLook>(rememberedLook);
@@ -175,6 +226,7 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
         extensions: [
           basicSetup,
           Prec.high(sqlColors),
+          lintField,
           language.current.of(languageExtension()),
           // Above CodeMirror's defaults, which bind Mod-Enter to "insert blank line".
           Prec.highest(actions),
@@ -188,6 +240,49 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
       }),
     [languageExtension, updateTabs],
   );
+
+  // Instantaneous live migration linter: skipped altogether unless DDL keywords are present.
+  useEffect(() => {
+    const sql = activeTab.sql;
+    if (!sql || sql === PLACEHOLDER.trim() || !HAS_DDL.test(sql)) {
+      setLiveLint((prev) => (prev.length === 0 ? prev : []));
+      view.current?.dispatch({ effects: setLintEffect.of([]) });
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void api()
+        .then((client) => client.lintSql(connection.name, sql))
+        .then((findings) => {
+          if (cancelled) return;
+          setLiveLint(findings);
+          view.current?.dispatch({ effects: setLintEffect.of(findings) });
+        })
+        .catch(() => {});
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeTab.sql, connection.name]);
+
+  const applyLintFix = (f: Finding) => {
+    const fixSql = f.fix?.sql?.trim();
+    const editor = view.current;
+    if (!fixSql || !editor) return;
+    const docText = editor.state.doc.toString();
+    const span = locateFindingSpan(docText, f);
+    if (f.id.startsWith("sql-lint:unindexed-fk:")) {
+      const insertAt = span ? span[0] : 0;
+      editor.dispatch({ changes: { from: insertAt, to: insertAt, insert: `${fixSql}\n` } });
+      toast("Added supporting CREATE INDEX");
+      return;
+    }
+    if (span) {
+      editor.dispatch({ changes: { from: span[0], to: span[1], insert: fixSql } });
+      toast("Applied safe SQL");
+    }
+  };
 
   // ── actions ────────────────────────────────────────────────────────────────────────────────────
   const run = async (sql: string, confirmed = false) => {
@@ -517,6 +612,29 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
           {savedQuery?.connection && savedQuery.connection !== connection.name && (
             <div className="editor-note">
               Saved for <b>{savedQuery.connection}</b>; running on <b>{connection.name}</b>.
+            </div>
+          )}
+          {liveLint.length > 0 && (
+            <div className="editor-lint" role="status" aria-live="polite">
+              {liveLint.map((f) => (
+                <div key={f.id} className="editor-lint-row">
+                  <TriangleAlert size={13} className="editor-lint-icon" />
+                  <div className="editor-lint-copy">
+                    <strong>{f.title}</strong>
+                    <span>{f.fix?.summary ?? f.summary}</span>
+                  </div>
+                  {f.fix?.sql && (
+                    <button
+                      type="button"
+                      className="btn ghost sm"
+                      onClick={() => applyLintFix(f)}
+                      title="Replace statement with safer DDL"
+                    >
+                      <WandSparkles size={12} /> Quick fix
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
           )}
           <div className="editor-body" ref={body}>

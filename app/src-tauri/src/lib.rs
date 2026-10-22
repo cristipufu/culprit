@@ -429,10 +429,26 @@ fn check_statement(engine: culprit_core::Engine, sql: String) -> culprit_core::s
 /// Lint migration or DDL SQL offline against the connection's latest saved snapshot (no database access).
 #[tauri::command]
 fn lint_sql(ws: Ws<'_>, name: String, sql: String) -> Result<Vec<culprit_core::Finding>> {
-    let Some(report) = ws.latest_report(&name, None)? else {
+    static CACHE: std::sync::Mutex<Option<(String, String, std::sync::Arc<culprit_core::Snapshot>)>> =
+        std::sync::Mutex::new(None);
+    let latest_id =
+        ws.report_history(&name).ok().and_then(|mut h| h.drain(..).next().map(|s| s.id)).unwrap_or_default();
+    if !latest_id.is_empty()
+        && let Ok(guard) = CACHE.lock()
+        && let Some((cached_name, cached_id, snap)) = guard.as_ref()
+        && cached_name == &name
+        && cached_id == &latest_id
+    {
+        return Ok(culprit_engine::lint_sql(snap, &sql));
+    }
+    let Some(snapshot) = ws.latest_snapshot(&name)? else {
         return Ok(Vec::new());
     };
-    Ok(culprit_engine::lint_sql(&report.snapshot, &sql))
+    let snap = std::sync::Arc::new(snapshot);
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = Some((name, snap.id.clone(), std::sync::Arc::clone(&snap)));
+    }
+    Ok(culprit_engine::lint_sql(&snap, &sql))
 }
 
 #[tauri::command]

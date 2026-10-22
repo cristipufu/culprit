@@ -74,7 +74,9 @@ pub async fn verify(ws: &Workspace, args: VerifyArgs, out: &Out) -> Result<u8> {
     }
     let v = ws.verify(&args.connection, &args.ids).await?;
     match out.format() {
-        Format::Json => out.value(&serde_json::to_value(&v).map_err(|e| Error::internal(e.to_string()))?),
+        Format::Json | Format::Sarif => {
+            out.value(&serde_json::to_value(&v).map_err(|e| Error::internal(e.to_string()))?)
+        }
         Format::Md => print!("{}", export::verification_markdown(&v)),
         Format::Text => {
             let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();

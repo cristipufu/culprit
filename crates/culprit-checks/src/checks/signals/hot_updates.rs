@@ -67,13 +67,41 @@ pub fn hot_updates(snapshot: &Snapshot) -> Vec<Finding> {
             f.summary = format!(
                 "An update that changes no indexed column and finds room on the same page is HOT: it writes no index entries and its old version is cleaned up without VACUUM. {how_many}, so each wrote a new entry in {every_index}.{cause}"
             );
+            let referencing_fks: Vec<&culprit_core::ForeignKey> = crate::checks::indexes::enforced_foreign_keys(snapshot)
+                .filter(|fk| {
+                    fk.ref_schema.eq_ignore_ascii_case(&t.schema)
+                        && fk.ref_table.eq_ignore_ascii_case(&t.name)
+                })
+                .collect();
+            if !referencing_fks.is_empty() {
+                let child_tables: Vec<String> = referencing_fks
+                    .iter()
+                    .map(|fk| format!("{}.{}", fk.schema, fk.table))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                f.summary.push_str(&format!(
+                    " {} foreign {} (on {}) {} {}: in PostgreSQL, non-HOT updates on a referenced parent table write new index tuples and contend with FOR KEY SHARE tuple locks taken by concurrent inserts and updates on the child {}.",
+                    referencing_fks.len(),
+                    if referencing_fks.len() == 1 { "key" } else { "keys" },
+                    format::list(&child_tables),
+                    if referencing_fks.len() == 1 { "references" } else { "reference" },
+                    t.name,
+                    if child_tables.len() == 1 { "table" } else { "tables" },
+                ));
+            }
             // The counts run from the database's last statistics reset, which PostgreSQL 15+ leaves empty until the first
             // one: then their age is unknown (the counters outlive restarts), and so is any rate. A one-time backfill
             // keeps the share low long after it ran, so only a measured rate raises it.
             let hours = s.counter_hours.filter(|h| *h >= culprit_core::RATE_MIN_HOURS);
             let per_day = hours.map(|h| cold / h * 24.0);
-            f.severity = since_start_severity(per_day, f64::INFINITY, COLD_UPDATES_MEDIUM_PER_DAY);
-            if per_day.is_none_or(|d| d < COLD_UPDATES_MEDIUM_PER_DAY) {
+            let medium_threshold = if !referencing_fks.is_empty() {
+                COLD_UPDATES_MEDIUM_PER_DAY / 10.0
+            } else {
+                COLD_UPDATES_MEDIUM_PER_DAY
+            };
+            f.severity = since_start_severity(per_day, f64::INFINITY, medium_threshold);
+            if per_day.is_none_or(|d| d < medium_threshold) {
                 f.caveats.push(match s.counter_hours {
                     Some(h) => format!(
                         "The counts cover the {} since the statistics were last reset: one large update or backfill in that time keeps the share low long after it ran. Compare how n_tup_hot_upd grows against n_tup_upd over a few days before changing the table.",
@@ -91,6 +119,9 @@ pub fn hot_updates(snapshot: &Snapshot) -> Vec<Finding> {
                 Metric::new("Indexes", indexes as f64, Unit::Count),
                 Metric::new("Fillfactor", fillfactor, Unit::Count),
             ];
+            if !referencing_fks.is_empty() {
+                f.metrics.push(Metric::new("Referencing foreign keys", referencing_fks.len() as f64, Unit::Count));
+            }
             let room = moved.is_none_or(|m| m >= 0.5) && fillfactor >= 100.0;
             f.fix = Some(Fix {
                 summary: if room {

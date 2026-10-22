@@ -46,7 +46,7 @@ pub async fn run(ws: &Workspace, args: DashboardArgs, out: &Out) -> Result<u8> {
         tile.next = next(tile, &connection, engine);
     }
     match out.format() {
-        Format::Json => out.value(&json!(dashboard)),
+        Format::Json | Format::Sarif => out.value(&json!(dashboard)),
         Format::Md => print_markdown(&dashboard),
         Format::Text => print_text(&dashboard, out),
     }

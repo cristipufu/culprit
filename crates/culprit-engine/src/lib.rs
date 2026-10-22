@@ -426,6 +426,11 @@ impl Workspace {
         self.report_service().latest_report(name, window_minutes)
     }
 
+    /// The newest saved snapshot for `name`, without re-parsing execution plans or re-running the check pipeline.
+    pub fn latest_snapshot(&self, name: &str) -> Result<Option<culprit_core::Snapshot>> {
+        self.report_service().latest_snapshot(name)
+    }
+
     pub fn report_history(&self, name: &str) -> Result<Vec<ReportSummary>> {
         self.report_service().report_history(name)
     }

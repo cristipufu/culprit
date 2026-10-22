@@ -1049,3 +1049,23 @@ fn sequence_capacity_flags_32bit_int_primary_keys_on_hundred_million_row_tables(
     assert_eq!(f.severity, Severity::High);
     assert!(f.title.contains("32-bit integer primary key"), "{}", f.title);
 }
+
+#[test]
+fn postgres_non_hot_updates_on_referenced_parent_escalate_fk_lock_contention() {
+    let mut s = snapshot_with(Engine::Postgres);
+    // `orders` in pg-demo is referenced by `order_items.order_id`.
+    let orders = s.tables.iter_mut().find(|t| t.name == "orders").unwrap();
+    orders.updates = Some(300_000.0);
+    let st = orders.storage.get_or_insert_with(Default::default);
+    st.hot_updates = Some(10_000.0);
+    st.counter_hours = Some(24.0);
+
+    let hot = hot_updates(&s);
+    let f = hot.iter().find(|f| f.id == "hot-updates:public.orders").expect("orders hot-updates finding");
+    assert_eq!(f.severity, Severity::Medium, "referencing FKs lower the non-HOT Medium threshold");
+    assert!(f.summary.contains("FOR KEY SHARE"), "{}", f.summary);
+
+    let fks = crate::indexes::unindexed_fk(&s);
+    let fk_finding = fks.iter().find(|f| f.id == "unindexed-fk:public.order_items(order_id)").expect("unindexed fk");
+    assert!(fk_finding.summary.contains("non-HOT updates"), "{}", fk_finding.summary);
+}

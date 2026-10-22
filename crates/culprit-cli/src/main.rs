@@ -538,6 +538,17 @@ fn writes_markdown(command: &Command) -> bool {
     )
 }
 
+fn writes_sarif(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Scan(_)
+            | Command::Findings(_)
+            | Command::Analyze { .. }
+            | Command::LintSql { .. }
+            | Command::Drift { .. }
+    )
+}
+
 fn main() -> ExitCode {
     update_cmd::remove_stale_old();
     let cli = Cli::parse();
@@ -555,6 +566,12 @@ fn main() -> ExitCode {
             &Error::invalid("This command has no Markdown output")
                 .with_hint("Markdown is available for scan, findings, show, dashboard, analyze, verify, export and plan export; use --format text or json here."),
         );
+        return ExitCode::FAILURE;
+    }
+    if format == Format::Sarif && !writes_sarif(&cli.command) {
+        out.error(&Error::invalid("This command has no SARIF output").with_hint(
+            "SARIF is available for lint-sql, drift, scan, findings and analyze; use --format text or json here.",
+        ));
         return ExitCode::FAILURE;
     }
     let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
@@ -778,6 +795,7 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             Ok(0)
         }
         Command::LintSql { connection, sql, file, report, fail_on } => {
+            let file_uri = file.as_ref().map(|p| p.to_string_lossy().into_owned());
             let sql_text = match (sql, file) {
                 (Some(s), None) => s,
                 (None, Some(path)) => {
@@ -789,7 +807,7 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             let mut base_report = load(&ws, &connection, report_path.as_ref())?;
             let findings = culprit_engine::lint_sql(&base_report.snapshot, &sql_text);
             base_report.findings = findings;
-            out.findings(&base_report, Severity::Low);
+            out.lint_sql(&base_report, &sql_text, file_uri.as_deref());
             Ok(fail_code(&base_report, fail_on))
         }
         Command::Mcp(args) => agents::mcp(ws, args).await,
