@@ -8,7 +8,7 @@ check!(
     &[Evidence::Observed(Observation::Sequences, &[culprit_core::source_id::SEQUENCE_CAPACITY])]
 );
 pub fn sequence_capacity(s: &Snapshot) -> Vec<Finding> {
-    s.operations.sequences.iter().filter_map(|seq| {
+    let mut out: Vec<Finding> = s.operations.sequences.iter().filter_map(|seq| {
         let (remaining,total) = seq.remaining()?;
         if total == 0 { return None; }
         let fraction = remaining as f64 / total as f64;
@@ -24,5 +24,9 @@ pub fn sequence_capacity(s: &Snapshot) -> Vec<Finding> {
         }
         f.fix=Some(Fix { summary:"Plan a migration to a larger numeric range, including referencing columns, constraints, indexes and application types. Validate cache/increment behavior and rollout locking first. Do not reseed, restart or enable cycling without proving values cannot collide.".into(),sql:None,cost:Some("Changing column types and dependent keys may rewrite data and require locks; plan and test the migration.".into()) });
         f.verify=vec!["Check the new type and allocation bounds, confirm foreign keys and application values remain compatible, and verify inserts or sequence allocations under representative load.".into()];Some(f)
-    }).collect()
+    }).collect();
+    if s.server.engine != Engine::Postgres {
+        out.extend(super::table_bloat::expiring_range_partitions(s));
+    }
+    out
 }

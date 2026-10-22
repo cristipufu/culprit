@@ -26,15 +26,87 @@ pub fn lint_sql(snapshot: &Snapshot, sql: &str) -> Vec<Finding> {
     let statements = split_statements(sql);
     let created_indexes = collect_script_indexes(&statements);
     let mut findings = Vec::new();
+    let mut in_transaction = false;
     for stmt in &statements {
         let tokens = tokenize(stmt);
         if tokens.is_empty() {
             continue;
         }
+        let upper: Vec<String> = tokens.iter().map(|t| t.to_ascii_uppercase()).collect();
+        if is_transaction_begin(&upper) {
+            in_transaction = true;
+            continue;
+        }
+        if is_transaction_end(&upper) {
+            in_transaction = false;
+            continue;
+        }
+        check_concurrent_in_tx(snapshot, stmt, &tokens, &upper, in_transaction, &mut findings);
         check_create_index(snapshot, stmt, &tokens, &mut findings);
         check_alter_table(snapshot, stmt, &tokens, &created_indexes, &mut findings);
     }
     findings
+}
+
+fn is_transaction_begin(upper: &[String]) -> bool {
+    matches!(upper.first().map(String::as_str), Some("BEGIN"))
+        || (upper.first().map(String::as_str) == Some("START")
+            && upper.get(1).map(String::as_str) == Some("TRANSACTION"))
+}
+
+fn is_transaction_end(upper: &[String]) -> bool {
+    matches!(upper.first().map(String::as_str), Some("COMMIT" | "ROLLBACK" | "END"))
+}
+
+fn check_concurrent_in_tx(
+    snapshot: &Snapshot,
+    stmt: &str,
+    tokens: &[String],
+    upper: &[String],
+    in_transaction: bool,
+    findings: &mut Vec<Finding>,
+) {
+    if !in_transaction || snapshot.server.engine != Engine::Postgres {
+        return;
+    }
+    let Some(conc_pos) = upper.iter().position(|t| t == "CONCURRENTLY") else {
+        return;
+    };
+    let head = upper.first().map(String::as_str).unwrap_or("");
+    if !matches!(head, "CREATE" | "DROP" | "REINDEX") {
+        return;
+    }
+    let target = tokens
+        .get(conc_pos + 1)
+        .filter(|t| !t.eq_ignore_ascii_case("IF") && !t.eq_ignore_ascii_case("ON"))
+        .or_else(|| tokens.get(conc_pos + 3))
+        .map(|s| unquote_ident(s))
+        .unwrap_or_else(|| "index".into());
+    let mut f = finding(
+        "sql-lint",
+        &format!("concurrent-in-tx:{target}"),
+        Category::Indexes,
+        subject(SubjectKind::Index, &target),
+    );
+    f.actionability = Actionability::NeedsAttention;
+    f.confidence = Confidence::High;
+    f.severity = Severity::High;
+    f.impact.score = base_score(f.severity);
+    f.impact.label = "aborts in transaction".into();
+    f.title = format!("{head} INDEX CONCURRENTLY ({target}) cannot run inside a transaction block");
+    f.summary = format!(
+        "The statement `{}` uses `CONCURRENTLY` inside an explicit `BEGIN ... COMMIT` transaction block. PostgreSQL \
+         immediately aborts `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY` and `REINDEX CONCURRENTLY` when \
+         executed inside a transaction block.",
+        compact_sql(stmt)
+    );
+    f.fix = Some(Fix {
+        summary: "Run the `CONCURRENTLY` statement outside `BEGIN ... COMMIT` (for example `disable_ddl_transaction!` in Rails, `atomic = False` in Django, or `-- migrate:no-transaction`).".into(),
+        sql: None,
+        cost: None,
+    });
+    f.verify = vec!["Remove the surrounding `BEGIN`/`COMMIT` and re-run `culprit lint-sql`.".into()];
+    findings.push(f);
 }
 
 fn check_create_index(snapshot: &Snapshot, stmt: &str, tokens: &[String], findings: &mut Vec<Finding>) {
@@ -155,25 +227,64 @@ fn check_alter_table(
     let Some(table) = find_table(snapshot, raw_table) else {
         return;
     };
+    if pos + 1 >= tokens.len() {
+        return;
+    }
 
-    // 1. Check FOREIGN KEY additions for missing child index or column type mismatch.
-    if let Some(fk_pos) = upper.windows(2).position(|w| w == ["FOREIGN", "KEY"]) {
-        if let Some((child_cols, rest_idx)) = parse_paren_list(tokens, fk_pos + 2)
-            && let Some(ref_offset) = upper[rest_idx..].iter().position(|t| t == "REFERENCES")
-        {
-            let ref_pos = rest_idx + ref_offset;
-            if let Some(raw_parent) = tokens.get(ref_pos + 1) {
-                let parent_cols = parse_paren_list(tokens, ref_pos + 2).map(|(cols, _)| cols).unwrap_or_default();
-                check_foreign_key_addition(
-                    snapshot,
-                    table,
-                    &child_cols,
-                    raw_parent,
-                    &parent_cols,
-                    created_indexes,
-                    findings,
-                );
+    for (clause_tokens, clause_upper) in split_top_level_commas(&tokens[pos + 1..], &upper[pos + 1..]) {
+        check_alter_table_action(snapshot, stmt, table, clause_tokens, clause_upper, created_indexes, findings);
+    }
+}
+
+fn split_top_level_commas<'a>(tokens: &'a [String], upper: &'a [String]) -> Vec<(&'a [String], &'a [String])> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    for (idx, tok) in tokens.iter().enumerate() {
+        match tok.as_str() {
+            "(" => depth += 1,
+            ")" => depth = depth.saturating_sub(1),
+            "," if depth == 0 => {
+                if start < idx {
+                    out.push((&tokens[start..idx], &upper[start..idx]));
+                }
+                start = idx + 1;
             }
+            _ => {}
+        }
+    }
+    if start < tokens.len() {
+        out.push((&tokens[start..], &upper[start..]));
+    }
+    out
+}
+
+fn check_alter_table_action(
+    snapshot: &Snapshot,
+    stmt: &str,
+    table: &TableStat,
+    tokens: &[String],
+    upper: &[String],
+    created_indexes: &[(String, Vec<String>)],
+    findings: &mut Vec<Finding>,
+) {
+    // 1. Check FOREIGN KEY additions for missing child index or column type mismatch.
+    if let Some(fk_pos) = upper.windows(2).position(|w| w == ["FOREIGN", "KEY"])
+        && let Some((child_cols, rest_idx)) = parse_paren_list(tokens, fk_pos + 2)
+        && let Some(ref_offset) = upper[rest_idx..].iter().position(|t| t == "REFERENCES")
+    {
+        let ref_pos = rest_idx + ref_offset;
+        if let Some(raw_parent) = tokens.get(ref_pos + 1) {
+            let parent_cols = parse_paren_list(tokens, ref_pos + 2).map(|(cols, _)| cols).unwrap_or_default();
+            check_foreign_key_addition(
+                snapshot,
+                table,
+                &child_cols,
+                raw_parent,
+                &parent_cols,
+                created_indexes,
+                findings,
+            );
         }
     }
 
@@ -185,12 +296,127 @@ fn check_alter_table(
     let bytes = table_bytes(table);
     let qual = table.qualified();
 
-    // ALTER [COLUMN] <col> [SET DATA] TYPE <new_type>
-    if let Some(alter_col_pos) = upper[pos + 1..].iter().position(|t| t == "ALTER" || t == "MODIFY") {
-        let idx = pos + 1 + alter_col_pos;
+    // 2a. Unvalidated FOREIGN KEY or CHECK constraint addition on PostgreSQL without NOT VALID.
+    if snapshot.server.engine == Engine::Postgres && upper.first().map(String::as_str) == Some("ADD") {
+        let is_fk = upper.windows(2).any(|w| w == ["FOREIGN", "KEY"]);
+        let is_check = upper.iter().any(|t| t == "CHECK");
+        let has_not_valid = upper.windows(2).any(|w| w == ["NOT", "VALID"]);
+        if (is_fk || is_check) && !has_not_valid {
+            let kind = if is_fk { "FOREIGN KEY" } else { "CHECK" };
+            let cname = if upper.get(1).map(String::as_str) == Some("CONSTRAINT") {
+                tokens.get(2).map(|s| unquote_ident(s)).unwrap_or_else(|| kind.to_ascii_lowercase().replace(' ', "-"))
+            } else {
+                kind.to_ascii_lowercase().replace(' ', "-")
+            };
+            let mut f = finding(
+                "sql-lint",
+                &format!("unvalidated-constraint:{qual}:{cname}"),
+                Category::Maintenance,
+                subject(SubjectKind::Table, &qual),
+            );
+            f.actionability = Actionability::NeedsAttention;
+            f.confidence = Confidence::High;
+            f.severity = if rows >= HIGH_TABLE_ROWS || bytes >= GB { Severity::High } else { Severity::Medium };
+            f.impact.score = base_score(f.severity);
+            f.impact.label = table_size_label(rows, bytes);
+            f.title = format!(
+                "ADD {kind} constraint on {} ({}) without NOT VALID scans the table under a lock",
+                table.name,
+                table_size_label(rows, bytes)
+            );
+            f.summary = format!(
+                "The statement `{}` adds a {kind} constraint on {} ({}) without `NOT VALID`. PostgreSQL validates \
+                 every existing row immediately while holding a `SHARE ROW EXCLUSIVE` / `ACCESS EXCLUSIVE` lock that \
+                 blocks writes on {}.",
+                compact_sql(stmt),
+                qual,
+                table_size_label(rows, bytes),
+                table.name
+            );
+            f.fix = Some(Fix {
+                summary: format!(
+                    "Add the {kind} constraint with `NOT VALID` first, then run `ALTER TABLE {qual} VALIDATE CONSTRAINT {cname};` in a separate step (which only holds `SHARE UPDATE EXCLUSIVE` and allows concurrent reads and writes)."
+                ),
+                sql: None,
+                cost: None,
+            });
+            push_table_metrics(&mut f, rows, bytes);
+            f.verify = vec!["Re-run `culprit lint-sql` after adding `NOT VALID` to the constraint definition.".into()];
+            findings.push(f);
+        }
+    }
+
+    // 2b. ADD [COLUMN] <col> <type> ... DEFAULT <volatile_fn>() table rewrite on large tables.
+    if upper.first().map(String::as_str) == Some("ADD") {
+        let second = upper.get(1).map(String::as_str).unwrap_or("");
+        if !matches!(second, "CONSTRAINT" | "FOREIGN" | "CHECK" | "PRIMARY" | "UNIQUE" | "EXCLUDE") {
+            let mut col_idx = 1;
+            if second == "COLUMN" {
+                col_idx += 1;
+            }
+            if upper.get(col_idx).map(String::as_str) == Some("IF")
+                && upper.get(col_idx + 1).map(String::as_str) == Some("NOT")
+                && upper.get(col_idx + 2).map(String::as_str) == Some("EXISTS")
+            {
+                col_idx += 3;
+            }
+            if let Some(raw_col) = tokens.get(col_idx)
+                && let Some(def_pos) = upper[col_idx + 1..].iter().position(|t| t == "DEFAULT")
+            {
+                let fn_idx = col_idx + 1 + def_pos + 1;
+                if let Some(fn_tok) = upper.get(fn_idx)
+                    && tokens.get(fn_idx + 1).map(String::as_str) == Some("(")
+                    && is_volatile_default_function(fn_tok)
+                {
+                    let col_name = unquote_ident(raw_col);
+                    let fn_display = tokens[fn_idx].clone();
+                    let mut f = finding(
+                        "sql-lint",
+                        &format!("volatile-default:{qual}.{col_name}"),
+                        Category::Maintenance,
+                        subject(SubjectKind::Table, &qual),
+                    );
+                    f.actionability = Actionability::NeedsAttention;
+                    f.confidence = Confidence::High;
+                    f.severity = if rows >= HIGH_TABLE_ROWS || bytes >= GB { Severity::High } else { Severity::Medium };
+                    f.impact.score = base_score(f.severity);
+                    f.impact.label = table_size_label(rows, bytes);
+                    f.title = format!(
+                        "ADD COLUMN {}.{} with volatile DEFAULT {}() rewrites the table ({})",
+                        table.name,
+                        col_name,
+                        fn_display,
+                        table_size_label(rows, bytes)
+                    );
+                    f.summary = format!(
+                        "Adding `{col_name}` to {} ({}) with volatile `DEFAULT {fn_display}()` cannot use metadata-only \
+                         fast defaults because every existing row requires a newly evaluated value. The engine rewrites \
+                         every row and index while holding an exclusive table lock.",
+                        qual,
+                        table_size_label(rows, bytes)
+                    );
+                    f.fix = Some(Fix {
+                        summary: format!(
+                            "Add `{col_name}` without a default, backfill existing rows in batches, and then set `ALTER TABLE {qual} ALTER COLUMN {col_name} SET DEFAULT {fn_display}();`."
+                        ),
+                        sql: None,
+                        cost: None,
+                    });
+                    push_table_metrics(&mut f, rows, bytes);
+                    f.verify =
+                        vec!["Verify in staging with `SET lock_timeout = '2s'` before running on production.".into()];
+                    findings.push(f);
+                }
+            }
+        }
+    }
+
+    // 2c. ALTER [COLUMN] <col> [SET DATA] TYPE <new_type> or SET NOT NULL
+    if let Some(alter_col_pos) = upper.iter().position(|t| t == "ALTER" || t == "MODIFY") {
+        let idx = alter_col_pos;
         let has_type = upper[idx..].iter().any(|t| t == "TYPE") || upper.get(idx).map(String::as_str) == Some("MODIFY");
         let has_set_not_null = upper[idx..].windows(3).any(|w| w == ["SET", "NOT", "NULL"]);
-        if has_type {
+        if has_type && !findings.iter().any(|f| f.id == format!("sql-lint:table-rewrite:{qual}")) {
             let mut f = finding(
                 "sql-lint",
                 &format!("table-rewrite:{qual}"),
@@ -224,7 +450,10 @@ fn check_alter_table(
             push_table_metrics(&mut f, rows, bytes);
             f.verify = vec!["Verify in staging with `SET lock_timeout = '2s'` before running on production.".into()];
             findings.push(f);
-        } else if has_set_not_null && snapshot.server.engine == Engine::Postgres {
+        } else if has_set_not_null
+            && snapshot.server.engine == Engine::Postgres
+            && !findings.iter().any(|f| f.id == format!("sql-lint:set-not-null:{qual}"))
+        {
             let mut f = finding(
                 "sql-lint",
                 &format!("set-not-null:{qual}"),
@@ -258,6 +487,24 @@ fn check_alter_table(
             findings.push(f);
         }
     }
+}
+
+fn is_volatile_default_function(upper_fn: &str) -> bool {
+    let bare = upper_fn.rsplit('.').next().unwrap_or(upper_fn);
+    matches!(
+        bare,
+        "GEN_RANDOM_UUID"
+            | "UUID_GENERATE_V4"
+            | "UUID_GENERATE_V1"
+            | "UUID_GENERATE_V1MC"
+            | "RANDOM"
+            | "CLOCK_TIMESTAMP"
+            | "TIMEOFDAY"
+            | "NEWID"
+            | "NEWSEQUENTIALID"
+            | "UUID"
+            | "RAND"
+    )
 }
 
 fn check_foreign_key_addition(
@@ -700,5 +947,31 @@ mod tests {
         let out = lint_sql(&s, &sql);
         assert!(out.iter().any(|f| f.id.starts_with("sql-lint:table-rewrite:")));
         assert!(out.iter().any(|f| f.id.starts_with("sql-lint:set-not-null:")));
+    }
+
+    #[test]
+    fn flags_concurrent_index_in_transaction_and_multi_action_alter_table() {
+        let mut s = postgres_snapshot();
+        s.tables[0].rows = Some(500_000.0);
+        let table = s.tables[0].name.clone();
+        let sql = format!(
+            "BEGIN;\nCREATE INDEX CONCURRENTLY idx_tx ON {table} (created_at);\nCOMMIT;\n\
+             ALTER TABLE {table} ADD COLUMN token uuid DEFAULT gen_random_uuid(), \
+             ADD COLUMN created_ts timestamptz DEFAULT now(), \
+             ADD CONSTRAINT chk_positive CHECK (amount > 0), \
+             ALTER COLUMN status SET NOT NULL;"
+        );
+        let out = lint_sql(&s, &sql);
+        assert!(out.iter().any(|f| f.id == "sql-lint:concurrent-in-tx:idx_tx"), "{out:#?}");
+        assert!(out.iter().any(|f| f.id.ends_with(".token") && f.id.starts_with("sql-lint:volatile-default:")));
+        assert!(!out.iter().any(|f| f.id.ends_with(".created_ts")));
+        assert!(
+            out.iter().any(|f| f.id.starts_with("sql-lint:unvalidated-constraint:") && f.id.ends_with(":chk_positive"))
+        );
+        assert!(out.iter().any(|f| f.id.starts_with("sql-lint:set-not-null:")));
+
+        // Adding NOT VALID to the CHECK constraint suppresses the unvalidated-constraint warning.
+        let valid_sql = format!("ALTER TABLE {table} ADD CONSTRAINT chk_positive CHECK (amount > 0) NOT VALID;");
+        assert!(lint_sql(&s, &valid_sql).is_empty());
     }
 }

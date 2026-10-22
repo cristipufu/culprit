@@ -101,6 +101,7 @@ ORDER BY s.name, t.name, c.column_id
 
 const FOREIGN_KEYS_SQL: &str = r#"
 SELECT fk.name AS fk_name, s.name AS schema_name, t.name AS table_name, rs.name AS ref_schema, rt.name AS ref_table,
+  fk.delete_referential_action_desc AS delete_rule,
   STRING_AGG(CAST(c.name AS nvarchar(max)), CHAR(31)) WITHIN GROUP (ORDER BY fkc.constraint_column_id) AS columns,
   STRING_AGG(CAST(rc.name AS nvarchar(max)), CHAR(31)) WITHIN GROUP (ORDER BY fkc.constraint_column_id) AS ref_columns
 FROM sys.foreign_keys fk
@@ -111,7 +112,7 @@ JOIN sys.tables rt ON rt.object_id = fk.referenced_object_id
 JOIN sys.schemas rs ON rs.schema_id = rt.schema_id
 JOIN sys.columns c ON c.object_id = fkc.parent_object_id AND c.column_id = fkc.parent_column_id
 JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
-GROUP BY fk.name, s.name, t.name, rs.name, rt.name
+GROUP BY fk.name, s.name, t.name, rs.name, rt.name, fk.delete_referential_action_desc
 "#;
 
 fn missing_indexes_sql() -> String {
@@ -466,6 +467,12 @@ pub(crate) async fn foreign_keys(client: &mut MsClient) -> tiberius::Result<Vec<
             ref_schema: r.string("ref_schema"),
             ref_table: r.string("ref_table"),
             ref_columns: r.list("ref_columns"),
+            delete_rule: match r.string("delete_rule").as_str() {
+                "CASCADE" => Some("CASCADE".into()),
+                "SET_NULL" => Some("SET NULL".into()),
+                "SET_DEFAULT" => Some("SET DEFAULT".into()),
+                _ => None,
+            },
         })
         .collect())
 }

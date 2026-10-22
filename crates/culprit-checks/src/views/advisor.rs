@@ -969,6 +969,7 @@ mod tests {
             ref_schema: "shop".into(),
             ref_table: "orders".into(),
             ref_columns: vec!["id".into()],
+            delete_rule: None,
         };
         let uses = |text: &str| super::uses_foreign_key(culprit_core::Engine::Postgres, text, &fk);
         assert!(uses("SELECT * FROM order_items WHERE order_id = $1"));

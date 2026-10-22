@@ -38,6 +38,7 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe, options: &Snap
     if let Some(list) = sources::read(&mut coverage, &sources::CONSTRAINTS, constraints(client).await, grant) {
         snapshot.constraints = list;
     }
+    attach_table_metadata(client, snapshot).await;
     let pressure = snapshot.pressure.get_or_insert_with(Pressure::default);
     if from_query_store {
         let compiles =
@@ -330,6 +331,67 @@ WHERE (is_not_trusted = 1 OR is_disabled = 1) AND is_not_for_replication = 0 AND
             inheritance_child: false,
         })
         .collect())
+}
+
+/// Active user triggers and partition range bounds per table (best-effort catalog reads).
+async fn attach_table_metadata(client: &mut MsClient, snapshot: &mut Snapshot) {
+    let trigger_sql = r#"
+SELECT s.name AS schema_name, t.name AS table_name, tr.name AS trigger_name,
+  (CASE WHEN OBJECTPROPERTY(tr.object_id, 'ExecIsInsertTrigger') = 1 THEN 'I' ELSE '' END +
+   CASE WHEN OBJECTPROPERTY(tr.object_id, 'ExecIsDeleteTrigger') = 1 THEN 'D' ELSE '' END +
+   CASE WHEN OBJECTPROPERTY(tr.object_id, 'ExecIsUpdateTrigger') = 1 THEN 'U' ELSE '' END) AS events
+FROM sys.triggers tr
+JOIN sys.tables t ON t.object_id = tr.parent_id
+JOIN sys.schemas s ON s.schema_id = t.schema_id
+WHERE tr.is_ms_shipped = 0 AND tr.is_disabled = 0
+ORDER BY s.name, t.name, tr.name
+"#;
+    if let Ok(rows) = query(client, trigger_sql).await {
+        for r in rows {
+            let (schema, table, name, events) =
+                (r.string("schema_name"), r.string("table_name"), r.string("trigger_name"), r.string("events"));
+            if !name.is_empty()
+                && let Some(t) = snapshot
+                    .tables
+                    .iter_mut()
+                    .find(|t| t.schema.eq_ignore_ascii_case(&schema) && t.name.eq_ignore_ascii_case(&table))
+            {
+                t.storage
+                    .get_or_insert_with(culprit_core::TableStorage::default)
+                    .options
+                    .push(format!("trigger={name}:{events}"));
+            }
+        }
+    }
+    let partition_sql = r#"
+SELECT DISTINCT s.name AS schema_name, t.name AS table_name, prv.boundary_id,
+  CONVERT(varchar(33), prv.value, 126) AS bound_value
+FROM sys.tables t
+JOIN sys.schemas s ON s.schema_id = t.schema_id
+JOIN sys.indexes i ON i.object_id = t.object_id AND i.index_id IN (0, 1)
+JOIN sys.partition_schemes ps ON ps.data_space_id = i.data_space_id
+JOIN sys.partition_functions pf ON pf.function_id = ps.function_id
+JOIN sys.partition_range_values prv ON prv.function_id = pf.function_id
+WHERE t.is_ms_shipped = 0 AND prv.value IS NOT NULL
+ORDER BY s.name, t.name, prv.boundary_id
+"#;
+    if let Ok(rows) = query(client, partition_sql).await {
+        for r in rows {
+            let (schema, table, bound) = (r.string("schema_name"), r.string("table_name"), r.string("bound_value"));
+            let boundary_id = r.f64_or_zero("boundary_id") as i64;
+            if !bound.is_empty()
+                && let Some(t) = snapshot
+                    .tables
+                    .iter_mut()
+                    .find(|t| t.schema.eq_ignore_ascii_case(&schema) && t.name.eq_ignore_ascii_case(&table))
+            {
+                t.storage
+                    .get_or_insert_with(culprit_core::TableStorage::default)
+                    .options
+                    .push(format!("partition_bound=VALUES LESS THAN ('{bound}'):p{boundary_id}"));
+            }
+        }
+    }
 }
 
 // ── per server ─────────────────────────────────────────────────────────────────────────────────────

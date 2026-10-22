@@ -499,6 +499,7 @@ enum AuthArg {
 enum SeverityArg {
     Low,
     Medium,
+    #[value(alias = "critical")]
     High,
 }
 
@@ -533,6 +534,7 @@ fn writes_markdown(command: &Command) -> bool {
             | Command::Verify(_)
             | Command::Export(_)
             | Command::Plan(plan_cmd::PlanCommand::Export { .. })
+            | Command::LintSql { .. }
     )
 }
 

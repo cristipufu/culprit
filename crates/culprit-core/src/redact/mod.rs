@@ -111,6 +111,13 @@ pub fn redact_snapshot(snapshot: &Snapshot) -> Snapshot {
     }
     for table in &mut s.tables {
         table.definition = table.definition.as_deref().map(|sql| redact_sql(sql, engine));
+        if let Some(storage) = &mut table.storage {
+            for option in &mut storage.options {
+                if let Some(bound) = option.strip_prefix("partition_bound=") {
+                    *option = format!("partition_bound={}", redact_partition_bound(bound, engine));
+                }
+            }
+        }
     }
     for index in &mut s.indexes {
         if index.filter_facts.is_none()
@@ -233,6 +240,66 @@ pub fn redact_snapshot(snapshot: &Snapshot) -> Snapshot {
         }
     }
     s
+}
+
+/// Redact literal values in a partition bound expression (`FOR VALUES IN ('tenant_a', 'tenant_b')`) while keeping
+/// `DEFAULT`, `MAXVALUE`, and ISO date/timestamp range bounds (`'2026-10-01'`) so partition expiry checks still work
+/// on shared snapshots.
+fn redact_partition_bound(bound: &str, engine: Engine) -> String {
+    if bound.eq_ignore_ascii_case("default") || bound.eq_ignore_ascii_case("maxvalue") {
+        return bound.to_string();
+    }
+    let mut dates: Vec<String> = Vec::new();
+    let mut masked = String::with_capacity(bound.len());
+    let mut rest = bound;
+    while let Some(open) = rest.find('\'') {
+        masked.push_str(&rest[..open]);
+        let after_open = &rest[open + 1..];
+        if let Some(close) = after_open.find('\'') {
+            let candidate = &after_open[..close];
+            if is_iso_date_or_timestamp(candidate) {
+                let idx = dates.len();
+                dates.push(format!("'{candidate}'"));
+                masked.push_str(&format!("__culprit_date_{idx}__"));
+                rest = &after_open[close + 1..];
+                continue;
+            }
+        }
+        masked.push('\'');
+        rest = after_open;
+    }
+    masked.push_str(rest);
+    let mut redacted = redact_sql(&masked, engine);
+    for (idx, date_lit) in dates.iter().enumerate() {
+        redacted = redacted.replace(&format!("__culprit_date_{idx}__"), date_lit);
+    }
+    redacted
+}
+
+fn is_iso_date_or_timestamp(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.len() < 10 || trimmed.len() > 35 {
+        return false;
+    }
+    let b = trimmed.as_bytes();
+    let is_ymd = b[0].is_ascii_digit()
+        && b[1].is_ascii_digit()
+        && b[2].is_ascii_digit()
+        && b[3].is_ascii_digit()
+        && b[4] == b'-'
+        && b[5].is_ascii_digit()
+        && b[6].is_ascii_digit()
+        && b[7] == b'-'
+        && b[8].is_ascii_digit()
+        && b[9].is_ascii_digit();
+    if !is_ymd {
+        return false;
+    }
+    if trimmed.len() == 10 {
+        crate::format::epoch_seconds(&format!("{trimmed}T00:00:00Z")).is_some()
+    } else {
+        crate::format::epoch_seconds(trimmed).is_some()
+    }
 }
 
 /// A second layer over [`redact_snapshot`], for text from a finding that wasn't checked from a redacted snapshot (a

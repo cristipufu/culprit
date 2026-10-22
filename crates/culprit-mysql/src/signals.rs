@@ -41,6 +41,7 @@ pub async fn collect(connector: &Connector, probe: &Probe, snapshot: &mut Snapsh
     if let Some(found) = coverage.read(&sources::HISTOGRAMS, found) {
         snapshot.histograms = found;
     }
+    attach_table_metadata(&mut conn, &probe.database, snapshot).await;
     let pressure = snapshot.pressure.get_or_insert_with(Pressure::default);
     if probe.performance_schema
         && let Some(files) = coverage.read(&sources::FILE_LATENCY, files(&mut conn).await)
@@ -449,6 +450,63 @@ async fn histograms(
             })
             .collect(),
     ))
+}
+
+async fn attach_table_metadata(conn: &mut Conn, database: &str, snapshot: &mut Snapshot) {
+    if let Ok(rows) = query_with(
+        conn,
+        "SELECT EVENT_OBJECT_TABLE AS table_name, TRIGGER_NAME AS trigger_name, EVENT_MANIPULATION AS event_name
+           FROM information_schema.TRIGGERS
+          WHERE EVENT_OBJECT_SCHEMA = ?
+          ORDER BY EVENT_OBJECT_TABLE, TRIGGER_NAME",
+        vec![Value::from(database.to_string())],
+    )
+    .await
+    {
+        for r in rows {
+            let (table, name, ev) = (r.string("table_name"), r.string("trigger_name"), r.string("event_name"));
+            let code = match ev.to_ascii_uppercase().as_str() {
+                "INSERT" => "I",
+                "UPDATE" => "U",
+                "DELETE" => "D",
+                _ => "",
+            };
+            if !name.is_empty()
+                && let Some(t) = snapshot.tables.iter_mut().find(|t| t.name.eq_ignore_ascii_case(&table))
+            {
+                t.storage
+                    .get_or_insert_with(culprit_core::TableStorage::default)
+                    .options
+                    .push(format!("trigger={name}:{code}"));
+            }
+        }
+    }
+    if let Ok(rows) = query_with(
+        conn,
+        "SELECT TABLE_NAME AS table_name, PARTITION_NAME AS partition_name,
+                PARTITION_METHOD AS method, PARTITION_DESCRIPTION AS bound
+           FROM information_schema.PARTITIONS
+          WHERE TABLE_SCHEMA = ? AND PARTITION_NAME IS NOT NULL
+          ORDER BY TABLE_NAME, PARTITION_ORDINAL_POSITION",
+        vec![Value::from(database.to_string())],
+    )
+    .await
+    {
+        for r in rows {
+            let (table, part, method, bound) =
+                (r.string("table_name"), r.string("partition_name"), r.string("method"), r.string("bound"));
+            if method.to_ascii_uppercase().starts_with("RANGE")
+                && !part.is_empty()
+                && !bound.is_empty()
+                && let Some(t) = snapshot.tables.iter_mut().find(|t| t.name.eq_ignore_ascii_case(&table))
+            {
+                t.storage
+                    .get_or_insert_with(culprit_core::TableStorage::default)
+                    .options
+                    .push(format!("partition_bound=VALUES LESS THAN ({bound}):{part}"));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

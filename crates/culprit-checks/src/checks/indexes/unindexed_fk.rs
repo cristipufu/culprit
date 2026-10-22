@@ -209,6 +209,7 @@ pub fn unindexed_fk(snapshot: &Snapshot) -> Vec<Finding> {
         .collect();
     out.extend(unindexed_fk_pattern(snapshot, &unindexed));
     out.extend(fk_type_mismatches(snapshot));
+    out.extend(uuid_text_indexed_columns(snapshot));
     out
 }
 
@@ -367,6 +368,105 @@ fn fk_type_mismatches(snapshot: &Snapshot) -> Vec<Finding> {
     out
 }
 
+/// Indexed or foreign-key columns on large tables (`>= 100k` rows) that store UUIDs/GUIDs in character/text types
+/// (`varchar(36)`, `char(36)`, `text`) instead of the engine's native 16-byte representation (`uuid`,
+/// `uniqueidentifier`, `binary(16)`).
+fn uuid_text_indexed_columns(snapshot: &Snapshot) -> Vec<Finding> {
+    let engine = snapshot.server.engine;
+    if engine == Engine::Sqlite || crate::evidence::index_catalog(snapshot).is_some() || snapshot.columns.is_empty() {
+        return Vec::new();
+    }
+    let (native_type, native_note) = match engine {
+        Engine::Postgres => ("uuid", "PostgreSQL's native 16-byte `uuid` type"),
+        Engine::Mssql => ("uniqueidentifier", "SQL Server's native 16-byte `uniqueidentifier` type"),
+        Engine::Mysql => ("binary(16)", "MySQL's 16-byte `binary(16)` (with `UUID_TO_BIN` / `BIN_TO_UUID`)"),
+        Engine::Sqlite => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for table in &snapshot.tables {
+        if table.partition_of.is_some() {
+            continue;
+        }
+        let Some(rows) = table.rows.filter(|r| *r >= 100_000.0) else {
+            continue;
+        };
+        let is_indexed_or_fk = |col_name: &str| {
+            snapshot
+                .indexes_on(&table.schema, &table.name)
+                .any(|idx| idx.key_names().iter().any(|k| k.eq_ignore_ascii_case(col_name)))
+                || snapshot.foreign_keys.iter().any(|fk| {
+                    fk.schema.eq_ignore_ascii_case(&table.schema)
+                        && fk.table.eq_ignore_ascii_case(&table.name)
+                        && fk.columns.iter().any(|c| c.eq_ignore_ascii_case(col_name))
+                })
+        };
+        for col in snapshot.columns.iter().filter(|c| {
+            c.schema.eq_ignore_ascii_case(&table.schema)
+                && c.table.eq_ignore_ascii_case(&table.name)
+                && is_uuid_text_column(c)
+                && is_indexed_or_fk(&c.name)
+        }) {
+            let qual = table.qualified();
+            let id_key = format!("uuid-text:{qual}({})", col.name);
+            let mut f = finding("unindexed-fk", &id_key, Category::Indexes, subject(SubjectKind::Table, &qual));
+            f.actionability = culprit_core::Actionability::OptionalImprovement;
+            f.severity = Severity::Low;
+            f.impact.score = base_score(Severity::Low);
+            f.impact.label = format!("{} -> {native_type}", col.data_type);
+            f.confidence = Confidence::High;
+            f.title = format!(
+                "{}.{} stores UUIDs as {} instead of {} ({} rows)",
+                table.name,
+                col.name,
+                col.data_type,
+                native_type,
+                format::count(rows)
+            );
+            f.summary = format!(
+                "Indexed column {qual}.{} ({} rows) is declared as `{}`. Storing 36-character hex-plus-hyphen UUID strings \
+                 uses more than twice the key space of {native_note}, enlarging every B-tree index and foreign-key \
+                 reference on it and reducing buffer-pool density.",
+                col.name,
+                format::count(rows),
+                col.data_type
+            );
+            f.metrics.push(Metric::new("Rows in table", rows, Unit::Rows));
+            f.metrics.push(Metric::text("Column", format!("{}.{} ({})", table.name, col.name, col.data_type)));
+            f.metrics.push(Metric::text("Recommended type", native_type.to_string()));
+            f.fix = Some(Fix {
+                summary: format!(
+                    "Migrate {qual}.{} (and any referencing foreign-key columns) from `{}` to `{native_type}` during a planned schema migration.",
+                    col.name, col.data_type
+                ),
+                sql: None,
+                cost: Some("Changing an indexed column's type rewrites the table and its indexes.".into()),
+            });
+            f.verify = vec![format!(
+                "Re-scan after migrating {qual}.{} to `{native_type}`: the column type is `{native_type}` and index size drops.",
+                col.name
+            )];
+            out.push(f);
+        }
+    }
+    out
+}
+
+fn is_uuid_text_column(col: &culprit_core::ColumnInfo) -> bool {
+    let dt = col.data_type.trim().to_ascii_lowercase();
+    let name = col.name.trim().to_ascii_lowercase();
+    let named_uuid = name == "uuid" || name.ends_with("_uuid") || name == "guid" || name.ends_with("_guid");
+    let default_uuid = col.default.as_deref().is_some_and(|d| {
+        let lower = d.to_ascii_lowercase();
+        lower.contains("uuid") || lower.contains("newid")
+    });
+    let is_char_36 = matches!(
+        dt.as_str(),
+        "char(36)" | "varchar(36)" | "character(36)" | "character varying(36)" | "nchar(36)" | "nvarchar(36)"
+    );
+    let is_unbounded_or_wide_text = matches!(dt.as_str(), "text" | "varchar" | "character varying" | "nvarchar");
+    (is_char_36 && (named_uuid || default_uuid)) || (is_unbounded_or_wide_text && named_uuid)
+}
+
 pub(super) fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::ForeignKey, rows: f64) -> Finding {
     let child = format!("{}.{}", fk.schema, fk.table);
     let parent = format!("{}.{}", fk.ref_schema, fk.ref_table);
@@ -397,7 +497,21 @@ pub(super) fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::Forei
     let parent_deletes = snapshot.table(&fk.ref_schema, &fk.ref_table).and_then(|t| t.deletes).filter(|d| *d > 0.0);
     let deletes_a_day = parent_deletes.and_then(|d| counter_rate_per_day(snapshot, d));
     let measured = deletes_a_day.is_some_and(|d| d >= FK_MEDIUM_PARENT_DELETES_A_DAY);
-    f.severity = if rows >= FK_MEDIUM_ROWS && measured && !sqlite { Severity::Medium } else { Severity::Low };
+    let cascading = matches!(fk.delete_rule.as_deref(), Some("CASCADE" | "SET NULL" | "SET DEFAULT"));
+    f.severity = if ((rows >= FK_MEDIUM_ROWS && measured) || (rows >= 100_000.0 && cascading && quiet_parent.is_none()))
+        && !sqlite
+    {
+        Severity::Medium
+    } else {
+        Severity::Low
+    };
+    if let Some(rule @ ("CASCADE" | "SET NULL" | "SET DEFAULT")) = fk.delete_rule.as_deref() {
+        let action = if rule == "CASCADE" { "deletes" } else { "updates" };
+        f.summary.push_str(&format!(
+            " This foreign key is declared ON DELETE {rule}: deleting a row from {parent} not only reads all of {child} \
+             without an index, it also locks and {action} every matching row in {child} in the same transaction."
+        ));
+    }
     if let (Some(deletes), Some(days)) = (parent_deletes.filter(|_| measured), counter_days(snapshot)) {
         f.summary.push_str(&format!(
             " Deletes from {parent} came to {}, each a read of the whole of {child}.",
@@ -437,6 +551,9 @@ pub(super) fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::Forei
     }
     f.metrics.push(Metric::new("Rows in table", rows, Unit::Rows));
     f.metrics.push(Metric::text("Foreign key", fk.name.clone()));
+    if let Some(rule) = fk.delete_rule.as_deref() {
+        f.metrics.push(Metric::text("On delete", format!("ON DELETE {rule}")));
+    }
     // The statements it claims: those the plans show slowed when there are any (the share and the headline count these),
     // otherwise the ones that name the key with no captured plan to say otherwise, as evidence of the relation in use.
     let listed = if slowed.is_empty() { &touching } else { &slowed };

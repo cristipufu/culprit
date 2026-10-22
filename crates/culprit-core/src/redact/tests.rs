@@ -313,6 +313,13 @@ fn shared_snapshots_scrub_catalog_literals_and_all_retained_endpoint_references(
     snapshot.indexes[0].definition =
         Some("CREATE INDEX ix ON public.orders (id) WHERE tenant = 'literal-value-canary'".into());
     snapshot.columns[0].default = Some("'literal-value-canary'".into());
+    snapshot.tables[0].storage = Some(crate::TableStorage {
+        options: vec![
+            "partition_bound=FOR VALUES IN ('literal-value-canary')".into(),
+            "partition_bound=FOR VALUES FROM ('literal-value-canary', '2026-10-01') TO ('literal-value-canary', '2026-11-01')".into(),
+        ],
+        ..Default::default()
+    });
     snapshot.tuning = Some(crate::TuningAdvice {
         recommendations: vec![crate::TuningRecommendation {
             script: Some("SELECT 'literal-value-canary'".into()),
@@ -325,6 +332,7 @@ fn shared_snapshots_scrub_catalog_literals_and_all_retained_endpoint_references(
     let output = serde_json::to_string(&shared).unwrap();
     assert!(!output.contains("private-endpoint-canary"));
     assert!(!output.contains("literal-value-canary"));
+    assert!(output.contains("'2026-10-01'") && output.contains("'2026-11-01'"), "{output}");
     assert_eq!(shared.server.database, snapshot.server.database, "database labels are intentional digest metadata");
     assert_eq!(shared.evictions_before.as_ref().unwrap().count, snapshot.evictions_before.as_ref().unwrap().count);
     assert_eq!(serde_json::to_value(&shared).unwrap(), serde_json::to_value(redact_snapshot(&shared)).unwrap());

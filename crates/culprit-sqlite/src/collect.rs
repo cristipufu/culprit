@@ -253,6 +253,7 @@ pub fn snapshot(
             foreign_keys.extend(read_foreign_keys(conn, &t.name).map_err(|e| map_error(&e))?);
         }
     }
+    attach_triggers(conn, &mut tables);
 
     let settings: Vec<Setting> = FILE_PRAGMAS
         .iter()
@@ -393,6 +394,44 @@ fn read_schema(conn: &Connection) -> rusqlite::Result<Schema> {
         }
     }
     Ok(Schema { tables, index_sql })
+}
+
+fn attach_triggers(conn: &Connection, tables: &mut [TableStat]) {
+    let Ok(mut stmt) = conn.prepare(
+        "/* culprit */ SELECT name, tbl_name, sql FROM main.sqlite_schema WHERE type = 'trigger' ORDER BY tbl_name, name",
+    ) else {
+        return;
+    };
+    let Ok(rows) =
+        stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)))
+    else {
+        return;
+    };
+    for (name, tbl, sql) in rows.flatten() {
+        let header = sql
+            .as_deref()
+            .map(|s| {
+                let u = s.to_ascii_uppercase();
+                u.find(" ON ").map_or(u.clone(), |i| u[..i].to_string())
+            })
+            .unwrap_or_default();
+        let mut events = String::new();
+        if header.contains("INSERT") {
+            events.push('I');
+        }
+        if header.contains("DELETE") {
+            events.push('D');
+        }
+        if header.contains("UPDATE") {
+            events.push('U');
+        }
+        if let Some(t) = tables.iter_mut().find(|t| t.name.eq_ignore_ascii_case(&tbl)) {
+            t.storage
+                .get_or_insert_with(culprit_core::TableStorage::default)
+                .options
+                .push(format!("trigger={name}:{events}"));
+        }
+    }
 }
 
 /// Rows per table from the planner's statistics: the first number of `sqlite_stat1.stat` is the table's row count.
@@ -640,24 +679,39 @@ fn partial_filter(sql: &str) -> Option<String> {
     Some(sql[at + 7..].trim().trim_end_matches(';').trim().to_string())
 }
 
-/// One foreign key's parent table, its columns, and the parent columns each refers to (`None`: the primary key's).
-type KeyParts = (String, Vec<String>, Vec<Option<String>>);
+/// One foreign key's parent table, its columns, the parent columns each refers to (`None`: the primary key's), and its
+/// `ON DELETE` rule.
+type KeyParts = (String, Vec<String>, Vec<Option<String>>, Option<String>);
 
 fn read_foreign_keys(conn: &Connection, table: &str) -> rusqlite::Result<Vec<ForeignKey>> {
-    let mut stmt =
-        conn.prepare("SELECT id, seq, \"table\", \"from\", \"to\" FROM pragma_foreign_key_list(?1) ORDER BY id, seq")?;
+    let mut stmt = conn.prepare(
+        "SELECT id, seq, \"table\", \"from\", \"to\", on_delete FROM pragma_foreign_key_list(?1) ORDER BY id, seq",
+    )?;
     let mut grouped: BTreeMap<i64, KeyParts> = BTreeMap::new();
     let rows = stmt.query_map([table], |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?))
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, Option<String>>(4)?,
+            r.get::<_, Option<String>>(5)?,
+        ))
     })?;
     for row in rows {
-        let (id, parent, from, to) = row?;
-        let entry = grouped.entry(id).or_insert_with(|| (parent, Vec::new(), Vec::new()));
+        let (id, parent, from, to, on_delete) = row?;
+        let delete_rule = on_delete.and_then(|d| match d.to_ascii_uppercase().as_str() {
+            "CASCADE" => Some("CASCADE".into()),
+            "SET NULL" => Some("SET NULL".into()),
+            "SET DEFAULT" => Some("SET DEFAULT".into()),
+            "RESTRICT" => Some("RESTRICT".into()),
+            _ => None,
+        });
+        let entry = grouped.entry(id).or_insert_with(|| (parent, Vec::new(), Vec::new(), delete_rule));
         entry.1.push(from);
         entry.2.push(to);
     }
     let mut out = Vec::new();
-    for (id, (parent, from, to)) in grouped {
+    for (id, (parent, from, to, delete_rule)) in grouped {
         // A key that names no parent columns refers to the parent's primary key.
         let ref_columns = if to.iter().all(Option::is_some) {
             to.into_iter().flatten().collect()
@@ -672,6 +726,7 @@ fn read_foreign_keys(conn: &Connection, table: &str) -> rusqlite::Result<Vec<For
             ref_schema: "main".into(),
             ref_table: parent,
             ref_columns,
+            delete_rule,
         });
     }
     Ok(out)

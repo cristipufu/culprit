@@ -169,4 +169,41 @@ fn foreign_key_column_type_mismatch_is_flagged_without_false_positives_on_aliase
     let findings = unindexed_fk(&s);
     let mismatch = findings.iter().find(|f| f.id.starts_with("unindexed-fk:type-mismatch:")).expect("int vs bigint");
     assert!(mismatch.title.contains("(integer)") && mismatch.title.contains("(bigint)"), "{}", mismatch.title);
+
+    // ON DELETE CASCADE on an unindexed FK elevates severity and calls out cascade amplification.
+    s.foreign_keys[0].delete_rule = Some("CASCADE".into());
+    let findings = unindexed_fk(&s);
+    let cascade_fk = findings
+        .iter()
+        .find(|f| f.id.starts_with("unindexed-fk:") && !f.id.contains("type-mismatch:") && !f.id.contains("uuid-text:"))
+        .expect("unindexed fk finding");
+    assert!(cascade_fk.summary.contains("ON DELETE CASCADE"), "{}", cascade_fk.summary);
+
+    // UUID stored as varchar(36) on an indexed column of a large table is flagged.
+    let tbl_schema = s.tables[0].schema.clone();
+    let tbl_name = s.tables[0].name.clone();
+    s.tables[0].rows = Some(250_000.0);
+    s.columns.push(culprit_core::ColumnInfo {
+        schema: tbl_schema.clone(),
+        table: tbl_name.clone(),
+        name: "external_uuid".into(),
+        data_type: "varchar(36)".into(),
+        nullable: false,
+        default: None,
+        generated: false,
+        ordinal: 88,
+    });
+    let mut ix = s.indexes[0].clone();
+    ix.schema = tbl_schema.clone();
+    ix.table = tbl_name.clone();
+    ix.name = "idx_external_uuid".into();
+    ix.columns = vec!["external_uuid".into()];
+    ix.is_disabled = false;
+    s.indexes.push(ix);
+    let findings = unindexed_fk(&s);
+    let uuid_f = findings
+        .iter()
+        .find(|f| f.id == format!("unindexed-fk:uuid-text:{tbl_schema}.{tbl_name}(external_uuid)"))
+        .expect("uuid text finding");
+    assert!(uuid_f.title.contains("stores UUIDs as varchar(36)"), "{}", uuid_f.title);
 }

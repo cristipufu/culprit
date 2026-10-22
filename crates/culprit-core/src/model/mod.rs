@@ -491,6 +491,9 @@ pub struct ForeignKey {
     pub ref_schema: String,
     pub ref_table: String,
     pub ref_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub delete_rule: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]

@@ -201,6 +201,14 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
         summary.push(' ');
         summary.push_str(wait);
     }
+    let trigger_info = (kind == StatementKind::Write).then(|| target_table_triggers(snapshot, q)).flatten();
+    if let Some((table_name, event_noun, ref names)) = trigger_info {
+        summary.push_str(&format!(
+            " {table_name} also fires {} on {event_noun} ({}), whose work runs inside this statement's time.",
+            if names.len() == 1 { "a trigger" } else { "triggers" },
+            names.join(", ")
+        ));
+    }
     f.summary = summary;
     let workload = snapshot.workload.as_ref();
     match (workload, &scans) {
@@ -254,6 +262,9 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
     }
     if let Some(cpu) = q.cpu_time_ms.filter(|_| q.total_time_ms > 0.0) {
         f.metrics.push(Metric::new("CPU share of its time", (cpu / q.total_time_ms).min(1.0), Unit::Ratio));
+    }
+    if let Some((_, _, names)) = trigger_info {
+        f.metrics.push(Metric::text("Triggers on table", names.join(", ")));
     }
     let mut plan_node = hot.map(|(_, n)| n.id);
     match &idle {
@@ -559,4 +570,30 @@ pub(crate) fn logs_slow_runs_only(snapshot: &Snapshot) -> bool {
 /// A fix in words only: what the application changes.
 pub(super) fn advice(summary: String) -> Fix {
     Fix { summary, sql: None, cost: None }
+}
+
+/// Active triggers on a write statement's target table that fire for the statement's DML event (`INSERT`, `UPDATE`,
+/// `DELETE`, `MERGE`/`REPLACE`).
+fn target_table_triggers<'a>(snapshot: &'a Snapshot, q: &QueryStat) -> Option<(&'a str, &'static str, Vec<String>)> {
+    let verb = first_verb(main_statement(&q.text)).map(|(_, v)| v)?;
+    let (wanted, event_noun): (&[char], &'static str) = match verb {
+        "insert" => (&['I'], "insert"),
+        "update" => (&['U'], "update"),
+        "delete" => (&['D'], "delete"),
+        "merge" | "replace" => (&['I', 'U', 'D'], "write"),
+        _ => return None,
+    };
+    let target = culprit_core::sql::tables_in(&q.text, snapshot.server.engine).into_iter().next()?;
+    let leaf = target.rsplit('.').next().unwrap_or(&target);
+    let table = snapshot.tables.iter().find(|t| t.name.eq_ignore_ascii_case(leaf))?;
+    let storage = table.storage.as_ref()?;
+    let mut names: Vec<String> = storage
+        .triggers()
+        .into_iter()
+        .filter(|(_, events)| events.is_empty() || wanted.iter().any(|w| events.contains(*w)))
+        .map(|(name, _)| name.to_string())
+        .collect();
+    names.sort();
+    names.dedup();
+    (!names.is_empty()).then_some((table.name.as_str(), event_noun, names))
 }

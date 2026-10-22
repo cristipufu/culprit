@@ -34,7 +34,7 @@ pub fn dead_rows(snapshot: &Snapshot) -> Vec<Finding> {
     if snapshot.server.engine != Engine::Postgres {
         return Vec::new();
     }
-    snapshot
+    let mut out: Vec<Finding> = snapshot
         .tables
         .iter()
         .filter_map(|t| {
@@ -134,6 +134,84 @@ pub fn dead_rows(snapshot: &Snapshot) -> Vec<Finding> {
             };
             f.verify = vec![format!(
                 "{when}: the dead-row count should fall below the table's autovacuum trigger, the last analyze time should be newer, and changes since analyze should fall. Check again after representative writes to confirm autovacuum keeps the dead-row count near its trigger rather than letting the backlog return."
+            )];
+            Some(f)
+        })
+        .collect();
+    out.extend(large_table_autovacuum_scale(snapshot, &out));
+    out
+}
+
+/// Multi-million-row tables (`>= 5M` live rows) with active row churn (`>= 100k` dead rows or `>= 250k` updates/deletes)
+/// that still use a large `autovacuum_vacuum_scale_factor` (`>= 0.1`), so autovacuum waits for a million or more dead
+/// rows before starting.
+fn large_table_autovacuum_scale(snapshot: &Snapshot, existing: &[Finding]) -> Vec<Finding> {
+    snapshot
+        .tables
+        .iter()
+        .filter_map(|t| {
+            if t.partition_of.is_some() {
+                return None;
+            }
+            let live = t.rows.filter(|r| *r >= 5_000_000.0)?;
+            let dead = t.dead_rows.unwrap_or(0.0);
+            let churn = t.updates.unwrap_or(0.0) + t.deletes.unwrap_or(0.0);
+            if dead < 100_000.0 && churn < 250_000.0 {
+                return None;
+            }
+            let table_name = t.qualified();
+            if existing.iter().any(|f| f.subject.name == table_name) {
+                return None;
+            }
+            let trigger = vacuum_trigger(snapshot, t, live)?;
+            let factor = autovacuum_setting(snapshot, t, "autovacuum_vacuum_scale_factor").unwrap_or(0.2);
+            if factor < 0.1 || trigger < 500_000.0 {
+                return None;
+            }
+            let mut f = finding(
+                "dead-rows",
+                &format!("scale-factor:{table_name}"),
+                Category::Maintenance,
+                subject(SubjectKind::Table, &table_name),
+            );
+            f.actionability = culprit_core::Actionability::OptionalImprovement;
+            f.severity = Severity::Low;
+            f.impact.score = base_score(Severity::Low);
+            f.impact.label = format!("trigger {} rows", format::count(trigger));
+            f.confidence = Confidence::High;
+            f.title = format!(
+                "{} ({} rows) waits for {} dead rows before autovacuum starts",
+                t.name,
+                format::count(live),
+                format::count(trigger)
+            );
+            f.summary = format!(
+                "{table_name} has {} live rows (and {} dead rows today) with `autovacuum_vacuum_scale_factor` at \
+                 {}. At that scale factor, autovacuum does not start until about {} dead rows accumulate, causing \
+                 infrequent, long-running vacuum passes and larger table/index bloat between runs.",
+                format::count(live),
+                format::count(dead),
+                format::percent(factor),
+                format::count(trigger)
+            );
+            f.metrics.push(Metric::new("Live rows", live, Unit::Rows));
+            if dead > 0.0 {
+                f.metrics.push(Metric::new("Dead rows", dead, Unit::Rows));
+            }
+            f.metrics.push(Metric::new("Autovacuum trigger", trigger, Unit::Rows));
+            let target = qualified(Engine::Postgres, &t.schema, &t.name);
+            f.fix = Some(Fix {
+                summary: format!(
+                    "Set a lower per-table autovacuum and autoanalyze scale factor on {table_name} so vacuum and \
+                     statistics updates run in smaller, more frequent passes."
+                ),
+                sql: Some(format!(
+                    "ALTER TABLE {target} SET (autovacuum_vacuum_scale_factor = 0.01, autovacuum_analyze_scale_factor = 0.005);"
+                )),
+                cost: Some("Setting per-table storage parameters is a fast metadata change and does not rewrite the table.".into()),
+            });
+            f.verify = vec![format!(
+                "Re-scan after applying the storage options: {table_name}'s autovacuum trigger drops to about 1% of its live rows."
             )];
             Some(f)
         })

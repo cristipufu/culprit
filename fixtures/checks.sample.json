@@ -475,10 +475,11 @@
   },
   {
     "category": "maintenance",
-    "description": "WAL archive failures, logical subscription errors, standby recovery cancellations and InnoDB redo buffer waits. Counter history is kept separate from newly observed errors.",
+    "description": "WAL archive failures, logical subscription errors, standby recovery cancellations, InnoDB redo buffer waits, connection handshake failures, and storage page checksum or I/O corruption errors. Counter history is kept separate from newly observed errors.",
     "engines": [
       "postgres",
-      "mysql"
+      "mysql",
+      "mssql"
     ],
     "id": "operational-errors",
     "requires": [],

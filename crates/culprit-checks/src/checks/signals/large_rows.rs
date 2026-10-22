@@ -174,9 +174,85 @@ pub fn large_rows(snapshot: &Snapshot) -> Vec<Finding> {
                 .then(|| large_rows_finding(snapshot, t, rows, size, large))
         })
         .collect();
+    findings.extend(json_columns(snapshot));
     findings.sort_by(|a, b| b.impact.score.total_cmp(&a.impact.score));
     findings.truncate(5);
     findings
+}
+
+/// Large PostgreSQL tables (`>= 100k` rows) that use the legacy text-backed `json` type instead of binary `jsonb`.
+fn json_columns(snapshot: &Snapshot) -> Vec<Finding> {
+    if snapshot.server.engine != Engine::Postgres || snapshot.columns.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for t in &snapshot.tables {
+        if t.partition_of.is_some() {
+            continue;
+        }
+        let Some(rows) = table_rows(t).filter(|r| *r >= 100_000.0) else {
+            continue;
+        };
+        let cols: Vec<&culprit_core::ColumnInfo> = snapshot
+            .columns
+            .iter()
+            .filter(|c| {
+                c.schema.eq_ignore_ascii_case(&t.schema)
+                    && c.table.eq_ignore_ascii_case(&t.name)
+                    && c.data_type.trim().eq_ignore_ascii_case("json")
+            })
+            .collect();
+        if cols.is_empty() {
+            continue;
+        }
+        let qual = t.qualified();
+        let col_names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+        let first_col = col_names[0];
+        let mut f = finding(
+            "large-rows",
+            &format!("json-column:{qual}.{}", col_names.join(",")),
+            Category::Maintenance,
+            subject(SubjectKind::Table, &qual),
+        );
+        f.actionability = culprit_core::Actionability::OptionalImprovement;
+        f.severity = Severity::Low;
+        f.impact.score = base_score(Severity::Low);
+        f.impact.label = "json -> jsonb".into();
+        f.confidence = Confidence::High;
+        f.title = format!(
+            "{}.{} uses legacy json instead of jsonb ({} rows)",
+            t.name,
+            col_names.join(", "),
+            format::count(rows)
+        );
+        f.summary = format!(
+            "{qual} ({} rows) declares `{}` as `json` rather than `jsonb`. PostgreSQL's `json` type stores raw \
+             unparsed text, re-parses the document on every field access, preserves duplicate keys and whitespace, and \
+             supports neither GIN indexing nor direct equality/containment operators (`@>`, `=`).",
+            format::count(rows),
+            col_names.join("`, `")
+        );
+        f.metrics.push(Metric::new("Rows in table", rows, Unit::Rows));
+        f.metrics.push(Metric::text("Column", format!("{}.{first_col} (json)", t.name)));
+        let target = qualified(Engine::Postgres, &t.schema, &t.name);
+        let col_ident = quote(Engine::Postgres, first_col);
+        f.fix = Some(Fix {
+            summary: format!(
+                "Convert `{}` on {qual} from `json` to `jsonb` during a maintenance window if exact whitespace/key-order preservation is not required.",
+                col_names.join("`, `")
+            ),
+            sql: Some(format!("ALTER TABLE {target} ALTER COLUMN {col_ident} TYPE jsonb USING {col_ident}::jsonb;")),
+            cost: Some(
+                "Changing a column from json to jsonb rewrites the table while holding an ACCESS EXCLUSIVE lock."
+                    .into(),
+            ),
+        });
+        f.verify = vec![format!(
+            "Re-scan after converting {qual}.{first_col} to `jsonb`: the column type is `jsonb` and this finding is gone."
+        )];
+        out.push(f);
+    }
+    out
 }
 
 pub(super) fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, size: f64, large: f64) -> Finding {

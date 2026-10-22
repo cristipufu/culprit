@@ -238,6 +238,7 @@ pub(crate) async fn columns(client: &Client) -> Result<Vec<ColumnInfo>> {
 pub(crate) async fn foreign_keys(client: &Client) -> Result<Vec<ForeignKey>> {
     let sql = "SELECT c.conname, n.nspname AS schema_name, t.relname AS table_name,
                       rn.nspname AS ref_schema, rt.relname AS ref_table,
+                      c.confdeltype::text AS delete_rule,
                       (SELECT string_agg(a.attname, chr(31) ORDER BY u.ord)
                          FROM unnest(c.conkey) WITH ORDINALITY AS u(attnum, ord)
                          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = u.attnum) AS columns,
@@ -263,6 +264,13 @@ pub(crate) async fn foreign_keys(client: &Client) -> Result<Vec<ForeignKey>> {
             ref_schema: r.string("ref_schema"),
             ref_table: r.string("ref_table"),
             ref_columns: r.list("ref_columns"),
+            delete_rule: match r.string("delete_rule").as_str() {
+                "c" => Some("CASCADE".into()),
+                "n" => Some("SET NULL".into()),
+                "d" => Some("SET DEFAULT".into()),
+                "r" => Some("RESTRICT".into()),
+                _ => None,
+            },
         })
         .collect())
 }

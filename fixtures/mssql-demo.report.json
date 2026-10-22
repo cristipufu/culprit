@@ -238,6 +238,12 @@
       "title": "Identity and sequence allocation limits"
     },
     {
+      "check": "operational-errors",
+      "reason": "This source was not recorded, was not applicable, or did not expose visible objects. No clean result can be established from its absence.",
+      "status": "insufficient-evidence",
+      "title": "Archive, replication and redo failures"
+    },
+    {
       "assessed_queries": [
         "7",
         "9",

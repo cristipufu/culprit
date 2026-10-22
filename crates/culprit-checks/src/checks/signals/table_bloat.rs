@@ -90,61 +90,68 @@ pub fn table_bloat(snapshot: &Snapshot) -> Vec<Finding> {
     findings
 }
 
-fn expiring_range_partitions(snapshot: &Snapshot) -> Vec<Finding> {
+pub(crate) fn expiring_range_partitions(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(now_epoch) = parse_epoch_seconds(&snapshot.taken_at) else {
         return Vec::new();
     };
-    let mut by_parent: std::collections::BTreeMap<&str, Vec<&TableStat>> = std::collections::BTreeMap::new();
+    let mut by_parent: std::collections::BTreeMap<String, Vec<(String, String)>> = std::collections::BTreeMap::new();
     for t in &snapshot.tables {
         if let Some(parent) = t.partition_of.as_deref() {
-            by_parent.entry(parent).or_default().push(t);
+            if let Some(bound) =
+                t.storage.as_ref().and_then(|s| s.options.iter().find_map(|o| o.strip_prefix("partition_bound=")))
+            {
+                by_parent.entry(parent.to_string()).or_default().push((t.name.clone(), bound.to_string()));
+            }
+        } else if let Some(storage) = t.storage.as_ref() {
+            let parent = t.qualified();
+            for opt in &storage.options {
+                if let Some(bound) = opt.strip_prefix("partition_bound=") {
+                    let (expr, part_name) = bound
+                        .rsplit_once("):")
+                        .map(|(left, right)| (format!("{left})"), right.to_string()))
+                        .unwrap_or_else(|| (bound.to_string(), t.name.clone()));
+                    by_parent.entry(parent.clone()).or_default().push((part_name, expr));
+                }
+            }
         }
     }
     by_parent
         .into_iter()
         .filter_map(|(parent, parts)| {
             let mut parsed = Vec::with_capacity(parts.len());
-            for part in &parts {
-                let bound = part
-                    .storage
-                    .as_ref()?
-                    .options
-                    .iter()
-                    .find_map(|o| o.strip_prefix("partition_bound="))?;
+            for (part_name, bound) in &parts {
                 if bound.eq_ignore_ascii_case("default")
                     || bound.to_ascii_uppercase().contains("MAXVALUE")
                 {
                     return None;
                 }
                 let (literal, epoch) = parse_range_upper_bound(bound)?;
-                parsed.push((*part, literal, epoch));
+                parsed.push((part_name.as_str(), literal, epoch));
             }
-            let (last_table, bound_literal, max_epoch) = parsed
+            let (last_part, bound_literal, max_epoch) = parsed
                 .into_iter()
                 .max_by(|a, b| a.2.total_cmp(&b.2))?;
             let days_remaining = (max_epoch - now_epoch) / 86_400.0;
             if !(-7.0..=7.0).contains(&days_remaining) {
                 return None;
             }
-            let parent_short = parent.rsplit('.').next().unwrap_or(parent);
+            let parent_short = parent.rsplit('.').next().unwrap_or(&parent);
             let bound_date = bound_literal.get(..10).unwrap_or(&bound_literal);
             let mut f = finding(
                 "table-bloat",
                 &format!("expiring-partition:{parent}"),
                 Category::Maintenance,
-                subject(SubjectKind::Table, parent),
+                subject(SubjectKind::Table, &parent),
             );
             if days_remaining > 0.0 {
                 f.title = format!(
-                    "{parent_short}'s last partition ({}) ends on {bound_date} (in {})",
-                    last_table.name,
+                    "{parent_short}'s last partition ({last_part}) ends on {bound_date} (in {})",
                     format::days(days_remaining)
                 );
                 f.impact.label = format!("ends in {}", format::days(days_remaining));
             } else {
                 f.title = format!(
-                    "{parent_short}'s last partition ({}) ended on {bound_date}",
-                    last_table.name
+                    "{parent_short}'s last partition ({last_part}) ended on {bound_date}"
                 );
                 f.impact.label = format!("ended {bound_date}");
             }
@@ -152,12 +159,11 @@ fn expiring_range_partitions(snapshot: &Snapshot) -> Vec<Finding> {
             severity_score(&mut f);
             f.confidence = Confidence::High;
             f.summary = format!(
-                "{parent} has {} range {} and no DEFAULT or MAXVALUE partition. Its latest partition ({}) \
+                "{parent} has {} range {} and no DEFAULT or MAXVALUE partition. Its latest partition ({last_part}) \
                  covers values up to '{bound_literal}': once timestamps reach '{bound_literal}', INSERTs into \
-                 {parent} will fail with \"no partition of relation found for row\".",
+                 {parent} will fail with a partition-routing error.",
                 parts.len(),
                 if parts.len() == 1 { "partition" } else { "partitions" },
-                last_table.name,
             );
             f.metrics = vec![
                 Metric::new("Partitions", parts.len() as f64, Unit::Count),
@@ -166,8 +172,7 @@ fn expiring_range_partitions(snapshot: &Snapshot) -> Vec<Finding> {
             f.fix = Some(Fix {
                 summary: format!(
                     "Create the next range partition(s) on {parent} covering values from '{bound_literal}' onward, \
-                     and check the scheduled job or partition manager (such as pg_partman) that pre-creates future \
-                     partitions."
+                     and check the scheduled job or partition manager that pre-creates future partitions."
                 ),
                 sql: None,
                 cost: Some("Creating a new empty partition is fast metadata DDL.".into()),
@@ -182,12 +187,15 @@ fn expiring_range_partitions(snapshot: &Snapshot) -> Vec<Finding> {
 
 fn parse_range_upper_bound(bound: &str) -> Option<(String, f64)> {
     let upper = bound.to_ascii_uppercase();
-    if !upper.starts_with("FOR VALUES FROM") {
-        return None;
-    }
-    let to_pos = upper.find(" TO (")?;
-    let after_to = bound.get(to_pos + 5..)?.trim_start();
-    let literal = after_to.strip_prefix('\'')?.split('\'').next()?.trim();
+    let after = if upper.starts_with("FOR VALUES FROM") {
+        let to_pos = upper.find(" TO (")?;
+        bound.get(to_pos + 5..)?.trim_start()
+    } else {
+        let less_pos = upper.find("VALUES LESS THAN")?;
+        let rest = bound.get(less_pos + "VALUES LESS THAN".len()..)?.trim_start();
+        rest.strip_prefix('(')?.trim_start()
+    };
+    let literal = after.strip_prefix('\'')?.split('\'').next()?.trim();
     if literal.is_empty() {
         return None;
     }
@@ -226,7 +234,7 @@ fn default_partitions(snapshot: &Snapshot) -> Vec<Finding> {
                 Category::Maintenance,
                 subject(SubjectKind::Table, &name),
             );
-            let size_note = (size > 0.0).then(|| format!(" ({})", format::bytes(size))).unwrap_or_default();
+            let size_note = if size > 0.0 { format!(" ({})", format::bytes(size)) } else { String::new() };
             f.title = format!("DEFAULT partition {} holds {} rows{size_note}", t.name, format::count(rows));
             f.severity = if rows >= 1_000_000.0 || size >= GB { Severity::Medium } else { Severity::Low };
             severity_score(&mut f);

@@ -890,6 +890,82 @@ fn expiring_range_partition_is_flagged_unless_default_exists() {
     def.storage = Some(TableStorage { options: vec!["partition_bound=DEFAULT".into()], ..Default::default() });
     s.tables.push(def);
     assert!(!table_bloat(&s).iter().any(|f| f.id == "table-bloat:expiring-partition:public.events"));
+
+    // MySQL and SQL Server parent-level VALUES LESS THAN range partitions are also checked via sequence_capacity.
+    let mut mysql = snapshot_with(Engine::Mysql);
+    mysql.taken_at = "2026-10-30T12:00:00Z".into();
+    mysql.tables[0].storage = Some(TableStorage {
+        options: vec!["partition_bound=VALUES LESS THAN ('2026-11-01'):p202610".into()],
+        ..Default::default()
+    });
+    let qual = mysql.tables[0].qualified();
+    let out = sequence_capacity::sequence_capacity(&mysql);
+    let f = out
+        .iter()
+        .find(|f| f.id == format!("table-bloat:expiring-partition:{qual}"))
+        .expect("mysql expiring partition");
+    assert!(f.title.contains("(p202610) ends on 2026-11-01"), "{}", f.title);
+
+    // Adding a MAXVALUE catch-all partition suppresses the warning on MySQL/MSSQL.
+    mysql.tables[0].storage.as_mut().unwrap().options.push("partition_bound=VALUES LESS THAN (MAXVALUE):pmax".into());
+    assert!(
+        !sequence_capacity::sequence_capacity(&mysql)
+            .iter()
+            .any(|f| f.id == format!("table-bloat:expiring-partition:{qual}"))
+    );
+}
+
+#[test]
+fn large_rows_flags_json_column_on_large_postgres_tables() {
+    let mut s = snapshot_with(Engine::Postgres);
+    let schema = s.tables[0].schema.clone();
+    let table = s.tables[0].name.clone();
+    s.tables[0].rows = Some(250_000.0);
+    s.columns.push(culprit_core::ColumnInfo {
+        schema: schema.clone(),
+        table: table.clone(),
+        name: "raw_event".into(),
+        data_type: "json".into(),
+        nullable: true,
+        default: None,
+        generated: false,
+        ordinal: 77,
+    });
+    let out = large_rows(&s);
+    let f = out
+        .iter()
+        .find(|f| f.id == format!("large-rows:json-column:{schema}.{table}.raw_event"))
+        .expect("json column finding");
+    assert!(f.title.contains("uses legacy json instead of jsonb"), "{}", f.title);
+    assert!(f.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("TYPE jsonb USING raw_event::jsonb"));
+}
+
+#[test]
+fn dead_rows_and_heavy_query_surface_scale_factor_and_triggers() {
+    let mut s = snapshot_with(Engine::Postgres);
+    s.tables[0].rows = Some(6_000_000.0);
+    s.tables[0].updates = Some(400_000.0);
+    s.tables[0].dead_rows = Some(150_000.0);
+    s.tables[0].storage =
+        Some(TableStorage { options: vec!["trigger=trg_audit_row:IUD".into()], ..Default::default() });
+    let qual = s.tables[0].qualified();
+    let table_name = s.tables[0].name.clone();
+    let maint = crate::checks::maintenance::dead_rows(&s);
+    let sf = maint
+        .iter()
+        .find(|f| f.id == format!("dead-rows:scale-factor:{qual}"))
+        .expect("autovacuum scale factor finding");
+    assert!(sf.title.contains("waits for") && sf.title.contains("dead rows before autovacuum starts"), "{}", sf.title);
+    assert!(sf.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("autovacuum_vacuum_scale_factor = 0.01"));
+
+    // Heavy write query on a table with a matching trigger attributes the trigger in its summary.
+    let q = first_query(&mut s);
+    q.text = format!("UPDATE {table_name} SET status = 'archived' WHERE id = $1");
+    q.total_time_ms = 500_000.0;
+    q.executions = 10_000.0;
+    let hq = crate::queries::heavy_query(&s);
+    let write_finding = hq.iter().find(|f| f.summary.contains("fires a trigger")).expect("trigger attribution");
+    assert!(write_finding.summary.contains("trg_audit_row"), "{}", write_finding.summary);
 }
 
 #[test]

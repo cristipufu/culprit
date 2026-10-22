@@ -173,7 +173,15 @@ async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<Hash
                 (SELECT extract(epoch FROM now() - d.stats_reset) / 3600 FROM pg_stat_database d
                   WHERE d.datname = current_database()) AS counter_hours,
                 array_to_string(c.reloptions, ',') AS options,
-                {partition_bound} AS partition_bound
+                {partition_bound} AS partition_bound,
+                (SELECT string_agg(
+                            tg.tgname || ':' ||
+                            CASE WHEN (tg.tgtype & 4) <> 0 THEN 'I' ELSE '' END ||
+                            CASE WHEN (tg.tgtype & 8) <> 0 THEN 'D' ELSE '' END ||
+                            CASE WHEN (tg.tgtype & 16) <> 0 THEN 'U' ELSE '' END,
+                            chr(31) ORDER BY tg.tgname)
+                   FROM pg_trigger tg
+                  WHERE tg.tgrelid = c.oid AND NOT tg.tgisinternal AND tg.tgenabled <> 'D') AS triggers
            FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid"
     );
     let mut out: HashMap<(String, String), TableStorage> = query(client, &sql)
@@ -187,6 +195,11 @@ async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<Hash
                 .unwrap_or_default();
             if let Some(bound) = r.text("partition_bound").filter(|b| !b.is_empty()) {
                 options.push(format!("partition_bound={bound}"));
+            }
+            for trg in r.list("triggers") {
+                if !trg.is_empty() {
+                    options.push(format!("trigger={trg}"));
+                }
             }
             (
                 (r.string("schema_name"), r.string("table_name")),

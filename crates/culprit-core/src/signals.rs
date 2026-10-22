@@ -721,6 +721,18 @@ impl TableStorage {
             })
         })
     }
+
+    /// User-defined triggers recorded on the table (`trigger=<name>:<events>`), as `(name, events)` pairs where
+    /// `events` holds `'I'`, `'U'`, and/or `'D'`.
+    pub fn triggers(&self) -> Vec<(&str, &str)> {
+        self.options
+            .iter()
+            .filter_map(|o| {
+                let rest = o.strip_prefix("trigger=")?;
+                Some(rest.split_once(':').unwrap_or((rest, "")))
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

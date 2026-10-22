@@ -26,6 +26,7 @@ pub(crate) fn age(taken_at: &str) -> Option<String> {
 pub enum Format {
     Text,
     Json,
+    #[value(alias = "markdown")]
     Md,
 }
 

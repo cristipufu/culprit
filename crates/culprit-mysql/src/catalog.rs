@@ -317,16 +317,31 @@ async fn userstat_usage(
 }
 
 pub(crate) async fn foreign_keys(conn: &mut Conn, db: &str) -> Result<Vec<ForeignKey>> {
-    let rows = query_with(
-        conn,
-        "SELECT CONSTRAINT_NAME AS name, TABLE_NAME AS table_name, COLUMN_NAME AS column_name,
-                REFERENCED_TABLE_SCHEMA AS ref_schema, REFERENCED_TABLE_NAME AS ref_table, REFERENCED_COLUMN_NAME AS ref_column
-           FROM information_schema.KEY_COLUMN_USAGE
-          WHERE TABLE_SCHEMA = ? AND REFERENCED_TABLE_NAME IS NOT NULL
-          ORDER BY TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION",
-        vec![Value::from(db)],
-    )
-    .await?;
+    let with_rules = "SELECT k.CONSTRAINT_NAME AS name, k.TABLE_NAME AS table_name, k.COLUMN_NAME AS column_name,
+                             k.REFERENCED_TABLE_SCHEMA AS ref_schema, k.REFERENCED_TABLE_NAME AS ref_table,
+                             k.REFERENCED_COLUMN_NAME AS ref_column, rc.DELETE_RULE AS delete_rule
+                        FROM information_schema.KEY_COLUMN_USAGE k
+                        LEFT JOIN information_schema.REFERENTIAL_CONSTRAINTS rc
+                          ON rc.CONSTRAINT_SCHEMA = k.TABLE_SCHEMA
+                         AND rc.TABLE_NAME = k.TABLE_NAME
+                         AND rc.CONSTRAINT_NAME = k.CONSTRAINT_NAME
+                       WHERE k.TABLE_SCHEMA = ? AND k.REFERENCED_TABLE_NAME IS NOT NULL
+                       ORDER BY k.TABLE_NAME, k.CONSTRAINT_NAME, k.ORDINAL_POSITION";
+    let rows = match query_with(conn, with_rules, vec![Value::from(db)]).await {
+        Ok(rows) => rows,
+        Err(_) => {
+            query_with(
+                conn,
+                "SELECT CONSTRAINT_NAME AS name, TABLE_NAME AS table_name, COLUMN_NAME AS column_name,
+                        REFERENCED_TABLE_SCHEMA AS ref_schema, REFERENCED_TABLE_NAME AS ref_table, REFERENCED_COLUMN_NAME AS ref_column
+                   FROM information_schema.KEY_COLUMN_USAGE
+                  WHERE TABLE_SCHEMA = ? AND REFERENCED_TABLE_NAME IS NOT NULL
+                  ORDER BY TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION",
+                vec![Value::from(db)],
+            )
+            .await?
+        }
+    };
     let mut out: Vec<ForeignKey> = Vec::new();
     for r in &rows {
         let (name, table) = (r.string("name"), r.string("table_name"));
@@ -343,6 +358,13 @@ pub(crate) async fn foreign_keys(conn: &mut Conn, db: &str) -> Result<Vec<Foreig
                 ref_schema: r.string("ref_schema"),
                 ref_table: r.string("ref_table"),
                 ref_columns: vec![r.string("ref_column")],
+                delete_rule: match r.string("delete_rule").to_ascii_uppercase().as_str() {
+                    "CASCADE" => Some("CASCADE".into()),
+                    "SET NULL" => Some("SET NULL".into()),
+                    "SET DEFAULT" => Some("SET DEFAULT".into()),
+                    "RESTRICT" => Some("RESTRICT".into()),
+                    _ => None,
+                },
             }),
         }
     }
