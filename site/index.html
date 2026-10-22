@@ -43,7 +43,7 @@
     "operatingSystem":"macOS 11 or later, Windows 10, Windows 11, Linux","softwareVersion":"__VERSION__",
     "downloadUrl":"https://github.com/cristipufu/culprit-sql-studio/releases/latest","releaseNotes":"https://github.com/cristipufu/culprit-sql-studio/releases",
     "softwareHelp":"https://github.com/cristipufu/culprit-sql-studio/blob/main/docs/guide.md",
-    "featureList":["Slow query detection ranked by share of database time","Execution plan insights, plan comparison and virtual index testing","Missing, unused and duplicate index advice","Offline SQL migration linting against production snapshots with SARIF output","Plan regression detection with Query Store","Live blocking trees and deadlock analysis","Wait statistics in plain language","MCP server with 26 tools for Claude Code, Cursor and Codex","CLI with JSON and SARIF output"],
+    "featureList":["Slow query detection ranked by share of database time","Execution plan insights, plan comparison and virtual index testing","Missing, unused and duplicate index advice","Offline SQL migration linting against production snapshots with SARIF output","Plan regression detection with Query Store","Live blocking trees and deadlock analysis","Wait statistics in plain language","MCP server with 27 tools for Claude Code, Cursor and Codex","CLI with JSON and SARIF output"],
     "isAccessibleForFree":true,"license":"https://opensource.org/licenses/MIT",
     "offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},
     "sameAs":["https://github.com/cristipufu/culprit-sql-studio"]},
@@ -143,7 +143,7 @@
           <dl>
             <div><dt>Why</dt><dd>No index covers <code>(customer_id, status)</code>: PostgreSQL scans the table 14,200 times an hour and filters in memory.</dd></div>
             <div><dt>Fix</dt><dd><code>CREATE INDEX CONCURRENTLY orders_customer_id_status_idx ON public.orders (customer_id, status);</code></dd></div>
-            <div><dt>Verify</dt><dd>Test before building with <code>culprit explain --with-index</code> (HypoPG switches to an Index Scan at 0.04% of the cost), or run <code>culprit verify</code> after rollout.</dd></div>
+            <div><dt>Verify</dt><dd>Test before building with <code>culprit explain prod --sql "…" --with-index "CREATE INDEX …"</code> (HypoPG switches to an Index Scan at 0.04% of the cost), or run <code>culprit verify prod</code> after rollout.</dd></div>
           </dl>
         </article>
         <article class="finding-card" id="sample-migration" role="tabpanel" aria-labelledby="stab-migration" data-sample-panel hidden>
@@ -154,8 +154,8 @@
           <h3><code>CREATE INDEX</code> without <code>CONCURRENTLY</code> locks <code>orders</code> against writes while building.</h3>
           <dl>
             <div><dt>Why</dt><dd>Checked offline against the production snapshot: <code>orders</code> has 12.4M rows and 340 writes/s. A standard index build blocks every <code>INSERT</code>, <code>UPDATE</code> and <code>DELETE</code> until it finishes.</dd></div>
-            <div><dt>Fix</dt><dd>Run <code>culprit lint-sql --file migrations/ --write</code> (or click Quick Fix in the editor) to rewrite as <code>CREATE INDEX CONCURRENTLY</code>.</dd></div>
-            <div><dt>Verify</dt><dd><code>culprit lint-sql --file migrations/ --fail-on high</code> exits 0 (and emits SARIF 2.1.0 for GitHub PR annotations).</dd></div>
+            <div><dt>Fix</dt><dd>Run <code>culprit lint-sql prod --file migrations/ --write</code> (or click Quick Fix in the editor) to rewrite as <code>CREATE INDEX CONCURRENTLY</code>.</dd></div>
+            <div><dt>Verify</dt><dd><code>culprit lint-sql prod --file migrations/ --fail-on high</code> exits 0 (and emits SARIF 2.1.0 for GitHub PR annotations).</dd></div>
           </dl>
         </article>
         <article class="finding-card" id="sample-blocking" role="tabpanel" aria-labelledby="stab-blocking" data-sample-panel hidden>
@@ -172,7 +172,7 @@
         </article>
         <ul class="stats" aria-label="At a glance">
           <li><b>__CHECK_COUNT__</b><span>checks for performance and health</span></li>
-          <li><b>26</b><span>MCP tools for coding agents</span></li>
+          <li><b>27</b><span>MCP tools for coding agents</span></li>
           <li><b>0 bytes</b><span>leave your machine</span></li>
           <li><b>&lt;1 s</b><span>to open; 10 ms per CLI call</span></li>
         </ul>
@@ -269,7 +269,7 @@
         <div>
           <p class="section-kicker">Built for coding agents &amp; CI</p>
           <h2 class="section-title" id="agents-title">An MCP server for database performance. You stay in control.</h2>
-          <p class="section-lede"><code>culprit mcp</code> gives Claude Code, Codex and Cursor 26 tools: the dashboard, findings with application <code>file:line</code> call sites, execution plans, virtual index testing, offline migration linting, what changed, blocking, waits, index advice and verify. Every CLI command speaks JSON and SARIF 2.1.0 too.</p>
+          <p class="section-lede"><code>culprit mcp</code> gives Claude Code, Codex and Cursor 27 tools: the dashboard, findings with application <code>file:line</code> call sites, execution plans, virtual index testing, offline migration linting, schema drift, what changed, blocking, waits, index advice and verify. Every CLI command speaks JSON and SARIF 2.1.0 too.</p>
           <ul class="checks">
             <li><b>Per-connection access.</b> Off, statistics and plans (the default), or read-only queries you approve one by one.</li>
             <li><b>Approve the exact statement.</b> You see the SQL and what Culprit guarantees: one read-only statement, rolled back, capped in rows and time.</li>

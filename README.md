@@ -28,9 +28,8 @@
 <p align="center">
   <a href="https://culpritsql.com"><b>culpritsql.com</b></a> ·
   <a href="#why-culprit">Why Culprit</a> ·
-  <a href="#fit-it-into-how-you-ship">CI, agents &amp; migrations</a> ·
+  <a href="#coding-agents-and-ci">Agents &amp; CI</a> ·
   <a href="#what-you-get">What you get</a> ·
-  <a href="#built-for-coding-agents">Coding agents</a> ·
   <a href="#safe-on-production">Safety</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="docs/guide.md">Guide</a>
@@ -103,66 +102,68 @@ Add your own checks or database engines without forking. The app, the CLI and th
 </tr>
 </table>
 
-## Fit it into how you ship
+## Coding agents and CI
 
-Culprit is a single binary with no daemon, no server agent and no SaaS account. Open the desktop app when investigating by hand, or drop the CLI into your coding agent, pull requests and deploy pipeline.
+Culprit is designed to be driven by a coding agent or a CI script as comfortably as by a person. Every CLI command prints JSON when piped (or SARIF 2.1.0 with `--format sarif`), and finding ids are stable across runs.
 
-### 1. Give your coding agent real database context (MCP & briefs)
+### Coding agents (MCP)
 
-Instead of pasting slow queries into chat, give Claude Code, Cursor or Codex read-only access to ranked findings, execution plans, table sizes and virtual index testing:
+`culprit mcp` serves 27 tools over the Model Context Protocol: dashboard, findings, plans, plan insights, migration linting, schema drift, what changed, blocking, waits, index advice, verification and more. When queries carry `file:line` comments (Marginalia, SqlCommenter or `/* app/models/order.rb:42 */`), each finding's brief points straight to the call site in your repository.
 
 ```sh
-claude mcp add culprit -- culprit mcp   # register the MCP server (26 read-only tools)
-culprit agent init                      # add repo instructions and .mcp.json
+claude mcp add culprit -- culprit mcp   # Claude Code; Cursor and Codex take the same command
+culprit agent init                      # teach agents in this repository to use Culprit
 ```
 
-Or hand a single finding straight to an agent from the terminal:
+From the terminal, you can also print a finding's brief directly or test whether PostgreSQL (`hypopg`) uses a proposed index without building it:
 
 ```sh
-# Self-contained markdown brief: evidence, SQL fix, verification, and the app file:line
-# call site when queries carry Marginalia, SqlCommenter or /* app/models/order.rb:42 */ comments
 culprit show shop 'filtered-scan:public.orders'
-
-# Prove in milliseconds that PostgreSQL (HypoPG) actually uses a proposed index before building it
 culprit explain shop --sql "SELECT * FROM orders WHERE status = 'open'" \
   --with-index "CREATE INDEX ON orders (status)"
 ```
 
-### 2. Catch unsafe migrations in Pull Requests (GitHub Actions & SARIF)
+You decide what agents may do, per connection: nothing, read statistics and plans (the default), or run read-only queries that you approve one by one. Approval shows the exact statement and what Culprit guarantees about it, and every tool call lands in a local audit log.
 
-Regex SQL linters don't know if `orders` has 50 rows or 50 million. `culprit lint-sql` checks migration files **offline against a saved snapshot**—using real table sizes, row counts, column types, indexes and active queries to catch blocking `CREATE INDEX` / `DROP INDEX` / `ALTER TABLE` locks (PostgreSQL `CONCURRENTLY`, SQL Server `ONLINE = ON`, MySQL `ALGORITHM=INSTANT` / `LOCK=NONE`), unindexed or type-mismatched foreign keys, redundant indexes, and `DROP` or `RENAME` changes that break live statements:
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/agent-approval-dark.png">
+    <img alt="An approval dialog: claude-code wants to run a SELECT on a development connection; checked as read-only, rolled back, capped at 200 rows and 30 seconds; Deny or Run once" src="docs/images/agent-approval-light.png" width="720">
+  </picture>
+</p>
+
+### Pull requests and deploy pipelines
+
+`culprit lint-sql` checks migration files offline against a saved snapshot, using the database's actual table sizes, column types, indexes and active workload to catch blocking `CREATE INDEX`, `DROP INDEX` and `ALTER TABLE` locks, unindexed or type-mismatched foreign keys, and `DROP` or `RENAME` changes that break live queries:
 
 ```sh
-culprit lint-sql shop --file migrations/ --fail-on high             # exit 3 on blocking DDL or broken queries
-culprit lint-sql shop --file migrations/ --write                    # rewrite fixable DDL in place with safe online syntax
-culprit lint-sql shop --file migrations/ --format sarif > db.sarif  # inline annotations on GitHub PRs
+culprit lint-sql shop --file migrations/ --fail-on high             # exit 3 on high-severity findings
+culprit lint-sql shop --file migrations/ --write                    # add CONCURRENTLY / ONLINE = ON / LOCK=NONE in place
+culprit lint-sql shop --file migrations/ --format sarif > db.sarif  # SARIF 2.1.0 for GitHub Code Scanning
 ```
 
 ```yaml
 # .github/workflows/db-check.yml
-- name: Lint database migrations against production snapshot
+- name: Lint migrations against production snapshot
   run: culprit lint-sql prod-snapshot.json --file migrations/ --format sarif > culprit.sarif
 - uses: github/codeql-action/upload-sarif@v3
   with:
     sarif_file: culprit.sarif
 ```
 
-### 3. Close the loop in deploy pipelines
-
-Mark deploys on the database timeline and verify that shipped fixes actually moved the numbers once real traffic hits:
+After a deploy, mark the timeline so regressions line up with the release, and re-scan to verify that a fix worked:
 
 ```sh
-culprit mark shop deploy v2.4.0                                     # line chart regressions up with this deploy
-culprit scan shop --fail-on high                                    # gate a staging soak or nightly health check
-culprit verify shop 'filtered-scan:public.orders'                   # exits 2 if the finding is still present
-culprit digest shop > digest.json                                   # redacted JSON summary for Slack or Teams
+culprit mark shop deploy v2.4.0                       # put the deploy on the database timeline
+culprit verify shop 'filtered-scan:public.orders'     # exits 2 if the finding is still present
+culprit digest shop > digest.json                     # redacted JSON summary for Slack or Teams
 ```
 
 ## What you get
 
 ### Findings you can act on
 
-60 checks look for what actually costs time: runaway loops in plans, plan regressions, missing and unused indexes, N+1 query loops, type mismatches that block indexes, parameter-sensitive plans, queries that fail or time out, spills to disk, hot rows, statements that lock a whole table, FK lock amplification, sequence and transaction-ID exhaustion (XID wraparound, 32-bit PK overflow), partition hazards (default-partition overflow, expiring range partitions, BRIN time-series candidates), slow storage, connection storms, replication lag, stale statistics, risky settings and more. Each finding names the queries involved, shows their share of database time, and ends with a fix you copy (Culprit never applies it for you) and a way to verify it.
+60 checks look for what actually costs time: runaway loops in plans, plan regressions, missing and unused indexes, N+1 query loops, type mismatches that block indexes, parameter-sensitive plans, queries that fail or time out, spills to disk, hot rows, statements that lock a whole table, unindexed foreign keys, sequence and transaction-ID exhaustion, partition hazards, slow storage, connection storms, replication lag, stale statistics, risky settings and more. Each finding names the queries involved, shows their share of database time, and ends with a fix you copy (Culprit never applies it for you) and a way to verify it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/findings-dark.png">
@@ -171,7 +172,7 @@ culprit digest shop > digest.json                                   # redacted J
 
 ### Plans that explain themselves
 
-Every captured plan comes with insights in plain words ("repeats its read of order_items 1.5M times, once per row"), a diagram that shows where the cost goes, and the operator's details one click away. 35 rules cover SQL Server, PostgreSQL, MySQL, MariaDB and SQLite plans. Measure a run safely (writes are rolled back), test a virtual index in milliseconds (`--with-index` via PostgreSQL HypoPG), and on SQL Server see the last actual plan without re-running the query or watch a long query's progress step by step.
+Every captured plan comes with insights in plain words ("repeats its read of order_items 1.5M times, once per row"), a diagram that shows where the cost goes, and the operator's details one click away. 35 rules cover SQL Server, PostgreSQL, MySQL, MariaDB and SQLite plans. Measure a run safely (writes are rolled back), and on SQL Server see the last actual plan without re-running the query or watch a long query's progress step by step.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/queries-dark.png">
@@ -210,31 +211,13 @@ Live sessions turn a wall of lock waits into one sentence and a tree: which sess
 | Feature | What it does |
 |---|---|
 | **Index advisor** | Indexes to add, ranked by the database time of the queries that need them, plus duplicate, overlapping and unused indexes to clean up, with what each costs on writes |
-| **Migration & DDL linter** | Live inline squigglies and one-click quick fixes in the SQL editor, plus `culprit lint-sql` (`--write`, `--format sarif`) to check migrations offline against real table sizes and active queries |
+| **Migration linter** | Live inline warnings and one-click quick fixes in the SQL editor, plus `culprit lint-sql` to check migration files offline against your snapshot |
 | **Where time goes** | Wait statistics in plain words, traced back to the queries behind them, with a live sample to compare against the usual mix |
 | **Health signals** | Memory, compiles, connections, row locks, storage latency per file, replication lag and cloud limits, each graded with a one-line takeaway |
-| **SQL editor** | Tabs, autocomplete for schemas, tables and columns, saved queries, estimated and measured plans, and zero-cost virtual index testing (`--with-index` via HypoPG). Reads run read-only; production changes ask first |
+| **SQL editor** | Tabs, autocomplete for schemas, tables and columns, saved queries, and estimated and measured plans. Reads run read-only; production changes ask first |
 | **Schema explorer** | Tables, sizes, indexes and how each index is used, plus drift between two environments with the SQL to close the gap |
 | **Connections** | Paste any connection string, discover Azure and AWS databases with your existing CLI login, or import from Azure Data Studio, VS Code, DBeaver and DataGrip. Passwords stay in your OS keychain |
 | **Keyboard first** | A command palette (⌘K) for every view, finding, query and action |
-
-## Built for coding agents
-
-Culprit is designed to be driven by an agent as comfortably as by a person. `culprit mcp` serves 26 tools over the Model Context Protocol (dashboard, findings, plans, insights, migration linting, what changed, blocking, waits, index advice, verify and more), every CLI command prints JSON when piped (or SARIF 2.1.0 with `--format sarif`), and finding ids are stable, so an agent can find a problem, jump to the `file:line` call site in your application, fix the code or schema, and prove the fix worked.
-
-```sh
-claude mcp add culprit -- culprit mcp   # Claude Code; Cursor and Codex take the same command
-culprit agent init                      # teach agents in this repository to use Culprit
-```
-
-You decide what agents may do, per connection: nothing, read statistics and plans (the default), or run read-only queries that you approve one by one. Approval shows the exact statement and what Culprit guarantees about it, and every tool call lands in a local audit log.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/agent-approval-dark.png">
-    <img alt="An approval dialog: claude-code wants to run a SELECT on a development connection; checked as read-only, rolled back, capped at 200 rows and 30 seconds; Deny or Run once" src="docs/images/agent-approval-light.png" width="720">
-  </picture>
-</p>
 
 ## Safe on production
 

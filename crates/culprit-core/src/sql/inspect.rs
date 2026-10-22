@@ -683,7 +683,9 @@ fn parse_comment_call_site(comment: &str) -> Option<String> {
     }
 
     let mut location = match (file, line) {
-        (Some(f), Some(l)) if !f.contains(':') && l.chars().all(|c| c.is_ascii_digit()) => Some(format!("{f}:{l}")),
+        (Some(f), Some(l)) if split_file_and_line(&f).1.is_none() && l.chars().all(|c| c.is_ascii_digit()) => {
+            Some(format!("{f}:{l}"))
+        }
         (Some(f), _) if is_file_line_token(&f) => Some(f),
         (_, Some(l)) if is_file_line_token(&l) => Some(l),
         (Some(f), _) if has_source_extension(&f) => Some(f),
@@ -726,17 +728,65 @@ fn parse_comment_call_site(comment: &str) -> Option<String> {
 }
 
 fn split_comment_kv(comment: &str) -> Vec<&str> {
-    let mut out = Vec::new();
+    let mut chunks = Vec::new();
     let bytes = comment.as_bytes();
     let mut start = 0;
     let mut i = 0;
     let mut in_quote: Option<u8> = None;
     while i < bytes.len() {
+        if in_quote.is_some() && bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 2;
+            continue;
+        }
         match (in_quote, bytes[i]) {
             (Some(q), b) if b == q => in_quote = None,
             (None, b'\'' | b'"') => in_quote = Some(bytes[i]),
             (None, b',' | b'\n' | b'\r' | b';') => {
                 if let Some(slice) = comment.get(start..i) {
+                    let trimmed = slice.trim();
+                    if !trimmed.is_empty() {
+                        chunks.push(trimmed);
+                    }
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if let Some(slice) = comment.get(start..) {
+        let trimmed = slice.trim();
+        if !trimmed.is_empty() {
+            chunks.push(trimmed);
+        }
+    }
+    let mut out = Vec::new();
+    for chunk in chunks {
+        if chunk.split_whitespace().filter(|w| w.contains('=')).count() > 1 {
+            out.extend(split_whitespace_kv(chunk));
+        } else {
+            out.push(chunk);
+        }
+    }
+    out
+}
+
+fn split_whitespace_kv(chunk: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let bytes = chunk.as_bytes();
+    let mut start = 0;
+    let mut i = 0;
+    let mut in_quote: Option<u8> = None;
+    while i < bytes.len() {
+        if in_quote.is_some() && bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 2;
+            continue;
+        }
+        match (in_quote, bytes[i]) {
+            (Some(q), b) if b == q => in_quote = None,
+            (None, b'\'' | b'"') => in_quote = Some(bytes[i]),
+            (None, b) if b.is_ascii_whitespace() => {
+                if let Some(slice) = chunk.get(start..i) {
                     let trimmed = slice.trim();
                     if !trimmed.is_empty() {
                         out.push(trimmed);
@@ -748,7 +798,7 @@ fn split_comment_kv(comment: &str) -> Vec<&str> {
         }
         i += 1;
     }
-    if let Some(slice) = comment.get(start..) {
+    if let Some(slice) = chunk.get(start..) {
         let trimmed = slice.trim();
         if !trimmed.is_empty() {
             out.push(trimmed);
@@ -761,21 +811,49 @@ fn unquote_comment_val(val: &str) -> String {
     let val = val.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')).unwrap_or(val);
     let val = val.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(val);
     // Url-encoded `%2F` / `%3A` in OpenTelemetry SqlCommenter values; replace backticks with single quotes so markdown code spans never break.
-    val.replace("%2F", "/").replace("%2f", "/").replace("%3A", ":").replace("%3a", ":").replace('`', "'")
+    val.replace("\\'", "'")
+        .replace("\\\"", "\"")
+        .replace("%2F", "/")
+        .replace("%2f", "/")
+        .replace("%3A", ":")
+        .replace("%3a", ":")
+        .replace('`', "'")
+}
+
+fn split_file_and_line(token: &str) -> (&str, Option<&str>) {
+    if token.contains("://") || token.starts_with("//") {
+        return (token, None);
+    }
+    let bytes = token.as_bytes();
+    let search_from =
+        if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'\\' | b'/') {
+            3
+        } else {
+            0
+        };
+    if let Some(rel_colon) = token[search_from..].find(':') {
+        let colon = search_from + rel_colon;
+        let head = &token[..colon];
+        let rest = &token[colon + 1..];
+        let line_part = rest.split(':').next().unwrap_or(rest);
+        if !line_part.is_empty() && line_part.chars().all(|c| c.is_ascii_digit()) {
+            return (head, Some(rest));
+        }
+    }
+    (token, None)
 }
 
 fn has_source_extension(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("//") {
+    if path.contains("://") || path.starts_with("//") {
         return false;
     }
-    let file_part = path.split(':').next().unwrap_or(path);
+    let (file_part, _) = split_file_and_line(path);
     let Some((stem, ext)) = file_part.rsplit_once('.') else {
         return false;
     };
     if stem.is_empty() {
         return false;
-    }
+    };
     matches!(
         ext.to_ascii_lowercase().as_str(),
         "rs" | "py"
@@ -801,16 +879,8 @@ fn has_source_extension(path: &str) -> bool {
 }
 
 fn is_file_line_token(token: &str) -> bool {
-    let lower = token.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("//") {
-        return false;
-    }
-    let Some((path, rest)) = token.split_once(':') else {
+    let (file_part, Some(_line)) = split_file_and_line(token) else {
         return false;
     };
-    if path.is_empty() || !has_source_extension(path) {
-        return false;
-    }
-    let line_part = rest.split(':').next().unwrap_or(rest);
-    !line_part.is_empty() && line_part.chars().all(|c| c.is_ascii_digit())
+    !file_part.is_empty() && has_source_extension(file_part)
 }

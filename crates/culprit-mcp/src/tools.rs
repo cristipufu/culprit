@@ -222,6 +222,16 @@ pub struct ProgressArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ExplainArgs {
+    /// A connection name from list_connections.
+    pub connection: String,
+    /// One SQL statement.
+    pub sql: String,
+    /// Optional `CREATE INDEX ...` statements to test as virtual indexes in planner memory without building them (PostgreSQL `hypopg`).
+    pub with_indexes: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct SqlArgs {
     /// A connection name from list_connections.
     pub connection: String,
@@ -398,12 +408,13 @@ pub fn definitions() -> Vec<Tool> {
         .with_annotations(
             ToolAnnotations::new().read_only(false).destructive(false).idempotent(false).open_world(false),
         ),
-        tool::<SqlArgs>(
+        tool::<ExplainArgs>(
             "explain",
             "Explain",
             format!(
                 "Estimated execution plan for one SQL statement you provide. The database plans it without running \
-                 it. Use it to check whether a rewrite or a new index changes the plan.{DATA_NOTE}"
+                 it. Use it to check whether a rewrite or a new index changes the plan (pass `with_indexes` on \
+                 PostgreSQL with `hypopg` to test virtual `CREATE INDEX` statements in planner memory).{DATA_NOTE}"
             ),
         ),
         tool::<ConnectionArgs>(
@@ -673,10 +684,15 @@ impl CulpritMcp {
                 Ok(json!({ "marked": mark, "compare_since": mark.at }))
             }
             "explain" => {
-                let a: SqlArgs = args(value)?;
+                let a: ExplainArgs = args(value)?;
                 let info = self.allowed(&a.connection)?;
                 let statement = sql::single_statement(&a.sql, info.engine)?;
-                let plan = self.ws.explain(&a.connection, statement, ExplainMode::Estimated, false).await?;
+                let indexes = a.with_indexes.unwrap_or_default();
+                let plan = if !indexes.is_empty() {
+                    self.ws.explain_hypothetical(&a.connection, statement, &indexes).await?
+                } else {
+                    self.ws.explain(&a.connection, statement, ExplainMode::Estimated, false).await?
+                };
                 Ok(view::plan(&plan))
             }
             "live" => {

@@ -570,7 +570,7 @@ fn main() -> ExitCode {
     if format == Format::Md && !writes_markdown(&cli.command) {
         out.error(
             &Error::invalid("This command has no Markdown output")
-                .with_hint("Markdown is available for scan, findings, show, dashboard, analyze, verify, export and plan export; use --format text or json here."),
+                .with_hint("Markdown is available for scan, findings, show, dashboard, analyze, verify, export, plan export and lint-sql; use --format text or json here."),
         );
         return ExitCode::FAILURE;
     }

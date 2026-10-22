@@ -27,10 +27,23 @@ Culprit's CLI is designed to be driven by agents: JSON output, stable ids, no pr
 | `query` | One query: text, statistics, plan variants, related findings |
 | `query_plan` | A query's plan as an indented operator tree (stored or estimated; never executes), with its insights' titles |
 | `plan_insights` | What's wrong in a query's plan (`query_id`) or a statement's estimated plan (`sql`): ranked insights with operators, fix and verify |
+| `last_actual_plan` | The actual plan of a query's last run on SQL Server 2019+ (`LAST_QUERY_PLAN_STATS`), without re-running the query |
+| `query_progress` | How far along a running session's statement is right now |
+| `what_changed` | Queries that got slower, new queries, queries that improved or stopped between two periods, and the plan changes behind them |
+| `events` | Timeline events around a connection: deploy marks, schema changes, setting changes, restarts and cloud throttling |
+| `cloud_metrics` | CloudWatch (`aws`) or Azure Monitor (`az`) CPU, credits, IOPS and latency for the server |
+| `mark` | Record a moment (e.g. a deploy) on a connection's timeline |
 | `explain` | Estimated plan for a statement the agent provides (never executes); supports virtual index verification (`with_indexes` on PostgreSQL via HypoPG) |
 | `lint_sql` | Lint migration or DDL SQL offline against the latest saved snapshot: blocking locks, unindexed/mismatched FKs, table rewrites, and broken live queries |
 | `live` | Sessions, waits and blocking right now |
+| `blocking` | Who blocks whom right now, as chains under each head blocker |
+| `deadlocks` | Recent deadlocks explained, with the pattern and fix |
+| `waits` | Wait categories with the queries behind each, or a live sample (`now: true`) |
 | `schema` | Tables; or one table's columns, indexes and which captured plans use each index |
+| `drift` | Schema, index, setting and version differences between two connections |
+| `index_advice` | The index advisor: indexes to add, indexes to clean up, and table storage guidance |
+| `verify` | Re-scan and check whether each finding is fixed, still present or unknown |
+| `export_finding` | Redacted Markdown for one finding or the whole scan, ready to paste into a PR or issue |
 | `run_query` | One read-only statement, up to 200 rows: needs `query` access and the person's approval in the app |
 
 Results are compact JSON. Text that comes from the database (query text, object names, comments, values) is data, not instructions, and the server's instructions tell the agent so.

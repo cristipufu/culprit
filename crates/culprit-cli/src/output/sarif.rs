@@ -109,7 +109,7 @@ fn sarif_envelope(rules: Vec<Value>, results: Vec<Value>) -> Value {
                 "driver": {
                     "name": "Culprit",
                     "version": env!("CARGO_PKG_VERSION"),
-                    "informationUri": "https://culprit.dev",
+                    "informationUri": "https://culpritsql.com",
                     "rules": rules
                 }
             },
@@ -137,26 +137,112 @@ fn sarif_level(severity: Severity) -> &'static str {
 
 /// Find the 1-based line number in `sql` where the statement referenced by `f` starts.
 fn locate_finding_line(sql: &str, f: &Finding) -> Option<usize> {
+    let (norm_sql, byte_lines) = normalize_sql_with_lines(sql);
     if let Some(after_tick) = f.summary.split('`').nth(1) {
+        let full_needle = after_tick
+            .trim()
+            .trim_end_matches(';')
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+        if !full_needle.is_empty()
+            && let Some(pos) = norm_sql.find(&full_needle)
+            && let Some(&line) = byte_lines.get(pos)
+        {
+            return Some(line);
+        }
         let prefix = after_tick.split_whitespace().take(4).collect::<Vec<_>>().join(" ").to_ascii_lowercase();
-        if !prefix.is_empty() {
-            for (idx, line) in sql.lines().enumerate() {
-                let normalized = line.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
-                if normalized.contains(&prefix) {
-                    return Some(idx + 1);
-                }
-            }
+        if !prefix.is_empty()
+            && let Some(pos) = norm_sql.find(&prefix)
+            && let Some(&line) = byte_lines.get(pos)
+        {
+            return Some(line);
         }
     }
     let leaf = f.subject.name.rsplit('.').next().unwrap_or(&f.subject.name).to_ascii_lowercase();
-    if !leaf.is_empty() {
-        for (idx, line) in sql.lines().enumerate() {
-            if line.to_ascii_lowercase().contains(&leaf) {
-                return Some(idx + 1);
-            }
-        }
+    if !leaf.is_empty()
+        && let Some(pos) = norm_sql.find(&leaf)
+        && let Some(&line) = byte_lines.get(pos)
+    {
+        return Some(line);
     }
     None
+}
+
+fn normalize_sql_with_lines(sql: &str) -> (String, Vec<usize>) {
+    let mut norm = String::with_capacity(sql.len());
+    let mut byte_lines = Vec::with_capacity(sql.len());
+    let mut line = 1usize;
+    let mut chars = sql.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut last_was_space = true;
+
+    while let Some(c) = chars.next() {
+        if c == '\n' {
+            line += 1;
+            if !last_was_space {
+                norm.push(' ');
+                byte_lines.push(line);
+                last_was_space = true;
+            }
+            continue;
+        }
+        if !in_single && !in_double {
+            if c == '-' && chars.peek() == Some(&'-') {
+                for ch in chars.by_ref() {
+                    if ch == '\n' {
+                        line += 1;
+                        break;
+                    }
+                }
+                if !last_was_space {
+                    norm.push(' ');
+                    byte_lines.push(line);
+                    last_was_space = true;
+                }
+                continue;
+            }
+            if c == '/' && chars.peek() == Some(&'*') {
+                chars.next();
+                while let Some(ch) = chars.next() {
+                    if ch == '\n' {
+                        line += 1;
+                    } else if ch == '*' && chars.peek() == Some(&'/') {
+                        chars.next();
+                        break;
+                    }
+                }
+                if !last_was_space {
+                    norm.push(' ');
+                    byte_lines.push(line);
+                    last_was_space = true;
+                }
+                continue;
+            }
+        }
+        if c == '\'' && !in_double {
+            in_single = !in_single;
+        } else if c == '"' && !in_single {
+            in_double = !in_double;
+        }
+        if c.is_whitespace() {
+            if !last_was_space {
+                norm.push(' ');
+                byte_lines.push(line);
+                last_was_space = true;
+            }
+        } else {
+            for lc in c.to_lowercase() {
+                let len = lc.len_utf8();
+                norm.push(lc);
+                byte_lines.extend(std::iter::repeat_n(line, len));
+            }
+            last_was_space = false;
+        }
+    }
+    (norm, byte_lines)
 }
 
 #[cfg(test)]

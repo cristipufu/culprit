@@ -200,13 +200,24 @@ impl Provider for PostgresProvider {
         let create_sql = format!("SELECT * FROM {q_schema}.hypopg_create_index($1)");
         client.batch_execute(&tagged(&reset_sql)).await.map_err(map_error)?;
         let result = async {
+            let mut virtual_names = Vec::new();
             for raw_idx in indexes {
                 let idx_stmt = single_statement(raw_idx)?;
                 if !culprit_core::sql::creates_index(idx_stmt, Engine::Postgres) {
                     return Err(Error::invalid("`--with-index` expects a `CREATE INDEX` statement"));
                 }
                 let cleaned = strip_concurrently_keyword(idx_stmt);
-                client.query(&tagged(&create_sql), &[&cleaned]).await.map_err(map_error)?;
+                let rows = client.query(&tagged(&create_sql), &[&cleaned]).await.map_err(map_error)?;
+                if rows.is_empty() {
+                    return Err(Error::invalid(format!(
+                        "`hypopg_create_index` did not create a virtual index for `{idx_stmt}`"
+                    )));
+                }
+                for row in rows {
+                    if let Ok(name) = row.try_get::<_, String>("indexname").or_else(|_| row.try_get::<_, String>(1)) {
+                        virtual_names.push(name);
+                    }
+                }
             }
             let parameters = parameter_count(&client, statement).await?;
             let elevated = trust::elevated(&client).await?;
@@ -226,6 +237,9 @@ impl Provider for PostgresProvider {
                 plan_json::parse(&json, PlanKind::Generic, Some(statement))?
             };
             tables::fill(&client, &mut plan).await;
+            if !virtual_names.is_empty() {
+                plan.props.insert("VirtualIndexes".into(), virtual_names.join(", "));
+            }
             Ok(plan)
         }
         .await;

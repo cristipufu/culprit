@@ -24,6 +24,7 @@ const LARGE_TABLE_BYTES: f64 = 100.0 * MB;
 struct ScriptContext<'a> {
     created_indexes: &'a [(String, Vec<String>)],
     validated_tables: &'a [String],
+    in_transaction: bool,
 }
 
 /// Lint one or more SQL statements (such as a migration file) against the catalog and table sizes in `snapshot`.
@@ -31,10 +32,11 @@ pub fn lint_sql(snapshot: &Snapshot, sql: &str) -> Vec<Finding> {
     let statements = split_statements(sql);
     let created_indexes = collect_script_indexes(&statements);
     let validated_tables = collect_validated_constraint_tables(&statements);
-    let ctx = ScriptContext { created_indexes: &created_indexes, validated_tables: &validated_tables };
     let mut findings = Vec::new();
     let mut in_transaction = false;
     for stmt in &statements {
+        let ctx =
+            ScriptContext { created_indexes: &created_indexes, validated_tables: &validated_tables, in_transaction };
         lint_single_statement(snapshot, stmt, &ctx, &mut in_transaction, &mut findings);
     }
     findings
@@ -58,7 +60,11 @@ pub fn apply_sql_fixes(snapshot: &Snapshot, sql: &str) -> (String, usize) {
     for (start, end, stmt) in &spans {
         let mut stmt_findings = Vec::new();
         {
-            let ctx = ScriptContext { created_indexes: &created_indexes, validated_tables: &validated_tables };
+            let ctx = ScriptContext {
+                created_indexes: &created_indexes,
+                validated_tables: &validated_tables,
+                in_transaction,
+            };
             lint_single_statement(snapshot, stmt, &ctx, &mut in_transaction, &mut stmt_findings);
         }
 
@@ -84,7 +90,7 @@ pub fn apply_sql_fixes(snapshot: &Snapshot, sql: &str) -> (String, usize) {
             .collect();
 
         if let [rep_sql] = replacements.as_slice() {
-            out.push_str(rep_sql.trim());
+            out.push_str(&rewrite_preserving_comments(&sql[*start..*end], rep_sql.trim()));
             applied += 1;
         } else {
             out.push_str(&sql[*start..*end]);
@@ -123,7 +129,23 @@ fn lint_single_statement(
 }
 
 fn is_transaction_begin(upper: &[String]) -> bool {
-    matches!(upper.first().map(String::as_str), Some("BEGIN"))
+    (upper.first().map(String::as_str) == Some("BEGIN")
+        && matches!(
+            upper.get(1).map(String::as_str),
+            None | Some(
+                "WORK"
+                    | "TRANSACTION"
+                    | "TRAN"
+                    | "ISOLATION"
+                    | "READ"
+                    | "DEFERRABLE"
+                    | "NOT"
+                    | "DEFERRED"
+                    | "IMMEDIATE"
+                    | "EXCLUSIVE"
+                    | "DISTRIBUTED"
+            )
+        ))
         || (upper.first().map(String::as_str) == Some("START")
             && upper.get(1).map(String::as_str) == Some("TRANSACTION"))
 }
@@ -156,6 +178,7 @@ fn check_concurrent_in_tx(
         .or_else(|| tokens.get(conc_pos + 3))
         .map(|s| unquote_ident(s))
         .unwrap_or_else(|| "index".into());
+    let kind_word = if head == "REINDEX" && upper[..conc_pos].iter().any(|t| t == "TABLE") { "TABLE" } else { "INDEX" };
     let mut f = finding(
         "sql-lint",
         &format!("concurrent-in-tx:{target}"),
@@ -167,7 +190,7 @@ fn check_concurrent_in_tx(
     f.severity = Severity::High;
     f.impact.score = base_score(f.severity);
     f.impact.label = "aborts in transaction".into();
-    f.title = format!("{head} INDEX CONCURRENTLY ({target}) cannot run inside a transaction block");
+    f.title = format!("{head} {kind_word} CONCURRENTLY ({target}) cannot run inside a transaction block");
     f.summary = format!(
         "The statement `{}` uses `CONCURRENTLY` inside an explicit `BEGIN ... COMMIT` transaction block. PostgreSQL \
          immediately aborts `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY` and `REINDEX CONCURRENTLY` when \
@@ -279,9 +302,12 @@ fn check_drop_or_truncate(
                     qual,
                     table_size_label(rows, bytes)
                 );
+                let multi_drop = upper.iter().any(|t| t == ",");
+                let q_idx = postgres_qualified_index(&ix.schema, &ix.name);
                 f.fix = Some(Fix {
                     summary: "Use `DROP INDEX CONCURRENTLY` (outside a transaction block) so concurrent reads and writes are not blocked.".into(),
-                    sql: (!in_transaction).then(|| format!("DROP INDEX CONCURRENTLY IF EXISTS {};", ix.name)),
+                    sql: (!in_transaction && !multi_drop)
+                        .then(|| format!("DROP INDEX CONCURRENTLY IF EXISTS {q_idx};")),
                     cost: Some("DROP INDEX CONCURRENTLY waits for active transactions using the index and cannot run inside a transaction block.".into()),
                 });
                 f.verify = vec!["Re-run `culprit lint-sql` after switching to `DROP INDEX CONCURRENTLY`.".into()];
@@ -657,9 +683,10 @@ fn check_maintenance(
                         qual,
                         table_size_label(rows, bytes)
                     );
+                    let q_idx = postgres_qualified_index(&ix.schema, &ix.name);
                     f.fix = Some(Fix {
                         summary: "Use `REINDEX INDEX CONCURRENTLY` (outside a transaction block) so concurrent reads and writes can continue.".into(),
-                        sql: (!in_transaction).then(|| format!("REINDEX INDEX CONCURRENTLY {};", ix.name)),
+                        sql: (!in_transaction).then(|| format!("REINDEX INDEX CONCURRENTLY {q_idx};")),
                         cost: Some("REINDEX CONCURRENTLY cannot run inside a transaction block.".into()),
                     });
                     push_table_metrics(&mut f, rows, bytes);
@@ -946,15 +973,7 @@ fn check_alter_table_action(
         let ref_pos = rest_idx + ref_offset;
         if let Some(raw_parent) = tokens.get(ref_pos + 1) {
             let parent_cols = parse_paren_list(tokens, ref_pos + 2).map(|(cols, _)| cols).unwrap_or_default();
-            check_foreign_key_addition(
-                snapshot,
-                table,
-                &child_cols,
-                raw_parent,
-                &parent_cols,
-                ctx.created_indexes,
-                findings,
-            );
+            check_foreign_key_addition(snapshot, stmt, table, &child_cols, raw_parent, &parent_cols, ctx, findings);
         }
     }
 
@@ -1211,9 +1230,10 @@ fn check_alter_table_action(
                         table_size_label(rows, bytes)
                     );
                     f.summary = format!(
-                        "Adding `{col_name}` to {} ({}) with volatile `DEFAULT {fn_display}()` cannot use metadata-only \
-                         fast defaults because every existing row requires a newly evaluated value. The engine rewrites \
-                         every row and index while holding an exclusive table lock.",
+                        "The statement `{}` adds `{col_name}` to {} ({}) with volatile `DEFAULT {fn_display}()`, which \
+                         cannot use metadata-only fast defaults because every existing row requires a newly evaluated \
+                         value. The engine rewrites every row and index while holding an exclusive table lock.",
+                        compact_sql(stmt),
                         qual,
                         table_size_label(rows, bytes)
                     );
@@ -1345,13 +1365,15 @@ fn is_volatile_default_function(upper_fn: &str) -> bool {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_foreign_key_addition(
     snapshot: &Snapshot,
+    stmt: &str,
     child_table: &TableStat,
     child_cols: &[String],
     raw_parent: &str,
     parent_cols: &[String],
-    created_indexes: &[(String, Vec<String>)],
+    ctx: &ScriptContext<'_>,
     findings: &mut Vec<Finding>,
 ) {
     if child_cols.is_empty() {
@@ -1364,7 +1386,8 @@ fn check_foreign_key_addition(
             && !ix.is_disabled
             && index_covers_prefix(&ix.columns, child_cols)
     });
-    let covered_in_script = created_indexes
+    let covered_in_script = ctx
+        .created_indexes
         .iter()
         .any(|(tbl, cols)| table_matches(child_table, tbl) && index_covers_prefix(cols, child_cols));
     if !covered_in_snapshot && !covered_in_script {
@@ -1382,20 +1405,22 @@ fn check_foreign_key_addition(
         f.impact.label = "unindexed FK".into();
         f.title = format!("New foreign key on {}.({}) has no supporting index", child_table.name, cols_label);
         f.summary = format!(
-            "The migration adds a foreign key on {}.({}) referencing {}, but neither the snapshot nor the migration \
+            "The statement `{}` adds a foreign key on {}.({}) referencing {}, but neither the snapshot nor the migration \
              defines an index with ({}) as its leading key. Deletes or key updates on the referenced parent table \
              will scan {} on every check.",
-            child_qual, cols_label, raw_parent, cols_label, child_table.name
+            compact_sql(stmt),
+            child_qual,
+            cols_label,
+            raw_parent,
+            cols_label,
+            child_table.name
         );
+        let pg_in_tx = ctx.in_transaction && snapshot.server.engine == Engine::Postgres;
         f.fix = Some(Fix {
             summary: format!("Create an index on {child_qual} ({cols_label}) before or alongside the foreign key."),
-            sql: Some(crate::support::create_index_sql(
-                snapshot,
-                &child_table.schema,
-                &child_table.name,
-                child_cols,
-                &[],
-            )),
+            sql: (!pg_in_tx).then(|| {
+                crate::support::create_index_sql(snapshot, &child_table.schema, &child_table.name, child_cols, &[])
+            }),
             cost: None,
         });
         f.verify = vec!["Add the supporting `CREATE INDEX` to the migration and re-run `culprit lint-sql`.".into()];
@@ -1433,14 +1458,15 @@ fn check_foreign_key_addition(
                     child_table.name, c.name, c.data_type, parent_table.name, p.name, p.data_type
                 );
                 f.summary = format!(
-                    "{}.{} is `{}` while the referenced column {}.{} is `{}`. Mismatched foreign key types either \
+                    "The statement `{}` references {}.{} (`{}`) from {}.{} (`{}`). Mismatched foreign key types either \
                      fail DDL validation or force implicit conversions during joins and referential integrity checks.",
-                    child_qual,
-                    c.name,
-                    c.data_type,
+                    compact_sql(stmt),
                     parent_table.qualified(),
                     p.name,
-                    p.data_type
+                    p.data_type,
+                    child_qual,
+                    c.name,
+                    c.data_type
                 );
                 f.fix = Some(Fix {
                     summary: format!(
@@ -1733,12 +1759,108 @@ fn is_metadata_only_type_change(engine: Engine, old_type: &str, new_type: &str) 
     }
 }
 
+fn postgres_qualified_index(schema: &str, name: &str) -> String {
+    let d = Engine::Postgres.dialect();
+    let needs_quote = |s: &str| {
+        s.is_empty()
+            || !s.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+            || !s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    };
+    let q_name = if needs_quote(name) { d.quote(name) } else { name.to_string() };
+    if schema.is_empty() || schema.eq_ignore_ascii_case("public") {
+        q_name
+    } else {
+        let q_schema = if needs_quote(schema) { d.quote(schema) } else { schema.to_string() };
+        format!("{q_schema}.{q_name}")
+    }
+}
+
+fn rewrite_preserving_comments(orig_span: &str, rep_sql: &str) -> String {
+    // If orig_span has no comments, use rep_sql directly.
+    if !orig_span.contains("--") && !orig_span.contains("/*") {
+        return rep_sql.to_string();
+    }
+    let rep_upper = rep_sql.to_ascii_uppercase();
+    // 1. CREATE [UNIQUE] INDEX -> insert CONCURRENTLY right after INDEX in orig_span
+    if rep_upper.starts_with("CREATE ")
+        && rep_upper.contains(" INDEX CONCURRENTLY ")
+        && let Some(pos) = find_keyword_outside_comments(orig_span, "INDEX")
+    {
+        let after_idx = pos + "INDEX".len();
+        let mut rewritten = String::with_capacity(orig_span.len() + 16);
+        rewritten.push_str(&orig_span[..after_idx]);
+        rewritten.push_str(" CONCURRENTLY");
+        rewritten.push_str(&orig_span[after_idx..]);
+        if !rewritten.trim_end().ends_with(';') && rep_sql.ends_with(';') {
+            rewritten.push(';');
+        }
+        return rewritten;
+    }
+    // 2. Suffix additions (WITH (ONLINE = ON); or ALGORITHM=INPLACE[ ,] LOCK=NONE;)
+    for suffix in [" WITH (ONLINE = ON);", " ALGORITHM=INPLACE LOCK=NONE;", ", ALGORITHM=INPLACE, LOCK=NONE;"] {
+        if rep_sql.ends_with(suffix) {
+            let body = orig_span.trim_end().strip_suffix(';').unwrap_or(orig_span.trim_end());
+            return format!("{body}{suffix}");
+        }
+    }
+    rep_sql.to_string()
+}
+
+fn find_keyword_outside_comments(sql: &str, keyword: &str) -> Option<usize> {
+    let bytes = sql.as_bytes();
+    let kw = keyword.as_bytes();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        if !in_single && !in_double {
+            if bytes[i] == b'-' && bytes.get(i + 1) == Some(&b'-') {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 2;
+                continue;
+            }
+            if i + kw.len() <= bytes.len() && bytes[i..i + kw.len()].eq_ignore_ascii_case(kw) {
+                let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_';
+                let after_ok = i + kw.len() == bytes.len()
+                    || !bytes[i + kw.len()].is_ascii_alphanumeric() && bytes[i + kw.len()] != b'_';
+                if before_ok && after_ok {
+                    return Some(i);
+                }
+            }
+        }
+        if bytes[i] == b'\'' && !in_double {
+            in_single = !in_single;
+        } else if bytes[i] == b'"' && !in_single {
+            in_double = !in_double;
+        }
+        i += 1;
+    }
+    None
+}
+
 fn compact_sql(stmt: &str) -> String {
     stmt.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn split_statements(sql: &str) -> Vec<String> {
     split_statement_spans(sql).into_iter().map(|(_, _, s)| s).collect()
+}
+
+fn parse_dollar_tag(sql: &str) -> Option<&str> {
+    let rest = sql.strip_prefix('$')?;
+    let end = rest.find('$')?;
+    let tag = &rest[..end];
+    if tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') { Some(&sql[..end + 2]) } else { None }
 }
 
 fn split_statement_spans(sql: &str) -> Vec<(usize, usize, String)> {
@@ -1749,8 +1871,48 @@ fn split_statement_spans(sql: &str) -> Vec<(usize, usize, String)> {
     let mut chars = sql.char_indices().peekable();
     let mut in_single = false;
     let mut in_double = false;
+    let mut dollar_tag: Option<String> = None;
     while let Some((idx, c)) = chars.next() {
+        if let Some(ref tag) = dollar_tag {
+            current.push(c);
+            stmt_end = idx + c.len_utf8();
+            if c == '$' && sql[idx..].starts_with(tag.as_str()) {
+                for _ in 0..tag.chars().count().saturating_sub(1) {
+                    if let Some((end_i, ch)) = chars.next() {
+                        current.push(ch);
+                        stmt_end = end_i + ch.len_utf8();
+                    }
+                }
+                dollar_tag = None;
+            }
+            continue;
+        }
+        if (in_single || in_double) && c == '\\' {
+            current.push(c);
+            if let Some((end_i, next_c)) = chars.next() {
+                current.push(next_c);
+                stmt_end = end_i + next_c.len_utf8();
+            }
+            continue;
+        }
         if !in_single && !in_double {
+            if c == '$'
+                && let Some(tag) = parse_dollar_tag(&sql[idx..])
+            {
+                if stmt_start.is_none() {
+                    stmt_start = Some(idx);
+                }
+                current.push(c);
+                stmt_end = idx + c.len_utf8();
+                for _ in 0..tag.chars().count().saturating_sub(1) {
+                    if let Some((end_i, ch)) = chars.next() {
+                        current.push(ch);
+                        stmt_end = end_i + ch.len_utf8();
+                    }
+                }
+                dollar_tag = Some(tag.to_string());
+                continue;
+            }
             if c == '-' && chars.peek().map(|(_, ch)| *ch) == Some('-') {
                 for (_, ch) in chars.by_ref() {
                     if ch == '\n' {
@@ -1808,17 +1970,22 @@ fn split_statement_spans(sql: &str) -> Vec<(usize, usize, String)> {
 fn tokenize(stmt: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
-    let mut in_quotes = None;
+    let mut close_delim: Option<char> = None;
     for c in stmt.chars() {
-        if let Some(q) = in_quotes {
+        if let Some(q) = close_delim {
             current.push(c);
             if c == q {
-                in_quotes = None;
+                close_delim = None;
             }
             continue;
         }
-        if matches!(c, '\'' | '"') {
-            in_quotes = Some(c);
+        if matches!(c, '\'' | '"' | '`') {
+            close_delim = Some(c);
+            current.push(c);
+            continue;
+        }
+        if c == '[' {
+            close_delim = Some(']');
             current.push(c);
             continue;
         }
@@ -2142,14 +2309,26 @@ mod tests {
         // Auto-fixing rewrites fixable statements in place and resolves their lint findings.
         let raw_migration = format!(
             "-- migration header\n\
-             CREATE INDEX idx_auto_fix ON {table} (created_at);\n\
+             CREATE INDEX /* keep comment */ idx_auto_fix ON {table} (created_at);\n\
              DROP INDEX {idx_name};\n"
         );
         let (rewritten, count) = apply_sql_fixes(&s, &raw_migration);
         assert_eq!(count, 2);
         assert!(rewritten.contains("-- migration header"));
-        assert!(rewritten.contains("CREATE INDEX CONCURRENTLY idx_auto_fix"));
+        assert!(rewritten.contains("CREATE INDEX CONCURRENTLY /* keep comment */ idx_auto_fix"));
         assert!(rewritten.contains(&format!("DROP INDEX CONCURRENTLY IF EXISTS {idx_name};")));
         assert!(lint_sql(&s, &rewritten).is_empty(), "{:?}", lint_sql(&s, &rewritten));
+
+        // Dollar-quoted PL/pgSQL function bodies containing BEGIN ...; END; do not corrupt transaction state.
+        let plpgsql_sql = format!(
+            "CREATE OR REPLACE FUNCTION touch_row() RETURNS trigger AS $$\n\
+             BEGIN\n\
+               NEW.updated_at = now();\n\
+               RETURN NEW;\n\
+             END;\n\
+             $$ LANGUAGE plpgsql;\n\
+             CREATE INDEX CONCURRENTLY idx_after_fn ON {table} (created_at);\n"
+        );
+        assert!(lint_sql(&s, &plpgsql_sql).is_empty());
     }
 }

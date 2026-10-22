@@ -44,34 +44,108 @@ const HAS_DDL = /\b(create|alter|drop|truncate|rename|reindex|vacuum|cluster)\b/
 
 const setLintEffect = StateEffect.define<Finding[]>();
 
-function locateFindingSpan(docText: string, f: Finding): [number, number] | null {
-  const lines = docText.split("\n");
-  const quoted = f.summary.split("`")[1];
-  const quotedNorm = quoted ? quoted.trim().replace(/\s+/g, " ").toLowerCase() : "";
-  const prefix = quoted ? quoted.trim().split(/\s+/).slice(0, 3).join(" ").toLowerCase() : "";
-  const leaf = (f.subject.name.split(".").pop() ?? f.subject.name).toLowerCase();
+function normalizeSqlWithOffsets(docText: string): { norm: string; offsets: number[] } {
+  let norm = "";
+  const offsets: number[] = [];
+  let inSingle = false;
+  let inDouble = false;
+  let lastSpace = true;
 
-  let offset = 0;
-  for (const [i, line] of lines.entries()) {
-    const norm = line.trim().replace(/\s+/g, " ").toLowerCase();
-    if (norm.length > 0 && !norm.startsWith("--")) {
-      const windowNorm = lines
-        .slice(i, i + 4)
-        .join(" ")
-        .trim()
-        .replace(/\s+/g, " ")
-        .toLowerCase();
-      const matchesFull = quotedNorm.length > 0 && windowNorm.startsWith(quotedNorm);
-      const matchesPrefix = prefix.length > 0 && (norm.includes(prefix) || windowNorm.startsWith(prefix));
-      const matchesLeaf = !matchesPrefix && leaf.length > 0 && HAS_DDL.test(norm) && norm.includes(leaf);
-      if (matchesFull || matchesPrefix || matchesLeaf) {
-        const leading = line.length - line.trimStart().length;
-        const from = offset + leading;
-        const to = offset + line.trimEnd().length;
-        if (to > from) return [from, to];
+  for (let i = 0; i < docText.length; i++) {
+    const ch = docText[i]!;
+    const next = docText[i + 1];
+    if ((inSingle || inDouble) && ch === "\\" && i + 1 < docText.length) {
+      norm += ch.toLowerCase() + next!.toLowerCase();
+      offsets.push(i, i + 1);
+      lastSpace = false;
+      i += 1;
+      continue;
+    }
+    if (!inSingle && !inDouble) {
+      if (ch === "-" && next === "-") {
+        const nl = docText.indexOf("\n", i + 2);
+        if (nl === -1) break;
+        i = nl;
+        if (!lastSpace) {
+          norm += " ";
+          offsets.push(i);
+          lastSpace = true;
+        }
+        continue;
+      }
+      if (ch === "/" && next === "*") {
+        const end = docText.indexOf("*/", i + 2);
+        if (end === -1) break;
+        i = end + 1;
+        if (!lastSpace) {
+          norm += " ";
+          offsets.push(i);
+          lastSpace = true;
+        }
+        continue;
       }
     }
-    offset += line.length + 1;
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+
+    if (/\s/.test(ch)) {
+      if (!lastSpace) {
+        norm += " ";
+        offsets.push(i);
+        lastSpace = true;
+      }
+    } else {
+      norm += ch.toLowerCase();
+      offsets.push(i);
+      lastSpace = false;
+    }
+  }
+  return { norm, offsets };
+}
+
+function lineSpanFromOffset(docText: string, startOffset: number): [number, number] | null {
+  const lineEndRaw = docText.indexOf("\n", startOffset);
+  const lineEnd = lineEndRaw === -1 ? docText.length : lineEndRaw;
+  const lineSlice = docText.slice(startOffset, lineEnd);
+  const trimmedEnd = startOffset + lineSlice.trimEnd().length;
+  return trimmedEnd > startOffset ? [startOffset, trimmedEnd] : null;
+}
+
+function locateFindingSpan(docText: string, f: Finding): [number, number] | null {
+  const { norm, offsets } = normalizeSqlWithOffsets(docText);
+  const quoted = f.summary.split("`")[1];
+  const quotedFull = quoted
+    ? quoted
+        .trim()
+        .replace(/;+$/, "")
+        .trim()
+        .replace(/\s+/g, " ")
+        .toLowerCase()
+    : "";
+  if (quotedFull.length > 0) {
+    const pos = norm.indexOf(quotedFull);
+    if (pos !== -1 && offsets[pos] !== undefined) {
+      const span = lineSpanFromOffset(docText, offsets[pos]!);
+      if (span) return span;
+    }
+  }
+  const prefix = quoted ? quoted.trim().split(/\s+/).slice(0, 4).join(" ").toLowerCase() : "";
+  if (prefix.length > 0) {
+    const pos = norm.indexOf(prefix);
+    if (pos !== -1 && offsets[pos] !== undefined) {
+      const span = lineSpanFromOffset(docText, offsets[pos]!);
+      if (span) return span;
+    }
+  }
+  const leaf = (f.subject.name.split(".").pop() ?? f.subject.name).toLowerCase();
+  if (leaf.length > 0) {
+    const pos = norm.indexOf(leaf);
+    if (pos !== -1 && offsets[pos] !== undefined) {
+      const lineStart = docText.lastIndexOf("\n", offsets[pos]!) + 1;
+      const leading = docText.slice(lineStart).length - docText.slice(lineStart).trimStart().length;
+      const span = lineSpanFromOffset(docText, lineStart + leading);
+      if (span) return span;
+    }
   }
   return null;
 }
@@ -79,10 +153,30 @@ function locateFindingSpan(docText: string, f: Finding): [number, number] | null
 function statementEndOffset(docText: string, from: number, fallbackTo: number): number {
   let inSingle = false;
   let inDouble = false;
+  let dollarTag: string | null = null;
   for (let i = from; i < docText.length; i++) {
     const ch = docText[i]!;
     const next = docText[i + 1];
+    if (dollarTag !== null) {
+      if (ch === "$" && docText.startsWith(dollarTag, i)) {
+        i += dollarTag.length - 1;
+        dollarTag = null;
+      }
+      continue;
+    }
+    if ((inSingle || inDouble) && ch === "\\" && i + 1 < docText.length) {
+      i += 1;
+      continue;
+    }
     if (!inSingle && !inDouble) {
+      if (ch === "$") {
+        const m = /^\$[A-Za-z0-9_]*\$/.exec(docText.slice(i));
+        if (m) {
+          dollarTag = m[0];
+          i += dollarTag.length - 1;
+          continue;
+        }
+      }
       if (ch === "-" && next === "-") {
         const nl = docText.indexOf("\n", i + 2);
         if (nl === -1) break;
@@ -278,9 +372,17 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
     [languageExtension, updateTabs],
   );
 
+  const lintContextRef = useRef<string>("");
+
   // Instantaneous live migration linter: skipped altogether unless DDL keywords are present.
   useEffect(() => {
     const sql = activeTab.sql;
+    const contextKey = `${connection.name}:${activeTab.id}`;
+    if (lintContextRef.current !== contextKey) {
+      lintContextRef.current = contextKey;
+      setLiveLint((prev) => (prev.length === 0 ? prev : []));
+      view.current?.dispatch({ effects: setLintEffect.of([]) });
+    }
     if (!sql || sql === PLACEHOLDER.trim() || !HAS_DDL.test(sql)) {
       setLiveLint((prev) => (prev.length === 0 ? prev : []));
       view.current?.dispatch({ effects: setLintEffect.of([]) });
@@ -295,13 +397,17 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
           setLiveLint(findings);
           view.current?.dispatch({ effects: setLintEffect.of(findings) });
         })
-        .catch(() => {});
+        .catch(() => {
+          if (cancelled) return;
+          setLiveLint((prev) => (prev.length === 0 ? prev : []));
+          view.current?.dispatch({ effects: setLintEffect.of([]) });
+        });
     }, 200);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeTab.sql, connection.name]);
+  }, [activeTab.id, activeTab.sql, connection.name]);
 
   const applyLintFix = (f: Finding) => {
     const fixSql = f.fix?.sql?.trim();

@@ -669,4 +669,17 @@ fn extract_call_site_reads_marginalia_sqlcommenter_and_file_line_comments() {
     assert_eq!(extract_call_site("SELECT '/* app/fake.py:10 */' FROM orders /* culprit */"), None);
     assert_eq!(extract_call_site("SELECT $$/* app/fake.py:10 */$$ FROM orders"), None);
     assert_eq!(extract_call_site("/* https://example.com/app.js:10 */ SELECT 1"), None);
+    assert_eq!(extract_call_site("/* postgres://db.internal.rs:5432 */ SELECT 1"), None);
+    assert_eq!(
+        extract_call_site(r"/* file='C:\app\models\order.rb', line='42' */ SELECT 1").as_deref(),
+        Some(r"C:\app\models\order.rb:42")
+    );
+    assert_eq!(
+        extract_call_site(r"/* C:\app\models\order.rb:42 */ SELECT 1").as_deref(),
+        Some(r"C:\app\models\order.rb:42")
+    );
+    assert_eq!(
+        extract_call_site("/* controller=orders action=index file=app/models/order.rb line=42 */ SELECT 1").as_deref(),
+        Some("app/models/order.rb:42 (controller=orders, action=index)")
+    );
 }

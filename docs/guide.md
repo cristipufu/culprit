@@ -92,7 +92,7 @@ Findings whose queries stopped running well before the end of the data window (r
 
 Culprit is built to be driven by coding agents. Every command prints JSON when stdout isn't a terminal (or SARIF 2.1.0 with `--format sarif`), finding ids are stable, and connections are referenced by name, so agents never handle credentials.
 
-**MCP server.** `culprit mcp` serves Culprit over the Model Context Protocol on stdio (no network port, no token). Tools: `list_connections`, `scan`, `dashboard`, `findings`, `finding`, `top_queries`, `query`, `query_plan`, `plan_insights`, `last_actual_plan`, `query_progress`, `what_changed`, `events`, `cloud_metrics`, `mark`, `explain`, `lint_sql`, `live`, `blocking`, `deadlocks`, `waits`, `schema`, `index_advice`, `verify`, `export_finding`, `run_query`. All are read-only except `mark`, which adds a note to the connection's local timeline.
+**MCP server.** `culprit mcp` serves Culprit over the Model Context Protocol on stdio (no network port, no token). Tools: `list_connections`, `scan`, `dashboard`, `findings`, `finding`, `top_queries`, `query`, `query_plan`, `plan_insights`, `last_actual_plan`, `query_progress`, `what_changed`, `events`, `cloud_metrics`, `mark`, `explain`, `lint_sql`, `live`, `blocking`, `deadlocks`, `waits`, `schema`, `drift`, `index_advice`, `verify`, `export_finding`, `run_query`. All are read-only except `mark`, which adds a note to the connection's local timeline.
 
 ```sh
 claude mcp add culprit -- culprit mcp                 # Claude Code
