@@ -2,6 +2,27 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.4.0
+
+### Added
+
+- **Offline migration and DDL linter (`culprit lint-sql`, MCP `lint_sql`, SQL editor).** Lint `.sql` migration files or whole `migrations/` directories offline against a saved snapshot's table sizes, row counts, column types, indexes, constraints and active workload. Detects blocking `CREATE INDEX`, `DROP INDEX` and `ALTER TABLE` locks across PostgreSQL (`CONCURRENTLY`, `NOT VALID`), SQL Server (`ONLINE = ON`, `WITH NOCHECK`) and MySQL / MariaDB (`ALGORITHM=INSTANT`, `ALGORITHM=INPLACE, LOCK=NONE`), unindexed or type/collation-mismatched foreign keys, redundant indexes, table-rewriting column changes, and `DROP` or `RENAME` statements that break captured queries.
+- **DDL auto-fix (`--write` and editor quick fixes).** `culprit lint-sql --file <path> --write` rewrites fixable DDL statements in place across one or more files or directories. The desktop SQL editor highlights unsafe DDL inline with squiggly underlines, hover cards and one-click **Quick fix** / **Apply all fixes** actions.
+- **SARIF 2.1.0 output for CI and GitHub Pull Requests (`--format sarif`).** `culprit lint-sql`, `culprit scan`, `culprit findings` and `culprit diff` emit SARIF 2.1.0 with stable rule ids and 1-based file/line locations for `github/codeql-action/upload-sarif`.
+- **Virtual index verification (`--with-index` via PostgreSQL `HypoPG`).** `culprit explain --with-index "CREATE INDEX …"` (and MCP `explain` with `with_indexes`) creates zero-cost hypothetical indexes in a rolled-back transaction when `hypopg` is available, plans the query against them, and reports whether the planner uses each proposed index and how much the estimated cost drops.
+- **Application call-site attribution (`file:line`).** Agent briefs (`culprit show`, MCP `finding`) extract application source file paths and line numbers from SQL comments (Marginalia, SqlCommenter, Rails Query Logs, and `path/to/file.ext:line` markers) and surface them alongside the SQL fix.
+- **New checks and advisor guidance.**
+  - `data-corruption`: reports page checksum and read failures (`pg_stat_database.checksum_failures`, SQL Server `msdb.dbo.suspect_pages`, MySQL / MariaDB corruption counters).
+  - Partitioning and time-series storage: detects overflowing `DEFAULT` partitions, expiring range partitions with no future child partition, and large append-only timestamp-ordered PostgreSQL tables where a `BRIN` index (`USING brin`) fits better than a B-tree.
+  - Foreign keys, primary keys and vacuuming: escalates unindexed PostgreSQL foreign keys when parent tables have non-HOT updates, flags narrow 32-bit integer primary keys on large tables (`narrow-pk`), checks per-table disabled autovacuum (`autovacuum_enabled = off`) and large-table scale factors, checks foreign-key delete rules and collation mismatches, and checks SQLite `PRAGMA foreign_keys = OFF`.
+  - Write amplification and connection health: reports PostgreSQL `WAL buffers full`, MySQL `Innodb_buffer_pool_wait_free`, and aborted connection handshakes.
+- **Richer schema drift and query-log formats.** `culprit drift` and timeline history now compare triggers, foreign keys (with `ON DELETE` rules), check constraints and redacted partition bounds. `culprit-querylog` auto-discovers `.jsonl` / `.ndjson` logs and parses OpenTelemetry JSON spans and structured logger envelopes (`pino`, `bunyan`, `slog`, `zap`, `tracing`, `logrus`).
+
+### Fixes
+
+- **Broad index seeks and bitmap rechecks.** `filtered-scan`, `non-sargable` and `leading-wildcard` now evaluate selective residual filters on broad `Index Seek` operators as well as full table scans. PostgreSQL `Rows Removed by Index Recheck` is included in `rows_read` even when no separate `Filter` is present.
+- **Evidence provenance, database identity and cross-surface invariants.** Saved reports record typed source outcomes, measurement clocks, database identity (including canonical file path and Unix inode), plan facts, finding facts and refinement decisions. Cross-surface invariant tests verify that Report findings, Dashboard tiles, Index Advisor, Plan Insights, Agent Briefs, Digests, HTML/Markdown exports and SARIF output agree without contradiction or unredacted literals.
+
 ## 0.3.9
 
 ### Added
