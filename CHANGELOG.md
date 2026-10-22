@@ -2,6 +2,15 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.4.1
+
+### Fixes
+
+- **DDL linter, auto-fix and editor quick fixes.** Preserves trailing `--` line comments when appending online DDL clauses (`ALGORITHM=INPLACE, LOCK=NONE`, `WITH (ONLINE = ON)`), handles PostgreSQL dollar-quoted strings (`$$…$$`, `$tag$…$tag$`), MySQL backtick identifiers, SQL Server bracketed identifiers and escaped quotes across multi-statement scripts, and deduplicates `unindexed-fk` index fixes. In the desktop SQL editor, applying a quick fix on an unindexed foreign key appends the new `CREATE INDEX` statement instead of replacing the `ALTER TABLE` statement.
+- **CLI, SARIF and MCP `lint-sql` output.** Multi-file `culprit lint-sql` runs aggregate cleanly across `--format text`, `--format md`, `--format json` and `--format sarif` with accurate 1-based file and statement spans (including statements with backtick-quoted identifiers). MCP `lint_sql` now includes `summary`, `fix`, `fix_sql` and `verify` inline on transient DDL findings, and `plan_insights` records its `sql` argument in the MCP audit log.
+- **Schema drift and provider collectors.** `culprit drift` now compares foreign-key `ON DELETE` rules (`CASCADE` vs `NO ACTION`), disabled/invalid indexes and index operator classes, and redacts literals inside partition bound expressions when exporting reports. SQLite catalog collection handles multiline index `ON`/`WHERE` clauses and word-bounded trigger events (`UPDATE` vs `UPDATE OF col_name`). PostgreSQL `explain --with-index` (`HypoPG`) strips `--` line comments before creating virtual indexes.
+- **Query-log ingestion (`culprit-querylog`).** Fixes a slice boundary panic on short timestamp prefixes, recomputes observation window `first`/`last` bounds after filtering multi-database logs, and captures structured JSONL error events without durations.
+
 ## 0.4.0
 
 ### Added
