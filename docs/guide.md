@@ -50,7 +50,7 @@ culprit conn add shop-staging --env staging \
 
 culprit conn discover --match shop --match stg --save   # or find Azure SQL, PostgreSQL and MySQL databases your az login can see
 culprit conn import --dry-run                  # or bring in connections from Azure Data Studio, VS Code, DBeaver, DataGrip
-culprit conn add app --url db/production.sqlite3   # a SQLite file (preview), opened read-only
+culprit conn add app --url db/production.sqlite3   # a SQLite 3 file, opened read-only
 culprit conn set app --query-log log/production.log   # its framework's log, when it isn't found beside the file (docs/sqlite.md)
 
 culprit scan shop-staging                      # findings, ranked
@@ -61,7 +61,8 @@ culprit mark shop-staging deploy v1.4.2         # put a deploy on the timeline (
 culprit cloud shop-staging                     # RDS / Azure metrics against their limits, via your aws or az sign-in
 culprit show shop-staging '<finding id>'       # evidence, fix, verification, and a brief for your coding agent
 culprit top shop-staging --by cpu -n 10        # heaviest queries
-culprit explain shop-staging --sql 'SELECT …'  # estimated plan, never executes
+culprit explain shop-staging --sql 'SELECT …'  # estimated plan, never executes (--with-index tests virtual indexes on Postgres)
+culprit lint-sql shop-staging --file migrations/ --format sarif   # lint migration DDL offline against the snapshot (--write rewrites in place)
 culprit plan show slow.sqlplan                 # read a plan from another tool: .sqlplan, EXPLAIN JSON or text, MySQL JSON or tree, SQLite EXPLAIN QUERY PLAN
 culprit plan diff shop-staging:42:7 shop-staging:42:9   # compare two Query Store plans of query 42 (or two files)
 culprit update --check                         # is there a newer release? `culprit update` installs it
@@ -79,7 +80,7 @@ The **Plans** view (`7`, also without a connection) draws any plan you paste (�
 
 ### Editor and saved queries
 
-The **Editor** keeps your query tabs across restarts (⌘T new, ⌘⇧W close, ⌘⇧[ / ⌘⇧] switch) and completes schemas, tables and columns as you type, read live from the connection (aliases included: after `o.` it offers only that table's columns, with their types). ⌘↵ runs the selection or the whole tab, ⌘E shows the plan without running it, ⌘S saves the tab as a named query.
+The **Editor** keeps your query tabs across restarts (⌘T new, ⌘⇧W close, ⌘⇧[ / ⌘⇧] switch), completes schemas, tables and columns as you type, read live from the connection (aliases included: after `o.` it offers only that table's columns, with their types), and lints DDL and migration statements inline against the latest snapshot with one-click quick fixes. ⌘↵ runs the selection or the whole tab, ⌘E shows the plan without running it, ⌘S saves the tab as a named query.
 
 **Saved queries** live in the editor's side rail, the command palette (⌘K, "Run saved: …") and the CLI (`culprit saved list | add | show | run | rm`); each remembers the connection it was saved for and can run on any other.
 
@@ -89,9 +90,9 @@ Findings whose queries stopped running well before the end of the data window (r
 
 ## Coding agents
 
-Culprit is built to be driven by coding agents. Every command prints JSON when stdout isn't a terminal, finding ids are stable, and connections are referenced by name, so agents never handle credentials.
+Culprit is built to be driven by coding agents. Every command prints JSON when stdout isn't a terminal (or SARIF 2.1.0 with `--format sarif`), finding ids are stable, and connections are referenced by name, so agents never handle credentials.
 
-**MCP server.** `culprit mcp` serves Culprit over the Model Context Protocol on stdio (no network port, no token). Tools: `list_connections`, `scan`, `dashboard`, `findings`, `finding`, `top_queries`, `query`, `query_plan`, `plan_insights`, `last_actual_plan`, `query_progress`, `what_changed`, `events`, `cloud_metrics`, `mark`, `explain`, `live`, `blocking`, `deadlocks`, `waits`, `schema`, `index_advice`, `verify`, `export_finding`, `run_query`. All are read-only except `mark`, which adds a note to the connection's local timeline.
+**MCP server.** `culprit mcp` serves Culprit over the Model Context Protocol on stdio (no network port, no token). Tools: `list_connections`, `scan`, `dashboard`, `findings`, `finding`, `top_queries`, `query`, `query_plan`, `plan_insights`, `last_actual_plan`, `query_progress`, `what_changed`, `events`, `cloud_metrics`, `mark`, `explain`, `lint_sql`, `live`, `blocking`, `deadlocks`, `waits`, `schema`, `index_advice`, `verify`, `export_finding`, `run_query`. All are read-only except `mark`, which adds a note to the connection's local timeline.
 
 ```sh
 claude mcp add culprit -- culprit mcp                 # Claude Code
@@ -172,6 +173,9 @@ crates/culprit-core      model: snapshots, plans, findings; Provider and Check c
 crates/culprit-checks    every check, as a pure function of a snapshot
 crates/culprit-mssql     SQL Server provider
 crates/culprit-postgres  Postgres provider
+crates/culprit-mysql     MySQL and MariaDB provider
+crates/culprit-sqlite    SQLite 3 file provider
+crates/culprit-querylog  framework query log parser (Rails, Django, EF Core, Ecto, JSONL)
 crates/culprit-engine    connection store, keychain, Entra tokens, scans, reports, agent approvals and audit log
 crates/culprit-mcp       the MCP server for coding agents and `culprit agent init`
 crates/culprit-cli       the `culprit` binary
