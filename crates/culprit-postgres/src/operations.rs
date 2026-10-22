@@ -105,7 +105,7 @@ pub async fn collect(client: &Client, version: u32, snapshot: &mut Snapshot) {
         );
         if let Ok(rows) = query(client, &checksum_sql).await {
             for r in rows {
-                if let Some(count) = r.number("count") {
+                if let Some(count) = r.number("count").filter(|c| *c > 0.0) {
                     snapshot.operations.counters.push(OperationalCounter {
                         kind: Kind::ChecksumFailures,
                         subject: snapshot.server.database.clone(),

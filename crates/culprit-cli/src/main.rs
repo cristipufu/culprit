@@ -847,7 +847,48 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
                 return Err(Error::invalid("Pass --sql <SQL> or --file <PATH>"));
             }
 
+            let opportunities = all_findings.iter().filter(|f| f.is_actionable()).count() as u32;
+            let mut by_category = Vec::new();
+            for cat in [
+                culprit_core::Category::Indexes,
+                culprit_core::Category::Queries,
+                culprit_core::Category::Maintenance,
+                culprit_core::Category::Configuration,
+            ] {
+                let count = all_findings.iter().filter(|f| f.is_actionable() && f.category == cat).count() as u32;
+                if count > 0 {
+                    by_category.push(culprit_core::CategoryCount { category: cat, count });
+                }
+            }
+            let mut by_severity = Vec::new();
+            for sev in [Severity::High, Severity::Medium, Severity::Low] {
+                let count = all_findings.iter().filter(|f| f.is_actionable() && f.severity == sev).count() as u32;
+                if count > 0 {
+                    by_severity.push(culprit_core::SeverityCount { severity: sev, count });
+                }
+            }
+            let headline = if all_findings.is_empty() {
+                "No migration or DDL issues found.".to_string()
+            } else {
+                format!(
+                    "{} migration DDL {} found.",
+                    all_findings.len(),
+                    if all_findings.len() == 1 { "issue" } else { "issues" }
+                )
+            };
+            base_report.summary = culprit_core::Summary {
+                opportunities,
+                by_category,
+                by_severity,
+                top_share: None,
+                headline,
+                no_workload: None,
+                runs_said: Vec::new(),
+                over_scans: Vec::new(),
+            };
             base_report.findings = all_findings;
+            base_report.locked.clear();
+            base_report.assessments.clear();
             out.lint_sql(&base_report, &batches);
             Ok(fail_code(&base_report, fail_on))
         }

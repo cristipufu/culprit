@@ -49,11 +49,34 @@ function normalizeSqlWithOffsets(docText: string): { norm: string; offsets: numb
   const offsets: number[] = [];
   let inSingle = false;
   let inDouble = false;
+  let dollarTag: string | null = null;
   let lastSpace = true;
 
   for (let i = 0; i < docText.length; i++) {
     const ch = docText[i]!;
     const next = docText[i + 1];
+    if (dollarTag !== null) {
+      if (/\s/.test(ch)) {
+        if (!lastSpace) {
+          norm += " ";
+          offsets.push(i);
+          lastSpace = true;
+        }
+      } else {
+        norm += ch.toLowerCase();
+        offsets.push(i);
+        lastSpace = false;
+      }
+      if (ch === "$" && docText.startsWith(dollarTag, i)) {
+        for (let k = 1; k < dollarTag.length; k++) {
+          norm += docText[i + k]!.toLowerCase();
+          offsets.push(i + k);
+        }
+        i += dollarTag.length - 1;
+        dollarTag = null;
+      }
+      continue;
+    }
     if ((inSingle || inDouble) && ch === "\\" && i + 1 < docText.length) {
       norm += ch.toLowerCase() + next!.toLowerCase();
       offsets.push(i, i + 1);
@@ -62,6 +85,19 @@ function normalizeSqlWithOffsets(docText: string): { norm: string; offsets: numb
       continue;
     }
     if (!inSingle && !inDouble) {
+      if (ch === "$") {
+        const m = /^\$[A-Za-z0-9_]*\$/.exec(docText.slice(i));
+        if (m) {
+          dollarTag = m[0];
+          for (let k = 0; k < dollarTag.length; k++) {
+            norm += docText[i + k]!.toLowerCase();
+            offsets.push(i + k);
+          }
+          lastSpace = false;
+          i += dollarTag.length - 1;
+          continue;
+        }
+      }
       if (ch === "-" && next === "-") {
         const nl = docText.indexOf("\n", i + 2);
         if (nl === -1) break;
@@ -103,6 +139,61 @@ function normalizeSqlWithOffsets(docText: string): { norm: string; offsets: numb
   return { norm, offsets };
 }
 
+function statementStartOffset(docText: string, targetOffset: number): number {
+  let inSingle = false;
+  let inDouble = false;
+  let dollarTag: string | null = null;
+  let stmtStart: number | null = null;
+  for (let i = 0; i < docText.length && i <= targetOffset; i++) {
+    const ch = docText[i]!;
+    const next = docText[i + 1];
+    if (dollarTag !== null) {
+      if (ch === "$" && docText.startsWith(dollarTag, i)) {
+        i += dollarTag.length - 1;
+        dollarTag = null;
+      }
+      continue;
+    }
+    if ((inSingle || inDouble) && ch === "\\" && i + 1 < docText.length) {
+      i += 1;
+      continue;
+    }
+    if (!inSingle && !inDouble) {
+      if (ch === "$") {
+        const m = /^\$[A-Za-z0-9_]*\$/.exec(docText.slice(i));
+        if (m) {
+          if (stmtStart === null) stmtStart = i;
+          dollarTag = m[0];
+          i += dollarTag.length - 1;
+          continue;
+        }
+      }
+      if (ch === "-" && next === "-") {
+        const nl = docText.indexOf("\n", i + 2);
+        if (nl === -1) break;
+        i = nl;
+        continue;
+      }
+      if (ch === "/" && next === "*") {
+        const end = docText.indexOf("*/", i + 2);
+        if (end === -1) break;
+        i = end + 1;
+        continue;
+      }
+      if (ch === ";") {
+        stmtStart = null;
+        continue;
+      }
+    }
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    if (!/\s/.test(ch) && stmtStart === null) {
+      stmtStart = i;
+    }
+  }
+  return stmtStart ?? targetOffset;
+}
+
 function lineSpanFromOffset(docText: string, startOffset: number): [number, number] | null {
   const lineEndRaw = docText.indexOf("\n", startOffset);
   const lineEnd = lineEndRaw === -1 ? docText.length : lineEndRaw;
@@ -133,7 +224,7 @@ function locateFindingSpan(docText: string, f: Finding): [number, number] | null
   if (prefix.length > 0) {
     const pos = norm.indexOf(prefix);
     if (pos !== -1 && offsets[pos] !== undefined) {
-      const span = lineSpanFromOffset(docText, offsets[pos]!);
+      const span = lineSpanFromOffset(docText, statementStartOffset(docText, offsets[pos]!));
       if (span) return span;
     }
   }
@@ -141,9 +232,7 @@ function locateFindingSpan(docText: string, f: Finding): [number, number] | null
   if (leaf.length > 0) {
     const pos = norm.indexOf(leaf);
     if (pos !== -1 && offsets[pos] !== undefined) {
-      const lineStart = docText.lastIndexOf("\n", offsets[pos]!) + 1;
-      const leading = docText.slice(lineStart).length - docText.slice(lineStart).trimStart().length;
-      const span = lineSpanFromOffset(docText, lineStart + leading);
+      const span = lineSpanFromOffset(docText, statementStartOffset(docText, offsets[pos]!));
       if (span) return span;
     }
   }
@@ -820,8 +909,8 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
                   </button>
                 </div>
               )}
-              {liveLint.map((f) => (
-                <div key={f.id} className="editor-lint-row">
+              {liveLint.map((f, idx) => (
+                <div key={`${f.id}:${idx}`} className="editor-lint-row">
                   <TriangleAlert size={13} className="editor-lint-icon" />
                   <div className="editor-lint-copy">
                     <strong>{f.title}</strong>

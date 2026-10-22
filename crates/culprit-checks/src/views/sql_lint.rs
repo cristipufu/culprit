@@ -894,7 +894,7 @@ fn check_alter_table(
 
     let before_count = findings.len();
     for (clause_tokens, clause_upper) in split_top_level_commas(&tokens[pos + 1..], &upper[pos + 1..]) {
-        check_alter_table_action(snapshot, stmt, table, clause_tokens, clause_upper, ctx, findings);
+        check_alter_table_action(snapshot, stmt, table, clause_tokens, clause_upper, ctx, before_count, findings);
     }
     let adds_fk = upper.windows(2).any(|w| w == ["FOREIGN", "KEY"]);
     if snapshot.server.engine == Engine::Mysql
@@ -974,6 +974,7 @@ fn split_top_level_commas<'a>(tokens: &'a [String], upper: &'a [String]) -> Vec<
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_alter_table_action(
     snapshot: &Snapshot,
     stmt: &str,
@@ -981,6 +982,7 @@ fn check_alter_table_action(
     tokens: &[String],
     upper: &[String],
     ctx: &ScriptContext<'_>,
+    before_count: usize,
     findings: &mut Vec<Finding>,
 ) {
     // 1. Check FOREIGN KEY additions for missing child index or column type mismatch.
@@ -1291,7 +1293,7 @@ fn check_alter_table_action(
                 None => true,
             }
         });
-        if is_rewrite && !findings.iter().any(|f| f.id == format!("sql-lint:table-rewrite:{qual}")) {
+        if is_rewrite && !findings[before_count..].iter().any(|f| f.id == format!("sql-lint:table-rewrite:{qual}")) {
             let mut f = finding(
                 "sql-lint",
                 &format!("table-rewrite:{qual}"),
@@ -1328,7 +1330,7 @@ fn check_alter_table_action(
         } else if has_set_not_null
             && snapshot.server.engine == Engine::Postgres
             && !table_validated
-            && !findings.iter().any(|f| f.id == format!("sql-lint:set-not-null:{qual}"))
+            && !findings[before_count..].iter().any(|f| f.id == format!("sql-lint:set-not-null:{qual}"))
         {
             let mut f = finding(
                 "sql-lint",
@@ -1536,19 +1538,31 @@ fn index_covers_prefix(index_cols: &[String], fk_cols: &[String]) -> bool {
         return false;
     }
     let prefix = &index_cols[..fk_cols.len()];
-    fk_cols.iter().all(|fk| prefix.iter().any(|ic| ic.eq_ignore_ascii_case(fk)))
+    fk_cols.iter().all(|fk| {
+        let fk_clean = culprit_core::strip_direction(fk);
+        prefix.iter().any(|ic| culprit_core::strip_direction(ic).eq_ignore_ascii_case(fk_clean))
+    })
 }
 
 fn normalized_base_type(ty: &str) -> String {
     let lower = ty.trim().to_ascii_lowercase();
-    let base = lower.split('(').next().unwrap_or(&lower).trim();
-    match base {
-        "int4" | "serial" | "int" => "integer".into(),
-        "int8" | "bigserial" => "bigint".into(),
-        "int2" | "smallserial" => "smallint".into(),
-        "character varying" => "varchar".into(),
-        other => other.into(),
-    }
+    let is_unsigned = lower.split_whitespace().any(|w| w == "unsigned" || w.ends_with(")unsigned"));
+    let base_raw = lower
+        .split('(')
+        .next()
+        .unwrap_or(&lower)
+        .split_whitespace()
+        .filter(|w| *w != "unsigned" && *w != "signed")
+        .collect::<Vec<_>>()
+        .join(" ");
+    let canonical = match base_raw.as_str() {
+        "int4" | "serial" | "int" => "integer",
+        "int8" | "bigserial" => "bigint",
+        "int2" | "smallserial" => "smallint",
+        "character varying" => "varchar",
+        other => other,
+    };
+    if is_unsigned { format!("{canonical} unsigned") } else { canonical.to_string() }
 }
 
 fn find_table<'a>(snapshot: &'a Snapshot, raw: &str) -> Option<&'a TableStat> {
@@ -2363,5 +2377,20 @@ mod tests {
              ALTER TABLE {table} ALTER COLUMN status SET NOT NULL;"
         );
         assert!(lint_sql(&s, &fk_val_sql).iter().any(|f| f.id.starts_with("sql-lint:set-not-null:")));
+
+        // Multiple separate ALTER TABLE statements on the same table in one script are each linted independently.
+        let multi_alter_sql = format!(
+            "ALTER TABLE {table} ALTER COLUMN col_a SET NOT NULL;\n\
+             ALTER TABLE {table} ALTER COLUMN col_b SET NOT NULL;"
+        );
+        let multi_alter_out = lint_sql(&s, &multi_alter_sql);
+        assert_eq!(
+            multi_alter_out.iter().filter(|f| f.id == format!("sql-lint:set-not-null:{schema}.{table}")).count(),
+            2
+        );
+
+        // MySQL unsigned vs signed integer types on FK columns are caught as a type mismatch.
+        assert_eq!(normalized_base_type("bigint(20) unsigned"), "bigint unsigned");
+        assert_eq!(normalized_base_type("bigint(20)"), "bigint");
     }
 }

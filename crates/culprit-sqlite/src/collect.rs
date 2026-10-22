@@ -415,7 +415,7 @@ fn attach_triggers(conn: &Connection, tables: &mut [TableStat]) {
         let header = sql
             .as_deref()
             .map(|s| {
-                let u = s.to_ascii_uppercase();
+                let u = s.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_uppercase();
                 u.find(" ON ").map_or(u.clone(), |i| u[..i].to_string())
             })
             .unwrap_or_default();
@@ -429,7 +429,9 @@ fn attach_triggers(conn: &Connection, tables: &mut [TableStat]) {
         if header.contains("UPDATE") {
             events.push('U');
         }
-        if let Some(t) = tables.iter_mut().find(|t| t.name.eq_ignore_ascii_case(&tbl)) {
+        if !events.is_empty()
+            && let Some(t) = tables.iter_mut().find(|t| t.name.eq_ignore_ascii_case(&tbl))
+        {
             t.storage
                 .get_or_insert_with(culprit_core::TableStorage::default)
                 .options
@@ -874,5 +876,25 @@ mod tests {
         assert_eq!(of("b").columns, vec!["(substr(email, 1, 3)) DESC"]);
         assert_eq!(of("c").opclasses, Some(vec!["COLLATE NOCASE".to_string()]));
         assert_eq!((of("d").columns.clone(), of("d").opclasses.clone()), (vec!["status".to_string()], None));
+    }
+
+    #[test]
+    fn multiline_trigger_header_ignores_dml_keywords_inside_body() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, total INTEGER);
+             CREATE TABLE audit_log (id INTEGER PRIMARY KEY, msg TEXT);
+             CREATE TRIGGER trg_orders_insert AFTER INSERT
+             ON orders
+             BEGIN
+               UPDATE audit_log SET msg = 'inserted';
+               DELETE FROM audit_log WHERE id < 0;
+             END;",
+        )
+        .unwrap();
+        let s = snapshot(&conn, Path::new("demo.db"), "demo", Environment::Local, Instant::now()).unwrap();
+        let orders = s.tables.iter().find(|t| t.name == "orders").unwrap();
+        let opts = &orders.storage.as_ref().unwrap().options;
+        assert_eq!(opts, &["trigger=trg_orders_insert:I"]);
     }
 }

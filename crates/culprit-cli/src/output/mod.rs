@@ -390,7 +390,33 @@ impl Out {
                 batches.iter().map(|(uri, sql, fs)| (uri.as_deref(), Some(sql.as_str()), fs.as_slice())).collect();
             return self.json(&sarif::findings_sarif_batches(&refs));
         }
-        self.findings(report, Severity::Low);
+        if self.format == Format::Json {
+            return self.json(&json!({ "summary": report.summary, "findings": report.findings }));
+        }
+        if self.format == Format::Md {
+            return print!("{}", markdown_report(report));
+        }
+        println!("{}", self.paint(BOLD, &report.summary.headline));
+        for (i, f) in report.findings.iter().enumerate() {
+            println!();
+            println!(
+                "{:>3}  {}  {}  {}",
+                i + 1,
+                self.severity_mark(f.severity),
+                self.paint(BOLD, &f.title),
+                self.paint(DIM, &format!("· {}", f.impact.label))
+            );
+            println!("       {}", self.paint(DIM, &f.id));
+            println!("       {}", f.summary);
+            if let Some(fix) = &f.fix {
+                println!("       {} {}", self.paint(BOLD, "Fix:"), fix.summary);
+                if let Some(sql) = &fix.sql {
+                    for line in sql.lines() {
+                        println!("           {}", self.paint(BLUE, line));
+                    }
+                }
+            }
+        }
     }
 
     pub fn findings(&self, report: &Report, min: Severity) {

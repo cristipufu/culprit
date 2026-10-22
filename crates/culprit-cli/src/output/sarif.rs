@@ -170,16 +170,32 @@ fn locate_finding_line(sql: &str, f: &Finding) -> Option<usize> {
     None
 }
 
+fn parse_dollar_tag(sql: &str) -> Option<&str> {
+    let rest = sql.strip_prefix('$')?;
+    let end = rest.find('$')?;
+    let tag = &rest[..end];
+    if tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') { Some(&sql[..end + 2]) } else { None }
+}
+
 fn normalize_sql_with_lines(sql: &str) -> (String, Vec<usize>) {
     let mut norm = String::with_capacity(sql.len());
     let mut byte_lines = Vec::with_capacity(sql.len());
     let mut line = 1usize;
-    let mut chars = sql.chars().peekable();
+    let mut chars = sql.char_indices().peekable();
     let mut in_single = false;
     let mut in_double = false;
+    let mut dollar_tag: Option<String> = None;
     let mut last_was_space = true;
 
-    while let Some(c) = chars.next() {
+    let push_lower = |ch: char, line_no: usize, norm: &mut String, byte_lines: &mut Vec<usize>| {
+        for lc in ch.to_lowercase() {
+            let len = lc.len_utf8();
+            norm.push(lc);
+            byte_lines.extend(std::iter::repeat_n(line_no, len));
+        }
+    };
+
+    while let Some((idx, c)) = chars.next() {
         if c == '\n' {
             line += 1;
             if !last_was_space {
@@ -189,9 +205,54 @@ fn normalize_sql_with_lines(sql: &str) -> (String, Vec<usize>) {
             }
             continue;
         }
+        if let Some(ref tag) = dollar_tag {
+            if c.is_whitespace() {
+                if !last_was_space {
+                    norm.push(' ');
+                    byte_lines.push(line);
+                    last_was_space = true;
+                }
+            } else {
+                push_lower(c, line, &mut norm, &mut byte_lines);
+                last_was_space = false;
+            }
+            if c == '$' && sql[idx..].starts_with(tag.as_str()) {
+                for _ in 0..tag.chars().count().saturating_sub(1) {
+                    if let Some((_, ch)) = chars.next() {
+                        push_lower(ch, line, &mut norm, &mut byte_lines);
+                    }
+                }
+                dollar_tag = None;
+            }
+            continue;
+        }
+        if (in_single || in_double) && c == '\\' {
+            push_lower(c, line, &mut norm, &mut byte_lines);
+            if let Some((_, next_c)) = chars.next() {
+                if next_c == '\n' {
+                    line += 1;
+                }
+                push_lower(next_c, line, &mut norm, &mut byte_lines);
+            }
+            last_was_space = false;
+            continue;
+        }
         if !in_single && !in_double {
-            if c == '-' && chars.peek() == Some(&'-') {
-                for ch in chars.by_ref() {
+            if c == '$'
+                && let Some(tag) = parse_dollar_tag(&sql[idx..])
+            {
+                push_lower(c, line, &mut norm, &mut byte_lines);
+                for _ in 0..tag.chars().count().saturating_sub(1) {
+                    if let Some((_, ch)) = chars.next() {
+                        push_lower(ch, line, &mut norm, &mut byte_lines);
+                    }
+                }
+                last_was_space = false;
+                dollar_tag = Some(tag.to_string());
+                continue;
+            }
+            if c == '-' && chars.peek().map(|(_, ch)| *ch) == Some('-') {
+                for (_, ch) in chars.by_ref() {
                     if ch == '\n' {
                         line += 1;
                         break;
@@ -204,12 +265,12 @@ fn normalize_sql_with_lines(sql: &str) -> (String, Vec<usize>) {
                 }
                 continue;
             }
-            if c == '/' && chars.peek() == Some(&'*') {
+            if c == '/' && chars.peek().map(|(_, ch)| *ch) == Some('*') {
                 chars.next();
-                while let Some(ch) = chars.next() {
+                while let Some((_, ch)) = chars.next() {
                     if ch == '\n' {
                         line += 1;
-                    } else if ch == '*' && chars.peek() == Some(&'/') {
+                    } else if ch == '*' && chars.peek().map(|(_, next_ch)| *next_ch) == Some('/') {
                         chars.next();
                         break;
                     }
@@ -234,11 +295,7 @@ fn normalize_sql_with_lines(sql: &str) -> (String, Vec<usize>) {
                 last_was_space = true;
             }
         } else {
-            for lc in c.to_lowercase() {
-                let len = lc.len_utf8();
-                norm.push(lc);
-                byte_lines.extend(std::iter::repeat_n(line, len));
-            }
+            push_lower(c, line, &mut norm, &mut byte_lines);
             last_was_space = false;
         }
     }

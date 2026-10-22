@@ -181,7 +181,7 @@ async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<Hash
                             CASE WHEN (tg.tgtype & 16) <> 0 THEN 'U' ELSE '' END,
                             chr(31) ORDER BY tg.tgname)
                    FROM pg_trigger tg
-                  WHERE tg.tgrelid = c.oid AND NOT tg.tgisinternal AND tg.tgenabled <> 'D') AS triggers
+                  WHERE tg.tgrelid = c.oid AND NOT tg.tgisinternal AND tg.tgenabled <> 'D' AND (tg.tgtype & 28) <> 0) AS triggers
            FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid"
     );
     let mut out: HashMap<(String, String), TableStorage> = query(client, &sql)
