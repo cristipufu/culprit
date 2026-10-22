@@ -31,6 +31,7 @@
   <a href="#coding-agents-and-ci">Agents &amp; CI</a> ·
   <a href="#what-you-get">What you get</a> ·
   <a href="#safe-on-production">Safety</a> ·
+  <a href="#how-it-works">How it works</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="docs/guide.md">Guide</a>
 </p>
@@ -163,7 +164,7 @@ culprit digest shop > digest.json                     # redacted JSON summary fo
 
 ### Findings you can act on
 
-60 checks look for what actually costs time: runaway loops in plans, plan regressions, missing and unused indexes, N+1 query loops, type mismatches that block indexes, parameter-sensitive plans, queries that fail or time out, spills to disk, hot rows, statements that lock a whole table, unindexed foreign keys, sequence and transaction-ID exhaustion, partition hazards, slow storage, connection storms, replication lag, stale statistics, risky settings and more. Each finding names the queries involved, shows their share of database time, and ends with a fix you copy (Culprit never applies it for you) and a way to verify it.
+68 checks look for what actually costs time: runaway loops in plans, plan regressions, missing and unused indexes, N+1 query loops, type mismatches that block indexes, parameter-sensitive plans, queries that fail or time out, spills to disk, hot rows, statements that lock a whole table, unindexed foreign keys, sequence and transaction-ID exhaustion, partition hazards, page checksum corruption, slow storage, connection storms, replication lag, stale statistics, risky settings and more. Each finding names the queries involved, shows their share of database time, and ends with a fix you copy (Culprit never applies it for you) and a way to verify it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/findings-dark.png">
@@ -215,7 +216,7 @@ Live sessions turn a wall of lock waits into one sentence and a tree: which sess
 | **Where time goes** | Wait statistics in plain words, traced back to the queries behind them, with a live sample to compare against the usual mix |
 | **Health signals** | Memory, compiles, connections, row locks, storage latency per file, replication lag and cloud limits, each graded with a one-line takeaway |
 | **SQL editor** | Tabs, autocomplete for schemas, tables and columns, saved queries, and estimated and measured plans. Reads run read-only; production changes ask first |
-| **Schema explorer** | Tables, sizes, indexes and how each index is used, plus drift between two environments with the SQL to close the gap |
+| **Schema explorer** | Tables, sizes, indexes and how each index is used, plus drift between two environments (columns, indexes, foreign keys, triggers, check constraints and partition bounds) with the SQL to close the gap |
 | **Connections** | Paste any connection string, discover Azure and AWS databases with your existing CLI login, or import from Azure Data Studio, VS Code, DBeaver and DataGrip. Passwords stay in your OS keychain |
 | **Keyboard first** | A command palette (⌘K) for every view, finding, query and action |
 
@@ -233,12 +234,23 @@ Live sessions turn a wall of lock waits into one sentence and a tree: which sess
 | Engine | Tested on | Where the answers come from |
 |---|---|---|
 | **SQL Server** | SQL Server 2022, Azure SQL Database | Query Store, plan cache, DMVs, the deadlock history in extended events |
-| **PostgreSQL** | PostgreSQL 15 to 18, including Amazon RDS | `pg_stat_statements`, statistics views, `EXPLAIN` (generic plans from version 12) |
+| **PostgreSQL** | PostgreSQL 15 to 18, including Amazon RDS | `pg_stat_statements`, statistics views, `EXPLAIN` (generic plans from version 12), `hypopg` (virtual index testing) |
 | **MySQL** | MySQL 5.7 to 8.4 | `performance_schema`, `sys`, `EXPLAIN FORMAT=JSON` |
 | **MariaDB** | MariaDB 10.5 to 11.8 | `performance_schema`, the slow query log, user statistics, `ANALYZE FORMAT=JSON`, `SHOW ANALYZE` |
-| **SQLite** | SQLite 3 files | The file itself, opened read-only: schema, `sqlite_stat1`, `dbstat`, pragmas, `EXPLAIN QUERY PLAN`. No changes to your app. SQLite is a file (no live sessions or wait counters); workload comes from the log your framework already writes (Rails, Django, EF Core, Phoenix), found beside the database or chosen once, or a [one-line-per-query log](docs/sqlite.md#logging-queries-yourself) you write |
+| **SQLite** | SQLite 3 files | The file itself, opened read-only: schema, `sqlite_stat1`, `dbstat`, pragmas, `EXPLAIN QUERY PLAN`. No changes to your app. SQLite is a file (no live sessions or wait counters); workload comes from the log your framework already writes (Rails, Django, EF Core, Phoenix, OpenTelemetry and structured `.jsonl` logs), found beside the database or chosen once, or a [one-line-per-query log](docs/sqlite.md#logging-queries-yourself) you write |
 
 When a source is switched off (Query Store, `pg_stat_statements`, `performance_schema`), Culprit shows the one statement that turns it on and what you'll get once it's on.
+
+## How it works
+
+```text
+Sources ──► Snapshot ──► Prepare ──► Detect (68 checks) ──► Refine ──► Rank ──► Views
+```
+
+- **Offline-first snapshots (`culprit-core`).** Collectors read catalog and statistics views into a self-contained `Snapshot`. Every check, view, diff and migration lint is a pure function of that snapshot—replayable offline in CI or on another machine without a database connection.
+- **Evidence rules, not guesses (`culprit-checks`).** Checks never flag a query from a plan's shape alone when the server has runtime counters. Rates require at least an hour of counter history, "unused" index claims require a week, unavailable sources lock their dependent checks instead of reporting zero issues, and the refinement pass merges related symptoms into one root-cause finding.
+- **One declarative spec per engine (`EngineSpec`).** Capabilities, SQL dialect rules, setting thresholds and refusals live in one spec per engine (`crates/culprit-core/src/engines/`), shared by the Rust analyzer and the TypeScript UI.
+- **Embeddable Rust workspace.** The core model (`culprit-core`), analyzer (`culprit-checks`), workspace and secrets engine (`culprit-engine`), query-log parser (`culprit-querylog`), MCP server (`culprit-mcp`), CLI (`culprit-cli`) and engine providers (`culprit-postgres`, `culprit-mssql`, `culprit-mysql`, `culprit-sqlite`) can be embedded as a library, with custom `Check`s or runtime providers plugged in without forking.
 
 ## Get started
 
@@ -271,6 +283,7 @@ Or open the desktop app, pick the engine and paste its connection string (or cho
 ## Learn more
 
 - **[Guide](docs/guide.md):** every check and command, the agent setup, measured speed, safety details and how to extend Culprit
+- **[Architecture](docs/ARCHITECTURE.md):** the analysis pipeline, the evidence rules every check follows and the crate map
 - **[Design](docs/DESIGN.md):** how the product behaves and why
 - **[Coding agents](docs/agents.md):** MCP tools, permissions, approvals and the audit log
 - **[Engine parity](docs/parity.md):** every feature on SQL Server, PostgreSQL, MySQL, MariaDB and SQLite, and where each answer comes from
