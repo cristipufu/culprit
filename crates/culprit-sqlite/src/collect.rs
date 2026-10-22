@@ -333,13 +333,17 @@ pub fn snapshot(
     };
     coverage.append_to(&mut snapshot);
     if let Ok(path) = std::fs::canonicalize(path) {
-        let mut identity =
+        let identity =
             culprit_core::DatabaseIdentity::file(&snapshot.server.database, path.to_string_lossy().into_owned());
         #[cfg(unix)]
-        if let Ok(metadata) = std::fs::metadata(&path) {
+        let identity = {
             use std::os::unix::fs::MetadataExt;
-            identity.incarnation = Some(format!("{}:{}", metadata.dev(), metadata.ino()));
-        }
+            let mut identity = identity;
+            if let Ok(metadata) = std::fs::metadata(&path) {
+                identity.incarnation = Some(format!("{}:{}", metadata.dev(), metadata.ino()));
+            }
+            identity
+        };
         snapshot.bind_identity(identity);
     }
     Ok(snapshot)

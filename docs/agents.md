@@ -4,9 +4,9 @@ Culprit's CLI is designed to be driven by agents: JSON output, stable ids, no pr
 
 ## Contract
 
-- **Output.** JSON on stdout when stdout is not a terminal (or with `--json` / `--format json`). `--format md` gives a markdown table for PR comments.
+- **Output.** JSON on stdout when stdout is not a terminal (or with `--json` / `--format json`). `--format md` gives a markdown table for PR comments; `--format sarif` emits SARIF 2.1.0 for GitHub Pull Request annotations.
 - **Errors.** JSON on stderr: `{"error":{"code":"…","message":"…","hint":"…"}}`. Codes: `invalid_input`, `not_found`, `connection_failed`, `auth_failed`, `permission_denied`, `timeout`, `unsupported`, `query_failed`, `internal`.
-- **Exit codes.** `0` success, `1` error, `3` findings at or above `--fail-on <severity>` (scan only).
+- **Exit codes.** `0` success, `1` error, `2` named finding still present (`verify`), `3` findings at or above `--fail-on <severity>` (`scan`, `lint-sql`).
 - **Connections by name.** The person adds a connection once (`culprit conn add` or the app). Secrets live in the OS keychain, come from `az login` (Entra ID), or are read from an environment variable named with `--password-env`. Agents only ever pass the name.
 - **Safe by default.** `scan`, `doctor`, `findings`, `show`, `top`, `live` and `explain` (without `--analyze`) never execute application SQL. `run` and `explain --analyze` on a production connection fail unless `--yes-execute-on-production` is passed; don't pass it without the person's explicit go-ahead.
 - **Stable ids.** Finding ids are `<check>:<subject>`, e.g. `missing-index:dbo.Orders(CustomerId)` or `plan-warnings:implicit-conversion:orders.status`. The same problem keeps the same id across scans, so "is it fixed?" is "is the id gone?".
@@ -27,7 +27,8 @@ Culprit's CLI is designed to be driven by agents: JSON output, stable ids, no pr
 | `query` | One query: text, statistics, plan variants, related findings |
 | `query_plan` | A query's plan as an indented operator tree (stored or estimated; never executes), with its insights' titles |
 | `plan_insights` | What's wrong in a query's plan (`query_id`) or a statement's estimated plan (`sql`): ranked insights with operators, fix and verify |
-| `explain` | Estimated plan for a statement the agent provides (never executes) |
+| `explain` | Estimated plan for a statement the agent provides (never executes); supports virtual index verification (`with_indexes` on PostgreSQL via HypoPG) |
+| `lint_sql` | Lint migration or DDL SQL offline against the latest saved snapshot: blocking locks, unindexed/mismatched FKs, table rewrites, and broken live queries |
 | `live` | Sessions, waits and blocking right now |
 | `schema` | Tables; or one table's columns, indexes and which captured plans use each index |
 | `run_query` | One read-only statement, up to 200 rows: needs `query` access and the person's approval in the app |
@@ -193,6 +194,9 @@ Connections with `engine = "mysql"` may be MariaDB: `latest_scan.product` / `ser
 
 ```sh
 culprit analyze report-or-snapshot.json --json            # re-run the checks on a saved file, no database
+culprit lint-sql shop-staging --file migrations/ --fail-on high           # lint migration files offline against the latest snapshot
+culprit lint-sql shop-staging --file migrations/ --write                  # rewrite fixable DDL in place with safe online syntax
+culprit lint-sql shop-staging --file migrations/ --format sarif > db.sarif # SARIF 2.1.0 for GitHub PR annotations
 culprit scan staging --fail-on high                       # exit 3 when something high-impact appears
 culprit findings staging --format md                      # markdown table for a PR comment
 ```

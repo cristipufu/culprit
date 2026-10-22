@@ -14,13 +14,20 @@
       label: "Download for macOS",
       file: "Culprit-SQL-Studio-macOS.dmg",
       icon: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.2-2.8.8-3.5.8s-1.8-.8-3-.8C7 7.3 5.6 8.2 4.8 9.6c-1.7 2.9-.4 7.2 1.2 9.6.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8s1.9.8 3.1.8c1.3 0 2.1-1.2 2.9-2.3.9-1.3 1.3-2.6 1.3-2.7-.1 0-2.5-1-2.5-3.9ZM14.1 5.8c.6-.8 1.1-1.9 1-3-.9 0-2.1.6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2.1-.5 2.7-1.3Z"/></svg>',
+      meta: 'macOS 11+ (Apple silicon &amp; Intel · signed &amp; notarized) · <a href="#download">Windows, Linux &amp; CLI ↓</a> · <a href="#answer-title">Explore sample diagnoses ↓</a>',
     },
     windows: {
       label: "Download for Windows",
       file: "Culprit-SQL-Studio-Windows-x64-setup.exe",
       icon: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 5.5 10.5 4.4v7.2H3V5.5Zm0 13 7.5 1.1v-7.1H3v6Zm8.4 1.2L21 21v-8.5h-9.6v7.2Zm0-15.4v7.3H21V3l-9.6 1.3Z"/></svg>',
+      meta: 'Windows 10 &amp; 11 (x64 · not code-signed yet: SmartScreen may ask once) · <a href="#download">macOS, Linux &amp; CLI ↓</a> · <a href="#answer-title">Explore sample diagnoses ↓</a>',
     },
-    linux: { label: "Download for Linux", file: "Culprit-SQL-Studio-Linux-x86_64.AppImage", icon: "" },
+    linux: {
+      label: "Download for Linux",
+      file: "Culprit-SQL-Studio-Linux-x86_64.AppImage",
+      icon: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Zm2.3 4.3L9.6 12l-3.3 2.7 1.3 1.5L12.7 12 7.6 7.8 6.3 9.3ZM12 15h6v-2h-6v2Z"/></svg>',
+      meta: 'Linux x86_64 (AppImage, or <a href="#download">.deb below</a>) · <a href="#download">macOS, Windows &amp; CLI ↓</a> · <a href="#answer-title">Explore sample diagnoses ↓</a>',
+    },
   };
 
   // Phones and tablets can't run a desktop app (an iPad reports itself as a Mac with a touch screen), so they keep the
@@ -41,6 +48,8 @@
       button.querySelector("[data-os-label]").textContent = p.label;
       button.querySelector(".os-icon").innerHTML = p.icon;
     }
+    const meta = document.querySelector("[data-os-meta]");
+    if (meta) meta.innerHTML = p.meta;
     document.querySelector(`.dl[data-os="${os}"]`)?.classList.add("current");
     document.querySelector("[data-other-os]")?.removeAttribute("hidden");
   }
@@ -60,28 +69,32 @@
       .catch(() => {});
   }
 
-  // Agent setup tabs.
-  const tabs = [...document.querySelectorAll('[role="tab"][data-tab]')];
-  const select = (tab) => {
-    for (const t of tabs) {
-      const on = t === tab;
-      t.setAttribute("aria-selected", String(on));
-      t.tabIndex = on ? 0 : -1;
-      document.getElementById(t.getAttribute("aria-controls")).hidden = !on;
+  // Accessible tablists (sample diagnoses and agent setup).
+  const wireTabs = (selector) => {
+    const tabs = [...document.querySelectorAll(selector)];
+    const select = (tab) => {
+      for (const t of tabs) {
+        const on = t === tab;
+        t.setAttribute("aria-selected", String(on));
+        t.tabIndex = on ? 0 : -1;
+        document.getElementById(t.getAttribute("aria-controls")).hidden = !on;
+      }
+    };
+    for (const tab of tabs) {
+      tab.addEventListener("click", () => select(tab));
+      tab.addEventListener("keydown", (e) => {
+        const i = tabs.indexOf(tab);
+        const next = e.key === "ArrowRight" ? tabs[(i + 1) % tabs.length] : e.key === "ArrowLeft" ? tabs[(i - 1 + tabs.length) % tabs.length] : null;
+        if (next) {
+          e.preventDefault();
+          select(next);
+          next.focus();
+        }
+      });
     }
   };
-  for (const tab of tabs) {
-    tab.addEventListener("click", () => select(tab));
-    tab.addEventListener("keydown", (e) => {
-      const i = tabs.indexOf(tab);
-      const next = e.key === "ArrowRight" ? tabs[(i + 1) % tabs.length] : e.key === "ArrowLeft" ? tabs[(i - 1 + tabs.length) % tabs.length] : null;
-      if (next) {
-        e.preventDefault();
-        select(next);
-        next.focus();
-      }
-    });
-  }
+  wireTabs('[role="tab"][data-sample]');
+  wireTabs('[role="tab"][data-tab]');
 
   // Copy buttons copy the visible commands; the result is announced for screen readers.
   const announce = document.querySelector("[data-announce]");

@@ -28,6 +28,7 @@
 <p align="center">
   <a href="https://culpritsql.com"><b>culpritsql.com</b></a> ·
   <a href="#why-culprit">Why Culprit</a> ·
+  <a href="#fit-it-into-how-you-ship">CI, agents &amp; migrations</a> ·
   <a href="#what-you-get">What you get</a> ·
   <a href="#built-for-coding-agents">Coding agents</a> ·
   <a href="#safe-on-production">Safety</a> ·
@@ -102,11 +103,66 @@ Add your own checks or database engines without forking. The app, the CLI and th
 </tr>
 </table>
 
+## Fit it into how you ship
+
+Culprit is a single binary with no daemon, no server agent and no SaaS account. Open the desktop app when investigating by hand, or drop the CLI into your coding agent, pull requests and deploy pipeline.
+
+### 1. Give your coding agent real database context (MCP & briefs)
+
+Instead of pasting slow queries into chat, give Claude Code, Cursor or Codex read-only access to ranked findings, execution plans, table sizes and virtual index testing:
+
+```sh
+claude mcp add culprit -- culprit mcp   # register the MCP server (26 read-only tools)
+culprit agent init                      # add repo instructions and .mcp.json
+```
+
+Or hand a single finding straight to an agent from the terminal:
+
+```sh
+# Self-contained markdown brief: evidence, SQL fix, verification, and the app file:line
+# call site when queries carry Marginalia, SqlCommenter or /* app/models/order.rb:42 */ comments
+culprit show shop 'filtered-scan:public.orders'
+
+# Prove in milliseconds that PostgreSQL (HypoPG) actually uses a proposed index before building it
+culprit explain shop --sql "SELECT * FROM orders WHERE status = 'open'" \
+  --with-index "CREATE INDEX ON orders (status)"
+```
+
+### 2. Catch unsafe migrations in Pull Requests (GitHub Actions & SARIF)
+
+Regex SQL linters don't know if `orders` has 50 rows or 50 million. `culprit lint-sql` checks migration files **offline against a saved snapshot**—using real table sizes, row counts, column types, indexes and active queries to catch blocking `CREATE INDEX` / `DROP INDEX` / `ALTER TABLE` locks (PostgreSQL `CONCURRENTLY`, SQL Server `ONLINE = ON`, MySQL `ALGORITHM=INSTANT` / `LOCK=NONE`), unindexed or type-mismatched foreign keys, redundant indexes, and `DROP` or `RENAME` changes that break live statements:
+
+```sh
+culprit lint-sql shop --file migrations/ --fail-on high             # exit 3 on blocking DDL or broken queries
+culprit lint-sql shop --file migrations/ --write                    # rewrite fixable DDL in place with safe online syntax
+culprit lint-sql shop --file migrations/ --format sarif > db.sarif  # inline annotations on GitHub PRs
+```
+
+```yaml
+# .github/workflows/db-check.yml
+- name: Lint database migrations against production snapshot
+  run: culprit lint-sql prod-snapshot.json --file migrations/ --format sarif > culprit.sarif
+- uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: culprit.sarif
+```
+
+### 3. Close the loop in deploy pipelines
+
+Mark deploys on the database timeline and verify that shipped fixes actually moved the numbers once real traffic hits:
+
+```sh
+culprit mark shop deploy v2.4.0                                     # line chart regressions up with this deploy
+culprit scan shop --fail-on high                                    # gate a staging soak or nightly health check
+culprit verify shop 'filtered-scan:public.orders'                   # exits 2 if the finding is still present
+culprit digest shop > digest.json                                   # redacted JSON summary for Slack or Teams
+```
+
 ## What you get
 
 ### Findings you can act on
 
-52 checks look for what actually costs time: runaway loops in plans, plan regressions, missing and unused indexes, N+1 query loops, type mismatches that block indexes, parameter-sensitive plans, queries that fail or time out, spills to disk, hot rows, statements that lock a whole table, slow storage, connection storms, replication lag, stale statistics, risky settings and more. Each finding names the queries involved, shows their share of database time, and ends with a fix you copy (Culprit never applies it for you) and a way to verify it.
+60 checks look for what actually costs time: runaway loops in plans, plan regressions, missing and unused indexes, N+1 query loops, type mismatches that block indexes, parameter-sensitive plans, queries that fail or time out, spills to disk, hot rows, statements that lock a whole table, FK lock amplification, sequence and transaction-ID exhaustion (XID wraparound, 32-bit PK overflow), partition hazards (default-partition overflow, expiring range partitions, BRIN time-series candidates), slow storage, connection storms, replication lag, stale statistics, risky settings and more. Each finding names the queries involved, shows their share of database time, and ends with a fix you copy (Culprit never applies it for you) and a way to verify it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/findings-dark.png">
@@ -115,7 +171,7 @@ Add your own checks or database engines without forking. The app, the CLI and th
 
 ### Plans that explain themselves
 
-Every captured plan comes with insights in plain words ("repeats its read of order_items 1.5M times, once per row"), a diagram that shows where the cost goes, and the operator's details one click away. 33 rules cover SQL Server, PostgreSQL, MySQL and SQLite plans. Measure a run safely (writes are rolled back), and on SQL Server see the last actual plan without re-running the query or watch a long query's progress step by step.
+Every captured plan comes with insights in plain words ("repeats its read of order_items 1.5M times, once per row"), a diagram that shows where the cost goes, and the operator's details one click away. 35 rules cover SQL Server, PostgreSQL, MySQL, MariaDB and SQLite plans. Measure a run safely (writes are rolled back), test a virtual index in milliseconds (`--with-index` via PostgreSQL HypoPG), and on SQL Server see the last actual plan without re-running the query or watch a long query's progress step by step.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/queries-dark.png">
@@ -154,16 +210,17 @@ Live sessions turn a wall of lock waits into one sentence and a tree: which sess
 | Feature | What it does |
 |---|---|
 | **Index advisor** | Indexes to add, ranked by the database time of the queries that need them, plus duplicate, overlapping and unused indexes to clean up, with what each costs on writes |
+| **Migration & DDL linter** | Live inline squigglies and one-click quick fixes in the SQL editor, plus `culprit lint-sql` (`--write`, `--format sarif`) to check migrations offline against real table sizes and active queries |
 | **Where time goes** | Wait statistics in plain words, traced back to the queries behind them, with a live sample to compare against the usual mix |
 | **Health signals** | Memory, compiles, connections, row locks, storage latency per file, replication lag and cloud limits, each graded with a one-line takeaway |
-| **SQL editor** | Tabs, autocomplete for schemas, tables and columns, saved queries, estimated and measured plans. Reads run read-only; production changes ask first |
+| **SQL editor** | Tabs, autocomplete for schemas, tables and columns, saved queries, estimated and measured plans, and zero-cost virtual index testing (`--with-index` via HypoPG). Reads run read-only; production changes ask first |
 | **Schema explorer** | Tables, sizes, indexes and how each index is used, plus drift between two environments with the SQL to close the gap |
 | **Connections** | Paste any connection string, discover Azure and AWS databases with your existing CLI login, or import from Azure Data Studio, VS Code, DBeaver and DataGrip. Passwords stay in your OS keychain |
 | **Keyboard first** | A command palette (⌘K) for every view, finding, query and action |
 
 ## Built for coding agents
 
-Culprit is designed to be driven by an agent as comfortably as by a person. `culprit mcp` serves 25 tools over the Model Context Protocol (dashboard, findings, plans, insights, what changed, blocking, waits, index advice, verify and more), every CLI command prints JSON when piped, and finding ids are stable, so an agent can find a problem, fix the code and prove the fix worked.
+Culprit is designed to be driven by an agent as comfortably as by a person. `culprit mcp` serves 26 tools over the Model Context Protocol (dashboard, findings, plans, insights, migration linting, what changed, blocking, waits, index advice, verify and more), every CLI command prints JSON when piped (or SARIF 2.1.0 with `--format sarif`), and finding ids are stable, so an agent can find a problem, jump to the `file:line` call site in your application, fix the code or schema, and prove the fix worked.
 
 ```sh
 claude mcp add culprit -- culprit mcp   # Claude Code; Cursor and Codex take the same command
@@ -193,16 +250,18 @@ You decide what agents may do, per connection: nothing, read statistics and plan
 | Engine | Tested on | Where the answers come from |
 |---|---|---|
 | **SQL Server** | SQL Server 2022, Azure SQL Database | Query Store, plan cache, DMVs, the deadlock history in extended events |
-| **PostgreSQL** | PostgreSQL 15 and 18, including Amazon RDS | `pg_stat_statements`, statistics views, `EXPLAIN` (generic plans from version 12) |
-| **MySQL** | MySQL 8.4 | `performance_schema`, `sys`, `EXPLAIN FORMAT=JSON` |
-| **MariaDB** | MariaDB 10.11 and 11.8 | `performance_schema`, the slow query log, user statistics, `ANALYZE FORMAT=JSON`, `SHOW ANALYZE` |
-| **SQLite** (preview) | SQLite 3.53 files | The file itself, opened read-only: schema, `sqlite_stat1`, `dbstat`, pragmas, `EXPLAIN QUERY PLAN`. No changes to your app. SQLite keeps no query history, so Culprit reads the one your framework already logs (Rails, Django, EF Core, Phoenix), found beside the database or chosen once, or a [one-line-per-query log](docs/sqlite.md#logging-queries-yourself) you write |
+| **PostgreSQL** | PostgreSQL 15 to 18, including Amazon RDS | `pg_stat_statements`, statistics views, `EXPLAIN` (generic plans from version 12) |
+| **MySQL** | MySQL 5.7 to 8.4 | `performance_schema`, `sys`, `EXPLAIN FORMAT=JSON` |
+| **MariaDB** | MariaDB 10.5 to 11.8 | `performance_schema`, the slow query log, user statistics, `ANALYZE FORMAT=JSON`, `SHOW ANALYZE` |
+| **SQLite** | SQLite 3 files | The file itself, opened read-only: schema, `sqlite_stat1`, `dbstat`, pragmas, `EXPLAIN QUERY PLAN`. No changes to your app. SQLite is a file (no live sessions or wait counters); workload comes from the log your framework already writes (Rails, Django, EF Core, Phoenix), found beside the database or chosen once, or a [one-line-per-query log](docs/sqlite.md#logging-queries-yourself) you write |
 
 When a source is switched off (Query Store, `pg_stat_statements`, `performance_schema`), Culprit shows the one statement that turns it on and what you'll get once it's on.
 
 ## Get started
 
-Culprit builds from source today. You need [Rust](https://rustup.rs) (stable) and [Bun](https://bun.sh); on Linux, also the WebKitGTK development packages listed in the [guide](docs/guide.md#platforms). CI builds and tests every commit on macOS, Linux and Windows, and bundles the desktop app for each (an `.app`, a `.deb` and an `.msi`).
+Download the desktop app (`.dmg` for macOS, installer for Windows, `.AppImage` or `.deb` for Linux) and the standalone CLI from the [latest release](https://github.com/cristipufu/culprit-sql-studio/releases/latest). The desktop app checks for a new release once a day and offers it at the foot of the sidebar; it installs only an update signed with Culprit's key, and restarts when you choose (turn the daily check off from the command palette). A downloaded CLI keeps itself current with `culprit update`, which replaces it with the latest release after checking its SHA-256; the CLI never checks on its own.
+
+To build from source instead, you need [Rust](https://rustup.rs) (stable) and [Bun](https://bun.sh); on Linux, also the WebKitGTK development packages listed in the [guide](docs/guide.md#platforms).
 
 ```sh
 git clone https://github.com/cristipufu/culprit-sql-studio.git
@@ -211,8 +270,6 @@ cd culprit-sql-studio
 cargo build --release -p culprit-cli           # the culprit CLI, in target/release
 cd app && bun install && bunx tauri build      # the desktop app
 ```
-
-Or download the desktop app and the CLI from the [releases](https://github.com/cristipufu/culprit-sql-studio/releases). The desktop app checks for a new release once a day and offers it at the foot of the sidebar; it installs only an update signed with Culprit's key, and restarts when you choose (turn the daily check off from the command palette). A downloaded CLI keeps itself current with `culprit update`, which replaces it with the latest release after checking its SHA-256; the CLI never checks on its own.
 
 Connect a database and get its dashboard:
 

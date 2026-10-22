@@ -43,7 +43,7 @@
     "operatingSystem":"macOS 11 or later, Windows 10, Windows 11, Linux","softwareVersion":"__VERSION__",
     "downloadUrl":"https://github.com/cristipufu/culprit-sql-studio/releases/latest","releaseNotes":"https://github.com/cristipufu/culprit-sql-studio/releases",
     "softwareHelp":"https://github.com/cristipufu/culprit-sql-studio/blob/main/docs/guide.md",
-    "featureList":["Slow query detection ranked by share of database time","Execution plan insights and plan comparison","Missing, unused and duplicate index advice","Plan regression detection with Query Store","Live blocking trees and deadlock analysis","Wait statistics in plain language","MCP server with 25 tools for Claude Code, Cursor and Codex","CLI with JSON output"],
+    "featureList":["Slow query detection ranked by share of database time","Execution plan insights, plan comparison and virtual index testing","Missing, unused and duplicate index advice","Offline SQL migration linting against production snapshots with SARIF output","Plan regression detection with Query Store","Live blocking trees and deadlock analysis","Wait statistics in plain language","MCP server with 26 tools for Claude Code, Cursor and Codex","CLI with JSON and SARIF output"],
     "isAccessibleForFree":true,"license":"https://opensource.org/licenses/MIT",
     "offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},
     "sameAs":["https://github.com/cristipufu/culprit-sql-studio"]},
@@ -94,6 +94,9 @@
           </a>
           <a class="btn ghost large" href="https://github.com/cristipufu/culprit-sql-studio" rel="noopener">View on GitHub</a>
         </div>
+        <p class="os-meta" data-os-meta>
+          For <a href="#download">macOS</a>, <a href="#download">Windows</a>, <a href="#download">Linux</a> and the <a href="#download">CLI</a> · <a href="#answer-title">Explore sample diagnoses ↓</a>
+        </p>
         <p class="proof">
           <span>Read-only</span><span>Nothing leaves your machine</span><span>Free, MIT licensed</span><span>macOS · Windows · Linux</span><a class="other-os" href="#download" data-other-os hidden>Other platforms ↓</a>
         </p>
@@ -112,11 +115,17 @@
 
     <section class="answer" aria-labelledby="answer-title">
       <div class="wrap">
-        <h2 class="section-kicker center" id="answer-title">What a slow-query diagnosis looks like</h2>
-        <article class="finding-card">
+        <h2 class="section-kicker center" id="answer-title">What a diagnosis looks like — click to try</h2>
+        <div class="sample-tabs" role="tablist" aria-label="Sample diagnoses">
+          <button type="button" role="tab" aria-selected="true" aria-controls="sample-loop" id="stab-loop" data-sample="loop">Loop join timeout · SQL Server</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="sample-index" id="stab-index" data-sample="index" tabindex="-1">Missing index · PostgreSQL</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="sample-migration" id="stab-migration" data-sample="migration" tabindex="-1">Unsafe migration · Pull Request CI</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="sample-blocking" id="stab-blocking" data-sample="blocking" tabindex="-1">Idle blocker · Live</button>
+        </div>
+        <article class="finding-card" id="sample-loop" role="tabpanel" aria-labelledby="stab-loop" data-sample-panel>
           <div class="finding-head">
             <span class="sev">High</span>
-            <span class="share"><b>27%</b> of database time</span>
+            <span class="share"><b>27%</b> of database time · <code>app/reports/order_summary.rb:84</code></span>
           </div>
           <h3>A read from <code>order_items</code> times out on every run, at about 15 s.</h3>
           <dl>
@@ -125,9 +134,45 @@
             <div><dt>Verify</dt><dd>Run it with actual rows: a hash join, and far fewer executions of <code>order_items</code>.</dd></div>
           </dl>
         </article>
+        <article class="finding-card" id="sample-index" role="tabpanel" aria-labelledby="stab-index" data-sample-panel hidden>
+          <div class="finding-head">
+            <span class="sev">High</span>
+            <span class="share"><b>19%</b> of database time · <code>public.orders</code> (480K rows)</span>
+          </div>
+          <h3>Reads 480K rows of <code>orders</code> and discards 99.8% to find open orders for one customer.</h3>
+          <dl>
+            <div><dt>Why</dt><dd>No index covers <code>(customer_id, status)</code>: PostgreSQL scans the table 14,200 times an hour and filters in memory.</dd></div>
+            <div><dt>Fix</dt><dd><code>CREATE INDEX CONCURRENTLY orders_customer_id_status_idx ON public.orders (customer_id, status);</code></dd></div>
+            <div><dt>Verify</dt><dd>Test before building with <code>culprit explain --with-index</code> (HypoPG switches to an Index Scan at 0.04% of the cost), or run <code>culprit verify</code> after rollout.</dd></div>
+          </dl>
+        </article>
+        <article class="finding-card" id="sample-migration" role="tabpanel" aria-labelledby="stab-migration" data-sample-panel hidden>
+          <div class="finding-head">
+            <span class="sev">High</span>
+            <span class="share"><b>Blocks writes</b> on <code>orders</code> (12.4M rows, 8.2 GB) · <code>migrations/0042_add_idx.sql:3</code></span>
+          </div>
+          <h3><code>CREATE INDEX</code> without <code>CONCURRENTLY</code> locks <code>orders</code> against writes while building.</h3>
+          <dl>
+            <div><dt>Why</dt><dd>Checked offline against the production snapshot: <code>orders</code> has 12.4M rows and 340 writes/s. A standard index build blocks every <code>INSERT</code>, <code>UPDATE</code> and <code>DELETE</code> until it finishes.</dd></div>
+            <div><dt>Fix</dt><dd>Run <code>culprit lint-sql --file migrations/ --write</code> (or click Quick Fix in the editor) to rewrite as <code>CREATE INDEX CONCURRENTLY</code>.</dd></div>
+            <div><dt>Verify</dt><dd><code>culprit lint-sql --file migrations/ --fail-on high</code> exits 0 (and emits SARIF 2.1.0 for GitHub PR annotations).</dd></div>
+          </dl>
+        </article>
+        <article class="finding-card" id="sample-blocking" role="tabpanel" aria-labelledby="stab-blocking" data-sample-panel hidden>
+          <div class="finding-head">
+            <span class="sev">High</span>
+            <span class="share"><b>2 sessions waiting</b> · longest wait 22 s on <code>public.accounts</code></span>
+          </div>
+          <h3>Session 71 has been idle in an open transaction for 22 s and holds up 2 sessions behind it.</h3>
+          <dl>
+            <div><dt>Why</dt><dd>Session 71 ran <code>UPDATE accounts SET balance = $1 WHERE id = $2</code> and never committed or rolled back; checkout workers are queued on its row lock.</dd></div>
+            <div><dt>Fix</dt><dd>Close the transaction in the application without waiting on network calls, and set <code>idle_in_transaction_session_timeout = '30s'</code>.</dd></div>
+            <div><dt>Verify</dt><dd><code>culprit blocking prod</code> shows no chains waiting on <code>idle in transaction</code> sessions.</dd></div>
+          </dl>
+        </article>
         <ul class="stats" aria-label="At a glance">
           <li><b>__CHECK_COUNT__</b><span>checks for performance and health</span></li>
-          <li><b>25</b><span>MCP tools for coding agents</span></li>
+          <li><b>26</b><span>MCP tools for coding agents</span></li>
           <li><b>0 bytes</b><span>leave your machine</span></li>
           <li><b>&lt;1 s</b><span>to open; 10 ms per CLI call</span></li>
         </ul>
@@ -139,8 +184,8 @@
         <div class="show" id="findings">
           <div class="show-text">
             <p class="section-kicker">Findings</p>
-            <h2>Slow queries and missing indexes, ranked by what they cost.</h2>
-            <p>Runaway loops in plans, plan regressions, parameter sniffing, missing and unused indexes, N+1 query storms, lock pile-ups, implicit conversions that block index seeks, spills to disk and stale statistics. Each finding comes with the evidence, a production-safe fix and how to verify it.</p>
+            <h2>Slow queries, missing indexes and unsafe migrations, ranked by cost.</h2>
+            <p>Runaway loops in plans, plan regressions, parameter sniffing, missing and unused indexes, N+1 query storms, lock pile-ups, implicit conversions, spills to disk, sequence or XID exhaustion, and migration DDL that would lock a hot table. Each finding comes with the evidence, a production-safe fix and how to verify it.</p>
           </div>
           <figure class="shot">
             <picture>
@@ -154,7 +199,7 @@
           <div class="show-text">
             <p class="section-kicker">Plans</p>
             <h2>Execution plans that explain themselves.</h2>
-            <p>Insights in plain words, a diagram that shows where the cost goes, and every operator's details one click away. Compare any two plans, from SSMS, <code>EXPLAIN</code> or MySQL, and the headline says why one is slower.</p>
+            <p>Insights in plain words, a diagram that shows where the cost goes, and every operator's details one click away. Compare any two plans from SSMS, <code>EXPLAIN</code> or MySQL, or test a virtual index with <code>--with-index</code> to prove the planner uses it before building it.</p>
           </div>
           <figure class="shot">
             <picture>
@@ -222,9 +267,9 @@
     <section class="agents" id="agents" aria-labelledby="agents-title">
       <div class="wrap agents-grid">
         <div>
-          <p class="section-kicker">Built for coding agents</p>
+          <p class="section-kicker">Built for coding agents &amp; CI</p>
           <h2 class="section-title" id="agents-title">An MCP server for database performance. You stay in control.</h2>
-          <p class="section-lede"><code>culprit mcp</code> gives Claude Code, Codex and Cursor 25 tools: the dashboard, findings, execution plans and their insights, what changed, blocking, waits, index advice and verify. Every CLI command speaks JSON too.</p>
+          <p class="section-lede"><code>culprit mcp</code> gives Claude Code, Codex and Cursor 26 tools: the dashboard, findings with application <code>file:line</code> call sites, execution plans, virtual index testing, offline migration linting, what changed, blocking, waits, index advice and verify. Every CLI command speaks JSON and SARIF 2.1.0 too.</p>
           <ul class="checks">
             <li><b>Per-connection access.</b> Off, statistics and plans (the default), or read-only queries you approve one by one.</li>
             <li><b>Approve the exact statement.</b> You see the SQL and what Culprit guarantees: one read-only statement, rolled back, capped in rows and time.</li>
@@ -264,7 +309,7 @@ args = ["mcp"]</code></pre>
 <span class="a">●</span> culprit.dashboard <span class="c">staging</span>
 <span class="a">●</span> culprit.findings <span class="c">staging · severity ≥ medium</span>
 <span class="a">●</span> culprit.plan_insights <span class="c">query 263</span>
-<span class="out">It times out on every run (about 15 s, 27% of database time): its plan repeats a read of order_items 1.5M times because the query forces a loop join. Removing OPTION (LOOP JOIN) lets SQL Server hash-join once.</span></code></pre>
+<span class="out">It times out on every run (about 15 s, 27% of database time in app/reports/order_summary.rb:84): its plan repeats a read of order_items 1.5M times because the query forces a loop join. Removing OPTION (LOOP JOIN) lets SQL Server hash-join once.</span></code></pre>
           </div>
         </div>
       </div>
@@ -289,10 +334,10 @@ args = ["mcp"]</code></pre>
         <h2 class="section-title" id="engines-title">SQL Server, PostgreSQL, MySQL, MariaDB and SQLite. One tool.</h2>
         <div class="engine-grid">
           <article class="engine"><span class="badge ms" aria-hidden="true">MS</span><h3>SQL Server and Azure SQL</h3><p>Query Store, the plan cache, DMVs, wait statistics and the deadlock history in Extended Events.</p></article>
-          <article class="engine"><span class="badge pg" aria-hidden="true">Pg</span><h3>PostgreSQL and Amazon RDS</h3><p>Versions 15 to 18: <code>pg_stat_statements</code>, the statistics views and <code>EXPLAIN</code>, generic plans included.</p></article>
+          <article class="engine"><span class="badge pg" aria-hidden="true">Pg</span><h3>PostgreSQL and Amazon RDS</h3><p>Versions 15 to 18: <code>pg_stat_statements</code>, the statistics views and <code>EXPLAIN</code>, generic plans and HypoPG included.</p></article>
           <article class="engine"><span class="badge my" aria-hidden="true">My</span><h3>MySQL</h3><p>Versions 5.7 to 8.4: <code>performance_schema</code>, <code>sys</code> and <code>EXPLAIN FORMAT=JSON</code>.</p></article>
           <article class="engine"><span class="badge ma" aria-hidden="true">Ma</span><h3>MariaDB</h3><p>Versions 10.5 to 11.8: <code>performance_schema</code>, the slow query log and <code>ANALYZE FORMAT=JSON</code>.</p></article>
-          <article class="engine"><span class="badge sq" aria-hidden="true">Sq</span><h3>SQLite <small>preview</small></h3><p>The file, opened read-only: schema, <code>sqlite_stat1</code>, <code>EXPLAIN QUERY PLAN</code>, and the query log your framework already writes.</p></article>
+          <article class="engine"><span class="badge sq" aria-hidden="true">Sq</span><h3>SQLite 3</h3><p>Opens the file read-only: schema, <code>sqlite_stat1</code>, <code>EXPLAIN QUERY PLAN</code>, and your framework's query log. No live sessions or wait counters—it's a file.</p></article>
         </div>
       </div>
     </section>
@@ -331,7 +376,8 @@ args = ["mcp"]</code></pre>
               <button class="copy" type="button" data-copy-target="cli">Copy</button>
             </div>
 <pre data-cli><code><span class="p">$</span> culprit conn add shop --url 'postgres://app@db.example.com:5432/shop'
-<span class="p">$</span> culprit dashboard shop    <span class="c"># the database at a glance</span></code></pre>
+<span class="p">$</span> culprit dashboard shop                                     <span class="c"># the database at a glance</span>
+<span class="p">$</span> culprit lint-sql shop --file migrations/ --format sarif    <span class="c"># catch unsafe DDL in PRs</span></code></pre>
           </div>
         </div>
         <p class="fineprint center">All releases and checksums: <a href="https://github.com/cristipufu/culprit-sql-studio/releases">github.com/cristipufu/culprit-sql-studio/releases</a></p>
