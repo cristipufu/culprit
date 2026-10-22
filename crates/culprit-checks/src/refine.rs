@@ -337,9 +337,10 @@ fn share_of_listed(snapshot: &Snapshot, f: &Finding) -> Option<f64> {
     ((theirs - share).abs() <= 0.0005).then_some(share)
 }
 
-/// The position of the first finding of `check` about `table` (`schema.table`, lowercased).
+/// The position of the first base finding of `check` about `table` (`schema.table`, lowercased).
 fn position_on(findings: &[Finding], check: &str, table: &str) -> Option<usize> {
-    findings.iter().position(|f| f.check == check && finding_table(f) == table)
+    let base_id = format!("{check}:{table}");
+    findings.iter().position(|f| f.check == check && finding_table(f) == table && f.id.eq_ignore_ascii_case(&base_id))
 }
 
 fn leaf(table: &str) -> &str {

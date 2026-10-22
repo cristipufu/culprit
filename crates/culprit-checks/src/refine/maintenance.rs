@@ -51,11 +51,14 @@ fn decide(policy: Policy, s: &Snapshot, findings: &[Finding]) -> Vec<Decision> {
             }
         }
         Policy::Statistics => {
-            for (from, f) in findings.iter().enumerate().filter(|(_, f)| f.check == "stale-stats") {
-                if let Some(into) = findings
-                    .iter()
-                    .position(|g| g.check == "dead-rows" && g.subject.name.eq_ignore_ascii_case(&f.subject.name))
-                {
+            for (from, f) in findings.iter().enumerate().filter(|(_, f)| {
+                f.check == "stale-stats" && f.id.eq_ignore_ascii_case(&format!("stale-stats:{}", f.subject.name))
+            }) {
+                if let Some(into) = findings.iter().position(|g| {
+                    g.check == "dead-rows"
+                        && g.id.eq_ignore_ascii_case(&format!("dead-rows:{}", f.subject.name))
+                        && g.subject.name.eq_ignore_ascii_case(&f.subject.name)
+                }) {
                     let changes = f
                         .metrics
                         .iter()
@@ -230,5 +233,58 @@ mod tests {
         assert!(findings[0].summary.contains("system-catalog cleanup"));
         assert!(!findings[0].summary.contains("any table, in any database"));
         assert!(findings[0].summary.contains("does not establish"));
+    }
+
+    #[test]
+    fn dead_rows_only_absorbs_base_stale_stats_and_not_correlated_or_scale_factor_subfindings() {
+        let s: Snapshot = serde_json::from_str(include_str!("../../../../fixtures/postgres-demo.json")).unwrap();
+        let table = support::subject(SubjectKind::Table, "public.orders");
+        let correlated = support::finding(
+            "stale-stats",
+            "correlated:public.orders(status,region)",
+            Category::Maintenance,
+            table.clone(),
+        );
+        let scale_factor =
+            support::finding("dead-rows", "scale-factor:public.orders", Category::Maintenance, table.clone());
+        let base_stats = support::finding("stale-stats", "public.orders", Category::Maintenance, table.clone());
+        let base_dead = support::finding("dead-rows", "public.orders", Category::Maintenance, table);
+
+        // Sub-findings (correlated stats, scale-factor tuning) are never absorbed into or by each other.
+        assert!(decide(Policy::Statistics, &s, &[correlated.clone(), base_dead.clone()]).is_empty());
+        assert!(decide(Policy::Statistics, &s, &[base_stats.clone(), scale_factor]).is_empty());
+
+        // Base stale-stats is absorbed into base dead-rows while correlated stats stays independent.
+        let mut findings = vec![correlated, base_stats, base_dead];
+        Rule(Policy::Statistics).refine(&s, &mut findings);
+        assert_eq!(findings.len(), 2);
+        assert!(findings.iter().any(|f| f.id == "stale-stats:correlated:public.orders(status,region)"));
+        assert!(findings.iter().any(|f| f.id == "dead-rows:public.orders"));
+    }
+
+    #[test]
+    fn disabled_autovacuum_and_scale_factor_deduplicate_with_base_and_config_findings() {
+        let mut s: Snapshot = serde_json::from_str(include_str!("../../../../fixtures/postgres-demo.json")).unwrap();
+        // 1. A table with autovacuum_enabled=false and >= 20% dead rows emits one High `dead-rows:<table>` finding
+        // (whose fix already sets `autovacuum_enabled = true`), not a duplicate `dead-rows:autovacuum-disabled:<table>`.
+        let orders = s.tables.iter_mut().find(|t| t.name == "orders").unwrap();
+        orders.rows = Some(100_000.0);
+        orders.dead_rows = Some(50_000.0);
+        orders.storage =
+            Some(culprit_core::TableStorage { options: vec!["autovacuum_enabled=false".into()], ..Default::default() });
+        let findings = crate::checks::maintenance::dead_rows(&s);
+        let base = findings.iter().find(|f| f.id == "dead-rows:public.orders").expect("base dead-rows finding");
+        assert_eq!(base.severity, Severity::High);
+        assert!(!findings.iter().any(|f| f.id == "dead-rows:autovacuum-disabled:public.orders"));
+
+        // 2. A >= 10M-row table inheriting the server's autovacuum_vacuum_scale_factor = 0.2 with >= 1% churn is
+        // covered by `config:autovacuum-scale`, so `dead-rows:scale-factor:<table>` does not duplicate it.
+        let events = s.tables.iter_mut().find(|t| t.name == "events").unwrap();
+        events.rows = Some(15_000_000.0);
+        events.dead_rows = Some(200_000.0);
+        events.updates = Some(500_000.0);
+        let report = crate::analyze(s);
+        assert!(report.findings.iter().any(|f| f.id == "config:autovacuum-scale"));
+        assert!(!report.findings.iter().any(|f| f.id == "dead-rows:scale-factor:public.events"));
     }
 }

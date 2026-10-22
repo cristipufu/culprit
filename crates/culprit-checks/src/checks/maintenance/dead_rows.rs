@@ -84,7 +84,13 @@ pub fn dead_rows(snapshot: &Snapshot) -> Vec<Finding> {
                     (None, _) => " It has never been vacuumed since statistics were reset.".into(),
                 }
             );
-            f.severity = if ratio >= 0.5 && dead >= 1_000_000.0 { Severity::Medium } else { Severity::Low };
+            f.severity = if t.storage.as_ref().is_some_and(|s| s.autovacuum_off()) {
+                Severity::High
+            } else if ratio >= 0.5 && dead >= 1_000_000.0 {
+                Severity::Medium
+            } else {
+                Severity::Low
+            };
             f.impact.score = base_score(f.severity) + ratio * 10.0;
             f.impact.label = format!("{} dead rows", format::count(dead));
             f.confidence = Confidence::High;
@@ -146,6 +152,8 @@ pub fn dead_rows(snapshot: &Snapshot) -> Vec<Finding> {
 /// that still use a large `autovacuum_vacuum_scale_factor` (`>= 0.1`), so autovacuum waits for a million or more dead
 /// rows before starting.
 fn large_table_autovacuum_scale(snapshot: &Snapshot, existing: &[Finding]) -> Vec<Finding> {
+    let server_scale =
+        snapshot.setting("autovacuum_vacuum_scale_factor").and_then(|s| s.value.trim().parse::<f64>().ok());
     snapshot
         .tables
         .iter()
@@ -161,6 +169,19 @@ fn large_table_autovacuum_scale(snapshot: &Snapshot, existing: &[Finding]) -> Ve
             }
             let table_name = t.qualified();
             if existing.iter().any(|f| f.subject.name == table_name) {
+                return None;
+            }
+            // Tables >= 10M rows without a per-table scale factor on a server with autovacuum_vacuum_scale_factor >= 0.2
+            // and >= 1% churn are already covered by `config:autovacuum-scale`.
+            let inherits_server_scale = t
+                .storage
+                .as_ref()
+                .is_none_or(|s| s.option("autovacuum_vacuum_scale_factor").is_none() && !s.autovacuum_off());
+            if live >= 10_000_000.0
+                && inherits_server_scale
+                && server_scale.is_some_and(|v| v >= 0.2)
+                && ((t.updates.is_none() && t.deletes.is_none()) || churn >= live * 0.01)
+            {
                 return None;
             }
             let trigger = vacuum_trigger(snapshot, t, live)?;
@@ -215,13 +236,13 @@ fn large_table_autovacuum_scale(snapshot: &Snapshot, existing: &[Finding]) -> Ve
             )];
             Some(f)
         })
-        .chain(disabled_autovacuum(snapshot))
+        .chain(disabled_autovacuum(snapshot, existing))
         .collect()
 }
 
 /// PostgreSQL tables where per-table `autovacuum_enabled` (or `toast.autovacuum_enabled`) was explicitly set to
 /// `false` / `off` in `reloptions`.
-fn disabled_autovacuum(snapshot: &Snapshot) -> Vec<Finding> {
+fn disabled_autovacuum(snapshot: &Snapshot, existing: &[Finding]) -> Vec<Finding> {
     if snapshot.server.engine != Engine::Postgres {
         return Vec::new();
     }
@@ -245,6 +266,11 @@ fn disabled_autovacuum(snapshot: &Snapshot) -> Vec<Finding> {
             let is_toast = disabled_opt.to_ascii_lowercase().starts_with("toast.");
             let param = if is_toast { "toast.autovacuum_enabled" } else { "autovacuum_enabled" };
             let table_name = t.qualified();
+            // A table whose main heap already triggered `dead-rows:<table>` includes `autovacuum_enabled = true` in that
+            // finding's fix; emit a separate finding only when `dead-rows:<table>` didn't fire or `toast.autovacuum_enabled` is off.
+            if !is_toast && existing.iter().any(|f| f.id.eq_ignore_ascii_case(&format!("dead-rows:{table_name}"))) {
+                return None;
+            }
             let live = t.rows.unwrap_or(0.0);
             let dead = t.dead_rows.unwrap_or(0.0);
             let mut f = finding(

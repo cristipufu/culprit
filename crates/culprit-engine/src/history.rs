@@ -531,6 +531,13 @@ fn schema(p: &Snapshot, c: &Snapshot, (after, at): (&str, &str), out: &mut Vec<C
     if !p.indexes.is_empty() || !c.indexes.is_empty() {
         indexes(p, c, &common, (after, at), out);
     }
+    if !p.foreign_keys.is_empty() || !c.foreign_keys.is_empty() {
+        foreign_keys(p, c, &common, (after, at), out);
+    }
+    if !p.constraints.is_empty() || !c.constraints.is_empty() {
+        constraints(p, c, &common, (after, at), out);
+    }
+    triggers(p, c, &common, (after, at), out);
 }
 
 fn columns(
@@ -682,6 +689,259 @@ fn indexes(
                     describe(a),
                     describe(b)
                 )),
+            );
+        }
+    }
+}
+
+fn source_recorded(s: &Snapshot, names: &[&str]) -> bool {
+    s.sources.is_empty()
+        || names.iter().any(|name| {
+            s.source_outcome(name).is_some_and(|o| {
+                matches!(o.state, culprit_core::SourceState::Collected | culprit_core::SourceState::Empty)
+            })
+        })
+}
+
+fn describe_fk(fk: &culprit_core::ForeignKey) -> String {
+    let mut text = format!(
+        "({}) REFERENCES {}.{}({})",
+        fk.columns.join(", "),
+        fk.ref_schema,
+        fk.ref_table,
+        fk.ref_columns.join(", ")
+    );
+    if let Some(rule) = fk.delete_rule.as_deref().filter(|r| !r.is_empty()) {
+        text.push_str(&format!(" ON DELETE {}", rule.to_ascii_uppercase()));
+    }
+    text
+}
+
+fn fk_map<'a>(
+    s: &'a Snapshot,
+    common: &BTreeMap<&String, &String>,
+) -> BTreeMap<(String, String, String, String), &'a culprit_core::ForeignKey> {
+    s.foreign_keys
+        .iter()
+        .filter(|fk| common.contains_key(&key(&fk.schema, &fk.table)))
+        .map(|fk| {
+            (
+                (
+                    key(&fk.schema, &fk.table),
+                    fk.columns.join(",").to_ascii_lowercase(),
+                    key(&fk.ref_schema, &fk.ref_table),
+                    fk.ref_columns.join(",").to_ascii_lowercase(),
+                ),
+                fk,
+            )
+        })
+        .collect()
+}
+
+fn foreign_keys(
+    p: &Snapshot,
+    c: &Snapshot,
+    common: &BTreeMap<&String, &String>,
+    (after, at): (&str, &str),
+    out: &mut Vec<ChangeEvent>,
+) {
+    let sources = &[culprit_core::source_id::FOREIGN_KEYS, culprit_core::source_id::CATALOG];
+    if (p.foreign_keys.is_empty() && !source_recorded(p, sources))
+        || (c.foreign_keys.is_empty() && !source_recorded(c, sources))
+    {
+        return;
+    }
+    let (fa, fb) = (fk_map(p, common), fk_map(c, common));
+    let event = |fk: &culprit_core::ForeignKey, title: String, action: EventAction| {
+        let table = format!("{}.{}", fk.schema, fk.table);
+        scans(
+            ChangeEvent::new(EventKind::Table, EventSource::Scans, &format!("{table}.{}", fk.name), at, title)
+                .action(action)
+                .table(table)
+                .object(fk.name.clone()),
+            after,
+        )
+    };
+    for (k, b) in &fb {
+        let table = format!("{}.{}", b.schema, b.table);
+        match fa.get(k) {
+            None => {
+                out.push(
+                    event(b, format!("Foreign key {} was added on {table}", b.name), EventAction::Created)
+                        .detail(describe_fk(b)),
+                );
+            }
+            Some(a) => {
+                if let (Some(ra), Some(rb)) = (a.delete_rule.as_deref(), b.delete_rule.as_deref())
+                    && !ra.eq_ignore_ascii_case(rb)
+                {
+                    out.push(
+                        event(
+                            b,
+                            format!("Foreign key {} on {table} changed ON DELETE rule", b.name),
+                            EventAction::Changed,
+                        )
+                        .detail(format!(
+                            "ON DELETE {} → ON DELETE {}",
+                            ra.to_ascii_uppercase(),
+                            rb.to_ascii_uppercase()
+                        )),
+                    );
+                }
+            }
+        }
+    }
+    for (k, a) in &fa {
+        if !fb.contains_key(k) {
+            let table = format!("{}.{}", a.schema, a.table);
+            out.push(
+                event(a, format!("Foreign key {} was dropped from {table}", a.name), EventAction::Dropped)
+                    .detail(describe_fk(a)),
+            );
+        }
+    }
+}
+
+fn con_map<'a>(
+    s: &'a Snapshot,
+    common: &BTreeMap<&String, &String>,
+) -> BTreeMap<(String, String), &'a culprit_core::ConstraintIssue> {
+    s.constraints
+        .iter()
+        .filter(|con| common.contains_key(&key(&con.schema, &con.table)))
+        .map(|con| ((key(&con.schema, &con.table), con.name.to_ascii_lowercase()), con))
+        .collect()
+}
+
+fn constraints(
+    p: &Snapshot,
+    c: &Snapshot,
+    common: &BTreeMap<&String, &String>,
+    (after, at): (&str, &str),
+    out: &mut Vec<ChangeEvent>,
+) {
+    let sources = &[culprit_core::source_id::CONSTRAINTS, culprit_core::source_id::CATALOG];
+    if (p.constraints.is_empty() && !source_recorded(p, sources))
+        || (c.constraints.is_empty() && !source_recorded(c, sources))
+    {
+        return;
+    }
+    let (ca, cb) = (con_map(p, common), con_map(c, common));
+    let state = |con: &culprit_core::ConstraintIssue| {
+        if con.disabled { "disabled" } else { "NOT VALID / untrusted" }
+    };
+    let event = |con: &culprit_core::ConstraintIssue, title: String, action: EventAction| {
+        let table = format!("{}.{}", con.schema, con.table);
+        scans(
+            ChangeEvent::new(EventKind::Table, EventSource::Scans, &format!("{table}.{}", con.name), at, title)
+                .action(action)
+                .table(table)
+                .object(con.name.clone()),
+            after,
+        )
+    };
+    for (k, b) in &cb {
+        let table = format!("{}.{}", b.schema, b.table);
+        match ca.get(k) {
+            None => {
+                out.push(
+                    event(b, format!("Constraint {} on {table} is {}", b.name, state(b)), EventAction::Changed)
+                        .detail(format!("{:?}", b.kind).to_ascii_uppercase()),
+                );
+            }
+            Some(a) if a.disabled != b.disabled => {
+                out.push(
+                    event(b, format!("Constraint {} on {table} changed state", b.name), EventAction::Changed)
+                        .detail(format!("{} → {}", state(a), state(b))),
+                );
+            }
+            Some(_) => {}
+        }
+    }
+    for (k, a) in &ca {
+        if !cb.contains_key(k) {
+            let table = format!("{}.{}", a.schema, a.table);
+            out.push(
+                event(a, format!("Constraint {} on {table} was validated or removed", a.name), EventAction::Changed)
+                    .detail(format!("was {}", state(a))),
+            );
+        }
+    }
+}
+
+fn describe_trigger_events(events: &str) -> String {
+    let mut parts = Vec::new();
+    for ch in events.chars() {
+        match ch.to_ascii_uppercase() {
+            'I' => parts.push("INSERT"),
+            'U' => parts.push("UPDATE"),
+            'D' => parts.push("DELETE"),
+            _ => {}
+        }
+    }
+    if parts.is_empty() { events.to_string() } else { parts.join(" OR ") }
+}
+
+fn triggers(
+    p: &Snapshot,
+    c: &Snapshot,
+    common: &BTreeMap<&String, &String>,
+    (after, at): (&str, &str),
+    out: &mut Vec<ChangeEvent>,
+) {
+    let tr_map = |s: &Snapshot| -> BTreeMap<(String, String), (String, String, String)> {
+        let mut m = BTreeMap::new();
+        for t in &s.tables {
+            let tk = key(&t.schema, &t.name);
+            if !common.contains_key(&tk) {
+                continue;
+            }
+            if let Some(storage) = &t.storage {
+                for (name, events) in storage.triggers() {
+                    m.insert(
+                        (tk.clone(), name.to_ascii_lowercase()),
+                        (t.qualified(), name.to_string(), events.to_string()),
+                    );
+                }
+            }
+        }
+        m
+    };
+    let (ta, tb) = (tr_map(p), tr_map(c));
+    if ta.is_empty() && tb.is_empty() {
+        return;
+    }
+    let event = |table: &str, name: &str, title: String, action: EventAction| {
+        scans(
+            ChangeEvent::new(EventKind::Code, EventSource::Scans, &format!("{table}.{name}"), at, title)
+                .action(action)
+                .table(table.to_string())
+                .object(name.to_string()),
+            after,
+        )
+    };
+    for (k, (table, name, ev_b)) in &tb {
+        match ta.get(k) {
+            None => {
+                out.push(
+                    event(table, name, format!("Trigger {name} was created on {table}"), EventAction::Created)
+                        .detail(describe_trigger_events(ev_b)),
+                );
+            }
+            Some((_, _, ev_a)) if !ev_a.eq_ignore_ascii_case(ev_b) => {
+                out.push(
+                    event(table, name, format!("Trigger {name} on {table} was redefined"), EventAction::Changed)
+                        .detail(format!("{} → {}", describe_trigger_events(ev_a), describe_trigger_events(ev_b))),
+                );
+            }
+            Some(_) => {}
+        }
+    }
+    for (k, (table, name, ev_a)) in &ta {
+        if !tb.contains_key(k) {
+            out.push(
+                event(table, name, format!("Trigger {name} was dropped from {table}"), EventAction::Dropped)
+                    .detail(describe_trigger_events(ev_a)),
             );
         }
     }
@@ -1353,5 +1613,52 @@ mod tests {
         assert!(
             diff(Some(&before), &after, vec![]).iter().all(|e| !matches!(e.kind, EventKind::Table | EventKind::Index))
         );
+    }
+
+    #[test]
+    fn scans_notice_foreign_key_constraint_and_trigger_changes() {
+        let mut before = demo();
+        before.taken_at = "2026-10-11T10:00:00Z".into();
+        before.foreign_keys[0].delete_rule = Some("NO ACTION".into());
+
+        let mut after = before.clone();
+        after.taken_at = "2026-10-11T12:00:00Z".into();
+        after.foreign_keys[0].delete_rule = Some("CASCADE".into());
+        after.constraints.push(culprit_core::ConstraintIssue {
+            schema: "public".into(),
+            table: "orders".into(),
+            name: "ck_orders_total".into(),
+            kind: culprit_core::ConstraintKind::Check,
+            disabled: false,
+            inheritance_child: false,
+        });
+        let orders = after.tables.iter_mut().find(|t| t.name == "orders").unwrap();
+        orders.storage.get_or_insert_with(Default::default).options.push("trigger=trg_orders_audit:IU".into());
+
+        let events = diff(Some(&before), &after, vec![]);
+        assert!(
+            events.iter().any(|e| {
+                e.kind == EventKind::Table
+                    && e.table.as_deref() == Some("public.orders")
+                    && e.title.contains("changed ON DELETE rule")
+                    && e.detail.as_deref() == Some("ON DELETE NO ACTION → ON DELETE CASCADE")
+            }),
+            "{events:?}"
+        );
+        assert!(
+            events.iter().any(|e| {
+                e.kind == EventKind::Table
+                    && e.table.as_deref() == Some("public.orders")
+                    && e.title.contains("Constraint ck_orders_total on public.orders is NOT VALID / untrusted")
+            }),
+            "{events:?}"
+        );
+        let trig_event = events
+            .iter()
+            .find(|e| e.kind == EventKind::Code && e.object.as_deref() == Some("trg_orders_audit"))
+            .expect("trigger event");
+        assert_eq!(trig_event.title, "Trigger trg_orders_audit was created on public.orders");
+        assert_eq!(trig_event.table.as_deref(), Some("public.orders"));
+        assert_eq!(trig_event.detail.as_deref(), Some("INSERT OR UPDATE"));
     }
 }

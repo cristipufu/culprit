@@ -75,6 +75,18 @@ impl Out {
                     for line in sql.lines() {
                         println!("      {}", self.paint(GREEN, line));
                     }
+                } else {
+                    match (&item.a, &item.b) {
+                        (Some(before), Some(after))
+                            if !item.title.contains(before.as_str()) || !item.title.contains(after.as_str()) =>
+                        {
+                            println!("      {}", self.paint(DIM, &format!("{before} → {after}")));
+                        }
+                        (Some(detail), None) | (None, Some(detail)) if !item.title.contains(detail.as_str()) => {
+                            println!("      {}", self.paint(DIM, detail));
+                        }
+                        _ => {}
+                    }
                 }
             }
             println!();
