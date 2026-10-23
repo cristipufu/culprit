@@ -541,7 +541,6 @@ fn args<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T> {
 impl CulpritMcp {
     pub(crate) async fn dispatch(&self, client: &str, tool: &str, value: Value) -> Result<Value> {
         match tool {
-            "list_connections" => self.list_connections(),
             "scan" => {
                 let a: ScanArgs = args(value)?;
                 self.allowed(&a.connection)?;
@@ -561,45 +560,6 @@ impl CulpritMcp {
                     tile.next = view::next_tool(tile.key, engine).map(str::to_string);
                 }
                 serde_json::to_value(&dashboard).map_err(|e| Error::internal(e.to_string()))
-            }
-            "findings" => {
-                let a: FindingsArgs = args(value)?;
-                self.allowed(&a.connection)?;
-                let report = self.report(&a.connection)?;
-                let category = a.category.map(|c| match c {
-                    CategoryArg::Indexes => Category::Indexes,
-                    CategoryArg::Queries => Category::Queries,
-                    CategoryArg::Maintenance => Category::Maintenance,
-                    CategoryArg::Configuration => Category::Configuration,
-                });
-                let min = match a.min_severity {
-                    Some(SeverityArg::High) => Severity::High,
-                    Some(SeverityArg::Medium) => Severity::Medium,
-                    _ => Severity::Low,
-                };
-                Ok(view::findings(&report, category, min, a.limit.unwrap_or(30).clamp(1, 100)))
-            }
-            "finding" => {
-                let a: FindingArgs = args(value)?;
-                self.allowed(&a.connection)?;
-                let report = self.report(&a.connection)?;
-                let finding = report.findings.iter().find(|f| f.id == a.id).ok_or_else(|| {
-                    Error::not_found(format!("No finding '{}' in the latest report for {}", a.id, a.connection))
-                        .with_hint("Call findings for the current ids")
-                })?;
-                Ok(view::finding(&report, finding))
-            }
-            "top_queries" => {
-                let a: TopArgs = args(value)?;
-                self.allowed(&a.connection)?;
-                let report = self.report(&a.connection)?;
-                Ok(view::top_queries(&report, a.by.unwrap_or_default(), a.limit.unwrap_or(15).clamp(1, 50)))
-            }
-            "query" => {
-                let a: QueryArgs = args(value)?;
-                self.allowed(&a.connection)?;
-                let report = self.report(&a.connection)?;
-                view::query(&report, &a.query_id)
             }
             "query_plan" => {
                 let a: QueryPlanArgs = args(value)?;
@@ -677,12 +637,6 @@ impl CulpritMcp {
                 };
                 Ok(view::cloud(&self.ws.cloud(&a.connection, &request).await?))
             }
-            "mark" => {
-                let a: MarkArgs = args(value)?;
-                self.allowed(&a.connection)?;
-                let mark = self.ws.mark(&a.connection, &a.text, a.at.as_deref(), client)?;
-                Ok(json!({ "marked": mark, "compare_since": mark.at }))
-            }
             "explain" => {
                 let a: ExplainArgs = args(value)?;
                 let info = self.allowed(&a.connection)?;
@@ -717,8 +671,80 @@ impl CulpritMcp {
                     let sample = self.ws.wait_sample(&a.connection, a.seconds.unwrap_or(10).clamp(1, 30)).await?;
                     return Ok(crate::waits_view::sample(&sample));
                 }
+                let server = self.clone();
+                culprit_engine::run_blocking(move || {
+                    let report = server.report(&a.connection)?;
+                    Ok(crate::waits_view::report(&report))
+                })
+                .await
+            }
+            "verify" => {
+                let a: VerifyArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                let v = self.ws.verify(&a.connection, &a.finding_ids.unwrap_or_default()).await?;
+                serde_json::to_value(&v).map_err(|e| Error::internal(e.to_string()))
+            }
+            "run_query" => {
+                let a: SqlArgs = args(value)?;
+                self.run_query(client, &a.connection, &a.sql).await
+            }
+            other => {
+                let server = self.clone();
+                let client = client.to_owned();
+                let tool = other.to_owned();
+                culprit_engine::run_blocking(move || server.dispatch_saved(&client, &tool, value)).await
+            }
+        }
+    }
+
+    /// Report replay, shaping and disk-only tools share the bounded engine workers, including their policy checks.
+    fn dispatch_saved(&self, client: &str, tool: &str, value: Value) -> Result<Value> {
+        match tool {
+            "list_connections" => self.list_connections(),
+            "findings" => {
+                let a: FindingsArgs = args(value)?;
+                self.allowed(&a.connection)?;
                 let report = self.report(&a.connection)?;
-                Ok(crate::waits_view::report(&report))
+                let category = a.category.map(|c| match c {
+                    CategoryArg::Indexes => Category::Indexes,
+                    CategoryArg::Queries => Category::Queries,
+                    CategoryArg::Maintenance => Category::Maintenance,
+                    CategoryArg::Configuration => Category::Configuration,
+                });
+                let min = match a.min_severity {
+                    Some(SeverityArg::High) => Severity::High,
+                    Some(SeverityArg::Medium) => Severity::Medium,
+                    _ => Severity::Low,
+                };
+                Ok(view::findings(&report, category, min, a.limit.unwrap_or(30).clamp(1, 100)))
+            }
+            "finding" => {
+                let a: FindingArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                let report = self.report(&a.connection)?;
+                let finding = report.findings.iter().find(|f| f.id == a.id).ok_or_else(|| {
+                    Error::not_found(format!("No finding '{}' in the latest report for {}", a.id, a.connection))
+                        .with_hint("Call findings for the current ids")
+                })?;
+                Ok(view::finding(&report, finding))
+            }
+            "top_queries" => {
+                let a: TopArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                let report = self.report(&a.connection)?;
+                Ok(view::top_queries(&report, a.by.unwrap_or_default(), a.limit.unwrap_or(15).clamp(1, 50)))
+            }
+            "query" => {
+                let a: QueryArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                let report = self.report(&a.connection)?;
+                view::query(&report, &a.query_id)
+            }
+            "mark" => {
+                let a: MarkArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                let mark = self.ws.mark(&a.connection, &a.text, a.at.as_deref(), client)?;
+                Ok(json!({ "marked": mark, "compare_since": mark.at }))
             }
             "schema" => {
                 let a: SchemaArgs = args(value)?;
@@ -733,12 +759,6 @@ impl CulpritMcp {
                 let a: ConnectionArgs = args(value)?;
                 self.allowed(&a.connection)?;
                 Ok(serde_json::to_value(self.ws.index_advice(&a.connection)?).unwrap_or_default())
-            }
-            "verify" => {
-                let a: VerifyArgs = args(value)?;
-                self.allowed(&a.connection)?;
-                let v = self.ws.verify(&a.connection, &a.finding_ids.unwrap_or_default()).await?;
-                serde_json::to_value(&v).map_err(|e| Error::internal(e.to_string()))
             }
             "export_finding" => {
                 let a: ExportFindingArgs = args(value)?;
@@ -768,10 +788,6 @@ impl CulpritMcp {
                 let rb = self.report(&a.b)?;
                 let d = culprit_engine::drift_reports(&ra, &rb)?;
                 serde_json::to_value(&d).map_err(|e| Error::internal(e.to_string()))
-            }
-            "run_query" => {
-                let a: SqlArgs = args(value)?;
-                self.run_query(client, &a.connection, &a.sql).await
             }
             other => {
                 Err(Error::not_found(format!("No tool named '{other}'")).with_hint("Call tools/list for the tools"))

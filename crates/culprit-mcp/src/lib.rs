@@ -66,7 +66,8 @@ impl CulpritMcp {
             .contains(&tool)
             .then(|| args.get("sql").and_then(Value::as_str).map(str::to_string))
             .flatten();
-        let result = self.dispatch(client, tool, Value::Object(args)).await;
+        // Keep the largest engine operation out of every caller's async state and polling stack.
+        let result = Box::pin(self.dispatch(client, tool, Value::Object(args))).await;
         let (outcome, message) = match &result {
             Ok(_) => (AuditOutcome::Ok, None),
             Err(e) if e.code == culprit_core::ErrorCode::PermissionDenied => {

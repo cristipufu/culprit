@@ -114,6 +114,17 @@ async fn call(server: &CulpritMcp, tool: &str, args: Value) -> (bool, Value) {
     (result.is_error == Some(true), serde_json::from_str(&text).expect("JSON body"))
 }
 
+#[test]
+fn tool_calls_leave_stack_space_for_structured_database_data() {
+    let f = fixture("inline-state");
+    let s = server(&f, Options::default());
+    let request = s.handle("test-agent", "query_plan", Default::default());
+    // Engine futures can retain sizeable context. Propagating that inline into every caller made a normal
+    // saved-plan read overflow the test thread's stack while its provider decoded the plan.
+    let bytes = std::mem::size_of_val(&request);
+    assert!(bytes <= 4096, "a tool call retains {bytes} inline bytes; keep room for provider parsing");
+}
+
 #[tokio::test]
 async fn read_tools_answer_from_the_saved_report() {
     let f = fixture("read");

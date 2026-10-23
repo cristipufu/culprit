@@ -12,6 +12,15 @@ pub(crate) struct Events<'a> {
     pub reports: Reports<'a>,
 }
 
+#[derive(Default)]
+struct ComparisonContext {
+    counters: Option<trends::Counters>,
+    log: Option<String>,
+    windowed: Option<bool>,
+    since: Option<f64>,
+    taken_at: Option<String>,
+}
+
 impl Events<'_> {
     /// What changed between two periods: each query's runs and time per run before and after, judged with the same
     /// rules everywhere. Query Store answers from its own intervals (any period it still keeps); sources that only keep
@@ -19,22 +28,24 @@ impl Events<'_> {
     pub(crate) async fn changes(&self, name: &str, request: &changes::ChangeRequest) -> Result<culprit_core::Changes> {
         let info = self.connections.connection(name)?;
         let report_name = name.to_owned();
-        let (latest, latest_counters) = self
+        let context = self
             .reports
             .background(move |reports| {
-                let mut latest = reports.latest_report(&report_name, None)?;
-                let counters = latest.as_ref().and_then(trends::Counters::of);
-                if let Some(report) = &mut latest {
-                    report.evidence = None;
-                }
-                Ok((latest, counters))
+                let latest = reports.latest_report(&report_name, None)?;
+                let workload = latest.as_ref().and_then(|r| r.snapshot.workload.as_ref());
+                Ok(ComparisonContext {
+                    counters: latest.as_ref().and_then(trends::Counters::of),
+                    log: workload.and_then(|w| w.log.clone()),
+                    windowed: workload.map(|w| w.is_windowed()),
+                    since: workload.and_then(|w| w.window_start.as_deref()).and_then(culprit_core::changes::epoch),
+                    taken_at: latest.map(|r| r.snapshot.taken_at),
+                })
             })
             .await?;
         let options = changes::options(request);
         let now = chrono::Utc::now().timestamp() as f64;
-        let workload = latest.as_ref().and_then(|r| r.snapshot.workload.as_ref());
         // A log Culprit read is one period, and nothing counts between scans of it.
-        if let Some(log) = workload.and_then(|w| w.log.as_deref()) {
+        if let Some(log) = context.log {
             return Err(Error::new(
                 ErrorCode::Unsupported,
                 format!("{} keeps no statement history to compare two periods of", info.engine.label()),
@@ -47,10 +58,9 @@ impl Events<'_> {
         if !info.engine.abilities().periods {
             return Err(info.engine.refused(culprit_core::Ability::Periods));
         }
-        let windowed = workload.map(|w| w.is_windowed()).unwrap_or(info.engine == Engine::Mssql);
+        let windowed = context.windowed.unwrap_or(info.engine == Engine::Mssql);
         if windowed {
-            let since = workload.and_then(|w| w.window_start.as_deref()).and_then(culprit_core::changes::epoch);
-            let (baseline, recent) = changes::resolve(request, (since.unwrap_or(now - 86_400.0), now))?;
+            let (baseline, recent) = changes::resolve(request, (context.since.unwrap_or(now - 86_400.0), now))?;
             let provider = self.connections.provider(name).await?;
             let compared = crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, async {
                 if let Some(data) =
@@ -65,8 +75,7 @@ impl Events<'_> {
                     .await?;
                     changes::describe_switches(&mut out, provider.as_ref(), 5).await;
                     // Query Store periods run up to now; what the database dated since the last scan isn't saved yet.
-                    let last_scan =
-                        latest.as_ref().map(|r| r.snapshot.taken_at.clone()).unwrap_or_else(|| recent.start.clone());
+                    let last_scan = context.taken_at.clone().unwrap_or_else(|| recent.start.clone());
                     let live = match self.connections.forget_rejected(name, provider.recorded_changes(&last_scan).await)
                     {
                         Ok(events) => events,
@@ -86,6 +95,7 @@ impl Events<'_> {
             }
         }
         // Running totals only: the difference between two scans is what ran in between.
+        let latest_counters = context.counters;
         let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let report_name = name.to_owned();
         let compare_request = request.clone();

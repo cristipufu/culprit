@@ -95,43 +95,19 @@ impl Workspace {
     /// Re-scan `name` with the same window as its latest scan and compare, finding by finding. `ids` empty checks every
     /// finding the earlier scan had.
     pub async fn verify(&self, name: &str, ids: &[String]) -> Result<Verification> {
-        let before = self.latest_report(name, None)?.ok_or_else(|| {
-            Error::not_found(format!("'{name}' hasn't been scanned yet, so there's nothing to compare with"))
-                .with_hint(format!("Scan before the change (`culprit scan {name}`), then verify after it ships"))
-        })?;
+        let report_name = name.to_owned();
+        let before = self
+            .report_service()
+            .background(move |reports| reports.plan_report(&report_name, None))
+            .await?
+            .ok_or_else(|| {
+                Error::not_found(format!("'{name}' hasn't been scanned yet, so there's nothing to compare with"))
+                    .with_hint(format!("Scan before the change (`culprit scan {name}`), then verify after it ships"))
+            })?;
         let options = before.snapshot.options.clone().unwrap_or_else(SnapshotOptions::default);
         let after = self.scan(name, &options).await?;
-        Ok(compare_reports(&before, &after, ids))
-    }
-}
-
-#[cfg(test)]
-mod context_tests {
-    use super::*;
-
-    #[test]
-    fn comparisons_read_prepared_statistics_without_replaying_retained_evidence() {
-        let dir = std::env::temp_dir().join(format!("culprit-compare-context-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let workspace = Workspace::open_in(&dir);
-        let report: culprit_core::Report =
-            serde_json::from_str(include_str!("../../../fixtures/mssql-demo.report.json")).unwrap();
-        let saved = workspace.paths().reports_dir(&report.snapshot.connection);
-        crate::reports::save(&saved, &report).unwrap();
-        let path = saved.join(format!("{}.json", report.snapshot.id));
-        let mut value: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        value["_culprit_store"] =
-            serde_json::json!({"version": 2, "input": {"changes": []}, "collected": null, "recorded_changes": []});
-        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(workspace.latest_report(&report.snapshot.connection, None).is_err());
-        let context = workspace.compare_context(&report.snapshot.connection);
-        assert_eq!(context.taken_at.as_deref(), Some(report.snapshot.taken_at.as_str()));
-        assert_eq!(
-            serde_json::to_value(context.statistics).unwrap(),
-            serde_json::to_value(&report.snapshot.statistics).unwrap()
-        );
-        assert!(workspace.compare_context("missing").taken_at.is_none());
-        std::fs::remove_dir_all(dir).unwrap();
+        let ids = ids.to_vec();
+        crate::run_blocking(move || Ok(compare_reports(&before, &after, &ids))).await
     }
 }
 
@@ -178,4 +154,34 @@ pub fn export_diff(
             format: ExportFormat::Markdown,
         },
     })
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+
+    #[test]
+    fn comparisons_read_prepared_statistics_without_replaying_retained_evidence() {
+        let dir = std::env::temp_dir().join(format!("culprit-compare-context-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let workspace = Workspace::open_in(&dir);
+        let report: culprit_core::Report =
+            serde_json::from_str(include_str!("../../../fixtures/mssql-demo.report.json")).unwrap();
+        let saved = workspace.paths().reports_dir(&report.snapshot.connection);
+        crate::reports::save(&saved, &report).unwrap();
+        let path = saved.join(format!("{}.json", report.snapshot.id));
+        let mut value: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        value["_culprit_store"] =
+            serde_json::json!({"version": 2, "input": {"changes": []}, "collected": null, "recorded_changes": []});
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(workspace.latest_report(&report.snapshot.connection, None).is_err());
+        let context = workspace.compare_context(&report.snapshot.connection);
+        assert_eq!(context.taken_at.as_deref(), Some(report.snapshot.taken_at.as_str()));
+        assert_eq!(
+            serde_json::to_value(context.statistics).unwrap(),
+            serde_json::to_value(&report.snapshot.statistics).unwrap()
+        );
+        assert!(workspace.compare_context("missing").taken_at.is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
