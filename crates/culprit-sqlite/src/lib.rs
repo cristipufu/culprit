@@ -174,7 +174,9 @@ mod tests {
     use super::*;
     use culprit_core::{NewIndex, Online};
 
-    const ENDLESS: &str = "WITH RECURSIVE c(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM c) SELECT count(*) FROM c";
+    // Expensive before its first row, but finite: a broken interrupt must fail the test without hanging runtime shutdown.
+    const SLOW: &str =
+        "WITH RECURSIVE c(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM c WHERE x < 10000000) SELECT count(*) FROM c";
 
     fn query_file(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("culprit-query-{name}-{}.sqlite", std::process::id()));
@@ -185,7 +187,7 @@ mod tests {
     #[tokio::test]
     async fn execution_deadlines_interrupt_work_before_the_first_result_row() {
         let path = query_file("deadline");
-        let result = interactive(path.clone(), Duration::from_millis(10), |conn| collect::run(conn, ENDLESS, 1));
+        let result = interactive(path.clone(), Duration::from_millis(10), |conn| collect::run(conn, SLOW, 1));
         let error = tokio::time::timeout(Duration::from_secs(2), result).await.unwrap().unwrap_err();
         assert_eq!(error.code, ErrorCode::Timeout);
         std::fs::remove_file(path).unwrap();
@@ -198,7 +200,7 @@ mod tests {
         let (finished, stopped) = tokio::sync::oneshot::channel();
         let query = tokio::spawn(interactive(path.clone(), STATEMENT_TIMEOUT, move |conn| {
             let _ = started.send(());
-            let result = collect::run(conn, ENDLESS, 1);
+            let result = collect::run(conn, SLOW, 1);
             let _ = finished.send(result.as_ref().err().map(|e| e.code));
             result
         }));
