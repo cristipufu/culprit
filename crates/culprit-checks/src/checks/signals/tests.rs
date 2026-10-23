@@ -305,7 +305,7 @@ fn lock_escalations_add_up_per_table_and_name_the_write_that_changes_the_most_ro
         f[0].summary
     );
     assert_eq!(f[0].queries[0].id, id);
-    assert_eq!(f[0].severity, Severity::Low);
+    assert_eq!(f[0].severity, Severity::High);
     assert_eq!(f[0].metrics[0].label, ESCALATIONS_METRIC);
     assert_eq!(f[0].metrics[0].value, 5.0);
     assert!(f[0].fix.as_ref().unwrap().sql.as_ref().unwrap().contains("DELETE TOP (1000) FROM [dbo].[orders]"));
@@ -331,15 +331,15 @@ fn a_table_with_no_statement_writing_to_it_says_where_to_look() {
     );
     assert!(f[0].summary.contains("none of the statements in the query history writes to it"), "{}", f[0].summary);
     assert!(f[0].queries.is_empty());
-    assert_eq!(f[0].severity, Severity::Low);
+    assert_eq!(f[0].severity, Severity::High);
 }
 
 #[test]
-fn a_single_undated_lock_escalation_is_information() {
+fn a_single_lock_escalation_is_high() {
     let s = escalations_on("orders", escalating(1.0, 1.0, 0.0), IndexContention::default());
     let f = lock_escalations(&s);
     assert_eq!(f[0].title, "Row locks on orders escalated to a table lock once since SQL Server started (Oct 11)");
-    assert_eq!(f[0].severity, Severity::Low);
+    assert_eq!(f[0].severity, Severity::High);
 }
 
 /// `s` with the counts of an earlier scan of it, taken at 06:00 on the day it was taken.
@@ -364,10 +364,11 @@ fn with_earlier_scan(mut s: Snapshot, counts: &[(&str, f64)], started_at: Option
 // tell whether they're recent. The finding says when the count began, and only a rate measured since then raises
 // it: two in the 12 hours since the start is High.
 #[test]
-fn escalations_without_an_earlier_scan_are_undated_information() {
+fn escalations_without_an_earlier_scan_are_graded_on_their_rate_since_the_start() {
     let mut s = escalations_on("orders", escalating(2.0, 0.0, 0.0), IndexContention::default());
     let f = &lock_escalations(&s)[0];
-    assert_eq!(f.severity, Severity::Low);
+    assert_eq!(f.severity, Severity::High);
+    assert!(f.is_actionable());
     // Counted for 12 hours: none of them is older than that (the fresh SQL Server reading said "they may be old" three
     // minutes after a restart).
     assert!(
@@ -383,6 +384,8 @@ fn escalations_without_an_earlier_scan_are_undated_information() {
     // Counted for days, they may be old.
     s.server.started_at = Some("2026-10-08T00:13:03Z".into());
     let f = &lock_escalations(&s)[0];
+    assert_eq!(f.severity, Severity::Medium);
+    assert!(f.is_actionable());
     assert!(
         f.summary.contains(
             "2 times since it started, on Oct 8 at 00:13 UTC. It keeps no time for each, and Culprit has no earlier scan to compare with, so they may be old"
@@ -400,15 +403,18 @@ fn one_escalation_in_six_months_is_low_history_on_a_first_scan() {
     s.server.started_at = Some("2026-04-11T12:00:00Z".into());
     let f = &lock_escalations(&s)[0];
     assert_eq!(f.severity, Severity::Low);
+    assert_eq!(f.actionability, culprit_core::Actionability::Information);
     assert!(f.summary.contains("less than once a week on average since then: they may all be old"), "{}", f.summary);
     // A few a week since the start is Medium: likely to happen again.
     s.server.started_at = Some("2026-10-01T12:00:00Z".into());
     s.indexes.iter_mut().filter_map(|i| i.contention.as_mut()).for_each(|c| c.lock_escalations = 3.0);
-    assert_eq!(lock_escalations(&s)[0].severity, Severity::Low);
+    assert_eq!(lock_escalations(&s)[0].severity, Severity::Medium);
+    assert!(lock_escalations(&s)[0].is_actionable());
     // Minutes of counting make no rate: the demo's server started 44 seconds before the scan.
     s.server.started_at = Some("2026-10-11T12:13:03Z".into());
     let f = &lock_escalations(&s)[0];
     assert_eq!(f.severity, Severity::Low);
+    assert_eq!(f.actionability, culprit_core::Actionability::Information);
     assert!(f.summary.contains("started too recently to tell how often"), "{}", f.summary);
 }
 
@@ -446,6 +452,7 @@ fn a_count_that_fell_without_a_restart_is_not_new_escalations() {
 #[test]
 fn escalations_with_none_since_the_previous_scan_are_low_history() {
     let mut s = escalations_on("orders", escalating(2.0, 0.0, 0.0), IndexContention::default());
+    s.options = Some(culprit_core::SnapshotOptions::default().with_window_minutes(6 * 60));
     let q = first_query(&mut s);
     q.text = "UPDATE TOP (1000) dbo.orders SET archived = 1 WHERE archived = 0".into();
     q.plan = None;
@@ -470,6 +477,38 @@ fn escalations_with_none_since_the_previous_scan_are_low_history() {
     assert_eq!(f.impact.label, "2 table locks, none new");
     assert_eq!(f.metrics[1].value, 0.0);
     assert!(!f.fix.as_ref().unwrap().summary.contains("since the previous scan"), "the fix doesn't repeat the history");
+}
+
+#[test]
+fn all_timespan_windows_require_baseline_to_cover_the_window_before_silencing_escalations() {
+    let mut base = escalations_on("orders", escalating(40.0, 0.0, 0.0), IndexContention::default());
+    base.taken_at = "2026-10-31T12:00:00Z".into();
+    base.server.started_at = Some("2026-10-01T00:00:00Z".into());
+
+    for (window_minutes, partial_at, full_at) in [
+        (60_u32, "2026-10-31T11:54:00Z", "2026-10-31T11:00:00Z"),
+        (360, "2026-10-31T11:24:00Z", "2026-10-31T06:00:00Z"),
+        (1440, "2026-10-31T09:36:00Z", "2026-10-30T12:00:00Z"),
+        (7 * 1440, "2026-10-30T19:00:00Z", "2026-10-24T12:00:00Z"),
+        (30 * 1440, "2026-10-28T12:00:00Z", "2026-10-01T12:00:00Z"),
+    ] {
+        let mut s = with_earlier_scan(base.clone(), &[("orders", 40.0)], None);
+        s.options = Some(culprit_core::SnapshotOptions::default().with_window_minutes(window_minutes));
+
+        // A baseline covering only a fraction of the selected window must never silence escalations into History.
+        s.escalations_before.as_mut().unwrap().taken_at = partial_at.into();
+        let f = &lock_escalations(&s)[0];
+        assert_eq!(f.severity, Severity::High, "window {window_minutes}m should keep active escalations High");
+        assert!(f.is_actionable(), "window {window_minutes}m");
+        assert!(!f.title.contains(", none since "), "window {window_minutes}m: {}", f.title);
+
+        // When the baseline covers the full selected window with zero delta, it is History.
+        s.escalations_before.as_mut().unwrap().taken_at = full_at.into();
+        let f = &lock_escalations(&s)[0];
+        assert_eq!(f.severity, Severity::Low, "window {window_minutes}m with full baseline should be Low");
+        assert_eq!(f.actionability, culprit_core::Actionability::History, "window {window_minutes}m");
+        assert!(f.title.contains(", none since "), "window {window_minutes}m: {}", f.title);
+    }
 }
 
 #[test]

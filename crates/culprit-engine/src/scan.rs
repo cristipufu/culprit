@@ -112,11 +112,9 @@ impl<'a> Scan<'a> {
         // one whose usage counters started over.
         let changes = history::diff(previous.as_ref(), &snapshot, recorded);
         let age_inputs = history::date_new_indexes_traced(&dir, &mut snapshot, &changes);
-        // Lock escalations are counted since startup with no time for each: the previous scan's counts tell new ones.
-        snapshot.escalations_before =
-            previous.as_ref().and_then(|p| culprit_core::EscalationBaseline::from_scan(p, &snapshot));
-        snapshot.contention_before =
-            previous.as_ref().and_then(|p| culprit_core::ContentionBaseline::from_scan(p, &snapshot));
+        // Lock escalations, index contention and operational counters are counted since startup with no time for each:
+        // compare against the earliest compatible scan covering the selected window.
+        reports::apply_counter_baselines(&dir, &mut snapshot, previous.as_ref());
         // pg_stat_statements' evictions are counted since its last reset: the oldest of Culprit's scans a day or more
         // back tells the rate they go at now, else the previous scan's count tells new ones.
         snapshot.evictions_before = reports::evictions_baseline(&dir, &snapshot).or_else(|| {
@@ -127,9 +125,6 @@ impl<'a> Scan<'a> {
         });
         // How big each table was a day or more ago tells how fast it grows.
         snapshot.sizes_before = history::growth_baseline(&dir, &snapshot);
-        if let Some(previous) = previous.as_ref().filter(|p| history::same_database(p, &snapshot)) {
-            culprit_core::operations::compare(previous, &mut snapshot);
-        }
         let report = analysis::collected(snapshot, collected, collection, recorded_evidence, age_inputs, self.checks);
         reports::save(&dir, &report)?;
         history::keep_scan(&dir, &report.snapshot, previous.as_ref(), &changes);

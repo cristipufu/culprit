@@ -2,6 +2,14 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.4.2
+
+### Fixes
+
+- **Timespan window baselines for cumulative counter findings (`lock-escalations`, `hot-rows`, `operational-errors`).** Selecting any timespan window (`1h`, `6h`, `24h`, `7d`, `30d`, or a custom `--window`) now compares cumulative engine counters against the oldest compatible saved scan inside that window rather than only the immediately preceding scan. An intermediate scan taken a few hours ago with zero additional events no longer hides findings that occurred earlier within the selected window into **History**. When a pre-window scan from the same server uptime confirms that zero events occurred across the entire selected window, the finding is accurately placed in **History**.
+- **Scheduled CI and Slack digest comparisons (`culprit digest`).** Daily and periodic scheduled digests now compare across Query Store 1-hour interval boundary jitter and retention-capped workload windows (such as a 2-day Query Store cap under a 7-day request) instead of falling back to *"No comparable previous digest"*. Undated since-startup lock escalations and counter findings with rates above 1/week stay in **Needs attention** on the first digest run or when no prior baseline exists, and `ChecksumFailures` page-corruption alerts are never suppressed by a zero counter delta.
+- **Explicit `--since` digest baselines and legacy digest upgrades.** Passing `--since <scan-or-digest>` to `culprit digest` always seeds counter baselines from the specified baseline, and pre-`0.4.0` saved digests without `identity`/`measurement` envelopes upgrade cleanly for comparison.
+
 ## 0.4.1
 
 ### Fixes

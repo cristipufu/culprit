@@ -185,39 +185,119 @@ pub fn rebase_on_scans(dir: &Path, snapshot: &mut culprit_core::Snapshot) {
     if let Some(baseline) = evictions_baseline(dir, snapshot) {
         snapshot.evictions_before = Some(baseline);
     }
-    if snapshot.indexes.iter().any(|i| i.contention.is_some())
-        || !snapshot.operations.counters.is_empty()
-        || snapshot.operations.sqlite.is_some()
+    apply_counter_baselines(dir, snapshot, None);
+    rebuild_timeline(dir, snapshot);
+}
+
+/// Compare lock escalations, index lock contention and operational counters against saved scans in `dir`.
+/// For any selected workload window (1h, 6h, 24h, 7d, 30d or custom), walks backward through compatible scans of the
+/// same continuous server uptime inside that window so a scan taken a minute or a few hours ago does not hide
+/// escalations or waits that happened earlier in the window. Writes nothing.
+pub(crate) fn apply_counter_baselines(
+    dir: &Path,
+    snapshot: &mut culprit_core::Snapshot,
+    immediate: Option<&culprit_core::Snapshot>,
+) {
+    if !snapshot.indexes.iter().any(|i| i.contention.is_some())
+        && snapshot.operations.counters.is_empty()
+        && snapshot.operations.sqlite.is_none()
     {
-        let now = trends::epoch(&snapshot.taken_at);
-        // Only a few adjacent scans are needed, and every candidate must precede this report. Reopening a saved
-        // report never compares it with scans taken later or with another database. This path writes nothing.
-        for id in report_ids(dir)
-            .into_iter()
-            .rev()
-            .filter(|id| {
-                id_epoch(id).zip(now).is_some_and(|(at, now)| at < now && at >= now - trends::HISTORY_DAYS * 86_400.0)
-            })
-            .take(5)
+        return;
+    }
+    let now = trends::epoch(&snapshot.taken_at);
+    let window_secs = f64::from(snapshot.options.as_ref().map_or(MINUTES_PER_DAY, |o| o.window_in_minutes())) * 60.0;
+    let min_cover_secs = window_secs * 0.8;
+    let max_age_secs = window_secs * 1.25;
+    let lookback_secs = (trends::HISTORY_DAYS * 86_400.0).max(max_age_secs);
+
+    let mut candidates: Vec<culprit_core::Snapshot> = Vec::new();
+    if let Some(prev) = immediate.filter(|p| {
+        p.id != snapshot.id
+            && crate::history::same_database(p, snapshot)
+            && trends::epoch(&p.taken_at).zip(now).is_some_and(|(at, now)| at <= now)
+    }) {
+        candidates.push(prev.clone());
+    }
+    for id in report_ids(dir)
+        .into_iter()
+        .rev()
+        .filter(|id| {
+            *id != snapshot.id && id_epoch(id).zip(now).is_some_and(|(at, now)| at < now && at >= now - lookback_secs)
+        })
+        .take(200)
+    {
+        if candidates.iter().any(|c| c.id == id) {
+            continue;
+        }
+        let Ok(previous) = load_snapshot(&dir.join(format!("{id}.json"))) else { continue };
+        if !crate::history::same_database(&previous, snapshot)
+            || trends::epoch(&previous.taken_at).zip(now).is_none_or(|(at, now)| at >= now)
         {
-            let Ok(previous) = load_snapshot(&dir.join(format!("{id}.json"))) else { continue };
-            if !crate::history::same_database(&previous, snapshot)
-                || trends::epoch(&previous.taken_at).zip(now).is_none_or(|(at, now)| at >= now)
-            {
-                continue;
-            }
-            snapshot.escalations_before = culprit_core::EscalationBaseline::from_scan(&previous, snapshot);
-            culprit_core::operations::compare(&previous, snapshot);
-            if let Some(baseline) = culprit_core::ContentionBaseline::from_scan(&previous, snapshot) {
-                snapshot.contention_before = Some(baseline);
-            } else {
-                snapshot.contention_before = None;
-            }
+            continue;
+        }
+        candidates.push(previous);
+    }
+
+    let mut chosen: Option<&culprit_core::Snapshot> = None;
+    let mut zero_escalation_cover: Option<&culprit_core::Snapshot> = None;
+    let mut zero_contention_cover: Option<&culprit_core::Snapshot> = None;
+    let current_escalations = culprit_core::escalations_by_table(snapshot);
+    for candidate in &candidates {
+        let has_baseline = culprit_core::EscalationBaseline::from_scan(candidate, snapshot).is_some()
+            || culprit_core::ContentionBaseline::from_scan(candidate, snapshot).is_some();
+        if chosen.is_none() {
             // A reset or unknown start in the closest matching scan cannot be bypassed by an older counter.
+            if !has_baseline && candidate.server.started_at.is_none() {
+                snapshot.escalations_before = None;
+                snapshot.contention_before = None;
+                return;
+            }
+            chosen = Some(candidate);
+            if culprit_core::EscalationBaseline::from_scan(candidate, snapshot).is_some_and(|b| b.restarted) {
+                break;
+            }
+            continue;
+        }
+        let same_uptime = culprit_core::EscalationBaseline::from_scan(candidate, snapshot)
+            .is_some_and(|b| !b.restarted)
+            || culprit_core::ContentionBaseline::from_scan(candidate, snapshot).is_some();
+        if !same_uptime {
             break;
         }
+        let age_secs = trends::epoch(&candidate.taken_at).zip(now).map(|(at, now)| now - at);
+        if age_secs.is_some_and(|age| age <= max_age_secs) {
+            chosen = Some(candidate);
+            continue;
+        }
+        // When the oldest scan inside the window covers only a fraction of it (for example, a scan 1 minute ago before
+        // selecting 1h or 6h), an older scan from the same uptime with identical counter totals proves no escalations
+        // or lock waits happened across the entire selected window.
+        let chosen_age =
+            chosen.and_then(|c| trends::epoch(&c.taken_at).zip(now)).map(|(at, now)| now - at).unwrap_or(0.0);
+        if chosen_age < min_cover_secs {
+            if culprit_core::escalations_by_table(candidate) == current_escalations {
+                zero_escalation_cover = Some(candidate);
+            }
+            if culprit_core::ContentionBaseline::from_scan(candidate, snapshot).is_some_and(|b| {
+                snapshot
+                    .indexes
+                    .iter()
+                    .filter(|i| i.contention.is_some())
+                    .all(|i| b.since(i).is_some_and(|d| d.waits == 0.0 && d.wait_ms == 0.0))
+            }) {
+                zero_contention_cover = Some(candidate);
+            }
+        }
+        break;
     }
-    rebuild_timeline(dir, snapshot);
+
+    if let Some(previous) = chosen {
+        snapshot.escalations_before =
+            culprit_core::EscalationBaseline::from_scan(zero_escalation_cover.unwrap_or(previous), snapshot);
+        culprit_core::operations::compare(previous, snapshot);
+        snapshot.contention_before =
+            culprit_core::ContentionBaseline::from_scan(zero_contention_cover.unwrap_or(previous), snapshot);
+    }
 }
 
 /// A saved scan's timeline from Culprit's scans built again from the counters the scans before it saved beside it in

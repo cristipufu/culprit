@@ -97,16 +97,14 @@ impl Reports<'_> {
             }
         };
         // A scan without an earlier one to compare lock escalations with (a scheduled job keeps no scans) compares
-        // them with the baseline's counts.
+        // them with the baseline's counts. When `--since` is explicitly supplied, always compare against that baseline.
         let unbased = current.snapshot.escalations_before.is_none();
         // A previous digest is the baseline a scheduled job keeps: it holds finding ids and titles, no statement text.
         if let Some(path) = since
             && let Some(previous) = read_digest(path)?
         {
-            if unbased {
-                current.snapshot.escalations_before =
-                    culprit_core::EscalationBaseline::from_digest(&previous, &current.snapshot);
-            }
+            current.snapshot.escalations_before =
+                culprit_core::EscalationBaseline::from_digest(&previous, &current.snapshot);
             let current = recheck(current);
             return Ok(with_details(&current, culprit_checks::digest_since(&current, &previous, top, top_queries)));
         }
@@ -123,9 +121,15 @@ impl Reports<'_> {
             }
             _ => None,
         };
-        if unbased && let Some(previous) = &previous {
-            current.snapshot.escalations_before =
-                culprit_core::EscalationBaseline::from_scan(&previous.snapshot, &current.snapshot);
+        if (unbased || since.is_some())
+            && let Some(previous) = &previous
+        {
+            current.snapshot.escalations_before = previous
+                .snapshot
+                .report_comparison(&current.snapshot)
+                .allows_comparison()
+                .then(|| culprit_core::EscalationBaseline::from_scan(&previous.snapshot, &current.snapshot))
+                .flatten();
         }
         if current.snapshot.evictions_before.is_none()
             && let Some(previous) = &previous

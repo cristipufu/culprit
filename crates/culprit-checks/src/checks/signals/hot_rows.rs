@@ -52,10 +52,16 @@ pub fn hot_rows(snapshot: &Snapshot) -> Vec<Finding> {
                 if hours < 0.0 { return None; }
                 let delta = snapshot.indexes_on(&schema, &table).filter(|i| i.contention.is_some())
                     .try_fold((0.0, 0.0), |(n, ms), i| b.since(i).map(|d| (n + d.waits, ms + d.wait_ms)))?;
+                if delta == (0.0, 0.0)
+                    && let Some(minutes) = snapshot.options.as_ref().map(|o| o.window_in_minutes())
+                    && hours < f64::from(minutes) / 60.0 * 0.8
+                {
+                    return None;
+                }
                 Some((b, hours, delta.0, delta.1))
             });
             let in_window = measured.is_some_and(|(_, hours, _, _)| {
-                snapshot.options.as_ref().is_none_or(|o| hours <= f64::from(o.window_in_minutes()) / 60.0 + 1.0 / 3600.0)
+                snapshot.options.as_ref().is_none_or(|o| hours <= f64::from(o.window_in_minutes()) / 60.0 * 1.25)
             });
             let unchanged = measured.is_some_and(|(_, _, n, ms)| n == 0.0 && ms == 0.0);
             let (shown_waits, shown_ms) = measured.map_or((waits, wait_ms), |(_, _, n, ms)| (n, ms));

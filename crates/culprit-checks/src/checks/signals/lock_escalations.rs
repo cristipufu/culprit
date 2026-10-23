@@ -149,7 +149,21 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
             let started_on = started.map(crate::queries::when_phrase);
             f.verification_basis = culprit_core::VerificationBasis::CounterChange;
             // How many since the earlier scan, when there is one to compare with and the counts compare.
-            let new = before.and_then(|b| b.since(&name, t.escalations).map(|n| (b, n)));
+            // A zero delta over only a fraction of the selected window (for example, a scan taken a minute or a few
+            // hours ago before selecting 1h, 6h, 24h, 7d or 30d) does not establish that nothing escalated in the window.
+            let new = before.and_then(|b| {
+                let n = b.since(&name, t.escalations)?;
+                if n == 0.0
+                    && b.reference.as_ref().and_then(|r| r.id.as_ref()).is_some()
+                    && let Some(minutes) = snapshot.options.as_ref().map(|o| o.window_in_minutes())
+                {
+                    let hours = days_between(&b.taken_at, &snapshot.taken_at)? * 24.0;
+                    if hours < f64::from(minutes) / 60.0 * 0.8 {
+                        return None;
+                    }
+                }
+                Some((b, n))
+            });
             let historical = new.is_some_and(|(_, n)| n == 0.0);
             if historical { f.actionability = culprit_core::Actionability::History; }
             // Without one, how many a day since SQL Server started, over an hour or more of counting.
@@ -315,10 +329,16 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
                 Some(_) => Severity::High,
                 None => since_start_severity(first_scan_rate, ESCALATIONS_HIGH_PER_DAY, ESCALATIONS_MEDIUM_PER_DAY),
             };
-            let placed_in_window = new.is_some_and(|(b, _)| {
-                days_between(&b.taken_at, &snapshot.taken_at).is_some_and(|d| d >= 0.0 && snapshot.options.as_ref().is_none_or(|o| d * 1440.0 <= f64::from(o.window_in_minutes()) + 1.0 / 60.0))
+            let out_of_window = new.is_some_and(|(b, _)| {
+                !days_between(&b.taken_at, &snapshot.taken_at).is_some_and(|d| {
+                    d >= 0.0
+                        && snapshot
+                            .options
+                            .as_ref()
+                            .is_none_or(|o| d * 1440.0 <= f64::from(o.window_in_minutes()) * 1.25)
+                })
             });
-            if !historical && !placed_in_window {
+            if !historical && (out_of_window || (new.is_none() && f.severity == Severity::Low)) {
                 f.informational();
                 f.severity = Severity::Low;
                 f.caveats.push("These totals do not establish a new increase or continuing blocking in the selected window. Capture dated events or compare counters wholly within that period before treating this as current pressure.".into());

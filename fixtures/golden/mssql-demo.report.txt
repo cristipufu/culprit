@@ -1,6 +1,6 @@
 reading: SQL Server 2022 · database culprit_demo · scanned 2026-10-11T12:13:47Z
-headline: 21 opportunities. The top ones touch 2 min of database time over the last 5 hours (27%).
-top share: 27%
+headline: 22 opportunities. The top ones touch 2 min of database time over the last 5 hours (28%).
+top share: 28%
 findings: 23
 
 === finding failing-query:263
@@ -126,6 +126,114 @@ brief:
     ## What to do in the codebase
 
     The fix's SQL starts an event session on the database: run it there, not in the application's code; it changes nothing by itself. Once it has caught what you need, remove it with the DROP in the SQL's last line. The statement to change is the one it catches: find the code that sends that one (the application, a job or a migration) and change it the way the fix says. After any change is live, run `culprit scan mssql-demo` and check `failing-query:246` the way *How to verify* says.
+
+=== finding lock-escalations:shop.support_tickets
+Needs attention · high severity · high confidence · indexes
+title: Row locks on support_tickets escalated to a table lock 5 times since SQL Server started (Oct 11)
+summary: SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times since it started, on Oct 11 at 11:06 UTC, 67 minutes before this scan, so none is older than that. The next scan compares with this one and says whether any happened since. That is once a day or more on average over the counter history; it does not date individual events. SQL Server can attempt escalation around 5,000 locks on one table reference, or under lock-memory pressure. A successful table lock can block incompatible lock requests until the transaction ends; the escalation counter alone does not establish that other sessions were blocked. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to support_tickets. A read can escalate too: an ordinary read under read committed usually releases row locks as it advances, but prefetching key lookups can retain locks until the statement ends. Locking hints (HOLDLOCK, UPDLOCK), REPEATABLE READ and SERIALIZABLE can retain them until the transaction ends. Reading many rows can acquire enough locks for an escalation attempt. The likeliest is a read from support_tickets, which returns about 973 rows a run on average: its plan prefetches its key lookups, which keeps their row locks until the statement ends.
+impact: 5 table locks
+metrics:
+  - Escalations since SQL Server started: 5
+fix: Start the event session below (culprit_lock_escalation) to learn which statement escalates: it keeps each escalation with its statement, in memory, at almost no cost. If it is a read, it escalates because it keeps its row locks until it ends: Without locking hints, READ_COMMITTED_SNAPSHOT lets ordinary reads under read committed avoid row locks (it changes what readers see and uses tempdb, so test it first); or consider reading fewer rows per run after checking the access path; row counts do not bound all locks or prevent escalation under lock-memory pressure. If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), consider smaller batches. Use separate transactions only if partial commits preserve required atomicity; an enclosing transaction may retain locks.
+  sql:
+      -- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement.
+      -- It catches them on every table, so another table's finding starts this same session: once is enough.
+      IF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_lock_escalation')
+          CREATE EVENT SESSION culprit_lock_escalation ON SERVER
+          ADD EVENT sqlserver.lock_escalation (
+              SET collect_statement = 1
+              ACTION (sqlserver.sql_text, sqlserver.client_app_name)
+              WHERE sqlserver.database_name = N'culprit_demo')
+          ADD TARGET package0.ring_buffer
+          WITH (STARTUP_STATE = ON);
+      IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_lock_escalation')
+          ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;
+
+      -- Then read what it caught
+      SELECT e.x.value('@timestamp', 'datetime2') AS at_utc,
+             OBJECT_NAME(e.x.value('(data[@name="object_id"]/value)[1]', 'int')) AS table_name,
+             e.x.value('(data[@name="escalated_lock_count"]/value)[1]', 'int') AS locks,
+             e.x.value('(data[@name="statement"]/value)[1]', 'nvarchar(max)') AS statement,
+             e.x.value('(action[@name="client_app_name"]/value)[1]', 'nvarchar(256)') AS app
+        FROM (SELECT CAST(t.target_data AS xml) AS d
+                FROM sys.dm_xe_session_targets t
+                JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
+               WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r
+       CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);
+
+      -- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_lock_escalation ON SERVER;
+verify:
+  1. Compare new escalations on support_tickets and observed blocking under comparable workload before and after a justified change. No new events means none were recorded in that interval; an idle interval alone does not verify a fix.
+caveats:
+  - SQL Server counts escalations since the table's indexes were loaded into memory, usually since it started, and keeps no time for each.
+queries:
+  - 10: 2% of database time
+    note: Returns about 973 rows a run. Its plan prefetches its key lookups, which keeps their row locks until the statement ends.
+brief:
+    # Row locks on support_tickets escalated to a table lock 5 times since SQL Server started (Oct 11)
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `lock-escalations:shop.support_tickets`: Needs attention, high impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times since it started, on Oct 11 at 11:06 UTC, 67 minutes before this scan, so none is older than that. The next scan compares with this one and says whether any happened since. That is once a day or more on average over the counter history; it does not date individual events. SQL Server can attempt escalation around 5,000 locks on one table reference, or under lock-memory pressure. A successful table lock can block incompatible lock requests until the transaction ends; the escalation counter alone does not establish that other sessions were blocked. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to support_tickets. A read can escalate too: an ordinary read under read committed usually releases row locks as it advances, but prefetching key lookups can retain locks until the statement ends. Locking hints (HOLDLOCK, UPDLOCK), REPEATABLE READ and SERIALIZABLE can retain them until the transaction ends. Reading many rows can acquire enough locks for an escalation attempt. The likeliest is a read from support_tickets, which returns about 973 rows a run on average: its plan prefetches its key lookups, which keeps their row locks until the statement ends.
+
+    ## Evidence
+
+    - Escalations since SQL Server started: 5
+
+    ## Queries involved
+
+    Query `10` — 2% of DB time, 4.0K runs over the last 5 hours, 1.4 ms average:
+
+    ```sql
+    SELECT [id], [subject], [opened_at], [status] FROM [shop].[support_tickets] WHERE [priority] = @P1
+    ```
+
+    ## Suggested fix
+
+    Start the event session below (culprit_lock_escalation) to learn which statement escalates: it keeps each escalation with its statement, in memory, at almost no cost. If it is a read, it escalates because it keeps its row locks until it ends: Without locking hints, READ_COMMITTED_SNAPSHOT lets ordinary reads under read committed avoid row locks (it changes what readers see and uses tempdb, so test it first); or consider reading fewer rows per run after checking the access path; row counts do not bound all locks or prevent escalation under lock-memory pressure. If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), consider smaller batches. Use separate transactions only if partial commits preserve required atomicity; an enclosing transaction may retain locks.
+
+    ```sql
+    -- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement.
+    -- It catches them on every table, so another table's finding starts this same session: once is enough.
+    IF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_lock_escalation')
+        CREATE EVENT SESSION culprit_lock_escalation ON SERVER
+        ADD EVENT sqlserver.lock_escalation (
+            SET collect_statement = 1
+            ACTION (sqlserver.sql_text, sqlserver.client_app_name)
+            WHERE sqlserver.database_name = N'culprit_demo')
+        ADD TARGET package0.ring_buffer
+        WITH (STARTUP_STATE = ON);
+    IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_lock_escalation')
+        ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;
+
+    -- Then read what it caught
+    SELECT e.x.value('@timestamp', 'datetime2') AS at_utc,
+           OBJECT_NAME(e.x.value('(data[@name="object_id"]/value)[1]', 'int')) AS table_name,
+           e.x.value('(data[@name="escalated_lock_count"]/value)[1]', 'int') AS locks,
+           e.x.value('(data[@name="statement"]/value)[1]', 'nvarchar(max)') AS statement,
+           e.x.value('(action[@name="client_app_name"]/value)[1]', 'nvarchar(256)') AS app
+      FROM (SELECT CAST(t.target_data AS xml) AS d
+              FROM sys.dm_xe_session_targets t
+              JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
+             WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r
+     CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);
+
+    -- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_lock_escalation ON SERVER;
+    ```
+
+    ## How to verify
+
+    - Compare new escalations on support_tickets and observed blocking under comparable workload before and after a justified change. No new events means none were recorded in that interval; an idle interval alone does not verify a fix.
+
+    ## Caveats
+
+    - SQL Server counts escalations since the table's indexes were loaded into memory, usually since it started, and keeps no time for each.
+
+    ## What to do in the codebase
+
+    The fix's SQL starts an event session on the database and reads what it catches: run it there, not in the application's code; it changes nothing by itself. Once it has caught what you need, remove it with the DROP in the SQL's last line. The statement to change is the one it catches: find the code that sends that one (the application, a job or a migration) and change it the way the fix says. After any change is live, run `culprit scan mssql-demo` and check `lock-escalations:shop.support_tickets` the way *How to verify* says.
 
 === finding last-page-insert:archive.hot.pk_hot
 Needs attention · high severity · medium confidence · indexes
@@ -1137,116 +1245,6 @@ brief:
     ## What to do in the codebase
 
     The fix is a setting kept in this database alone: run its SQL once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `last-actual-plans:last-query-plan-stats` the way *How to verify* says.
-
-=== finding lock-escalations:shop.support_tickets
-Information · low severity · high confidence · indexes
-title: Row locks on support_tickets escalated to a table lock 5 times since SQL Server started (Oct 11)
-summary: SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times since it started, on Oct 11 at 11:06 UTC, 67 minutes before this scan, so none is older than that. The next scan compares with this one and says whether any happened since. That is once a day or more on average over the counter history; it does not date individual events. SQL Server can attempt escalation around 5,000 locks on one table reference, or under lock-memory pressure. A successful table lock can block incompatible lock requests until the transaction ends; the escalation counter alone does not establish that other sessions were blocked. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to support_tickets. A read can escalate too: an ordinary read under read committed usually releases row locks as it advances, but prefetching key lookups can retain locks until the statement ends. Locking hints (HOLDLOCK, UPDLOCK), REPEATABLE READ and SERIALIZABLE can retain them until the transaction ends. Reading many rows can acquire enough locks for an escalation attempt. The likeliest is a read from support_tickets, which returns about 973 rows a run on average: its plan prefetches its key lookups, which keeps their row locks until the statement ends.
-impact: 5 table locks
-metrics:
-  - Escalations since SQL Server started: 5
-fix: Start the event session below (culprit_lock_escalation) to learn which statement escalates: it keeps each escalation with its statement, in memory, at almost no cost. If it is a read, it escalates because it keeps its row locks until it ends: Without locking hints, READ_COMMITTED_SNAPSHOT lets ordinary reads under read committed avoid row locks (it changes what readers see and uses tempdb, so test it first); or consider reading fewer rows per run after checking the access path; row counts do not bound all locks or prevent escalation under lock-memory pressure. If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), consider smaller batches. Use separate transactions only if partial commits preserve required atomicity; an enclosing transaction may retain locks.
-  sql:
-      -- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement.
-      -- It catches them on every table, so another table's finding starts this same session: once is enough.
-      IF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_lock_escalation')
-          CREATE EVENT SESSION culprit_lock_escalation ON SERVER
-          ADD EVENT sqlserver.lock_escalation (
-              SET collect_statement = 1
-              ACTION (sqlserver.sql_text, sqlserver.client_app_name)
-              WHERE sqlserver.database_name = N'culprit_demo')
-          ADD TARGET package0.ring_buffer
-          WITH (STARTUP_STATE = ON);
-      IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_lock_escalation')
-          ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;
-
-      -- Then read what it caught
-      SELECT e.x.value('@timestamp', 'datetime2') AS at_utc,
-             OBJECT_NAME(e.x.value('(data[@name="object_id"]/value)[1]', 'int')) AS table_name,
-             e.x.value('(data[@name="escalated_lock_count"]/value)[1]', 'int') AS locks,
-             e.x.value('(data[@name="statement"]/value)[1]', 'nvarchar(max)') AS statement,
-             e.x.value('(action[@name="client_app_name"]/value)[1]', 'nvarchar(256)') AS app
-        FROM (SELECT CAST(t.target_data AS xml) AS d
-                FROM sys.dm_xe_session_targets t
-                JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
-               WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r
-       CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);
-
-      -- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_lock_escalation ON SERVER;
-verify:
-  1. Compare new escalations on support_tickets and observed blocking under comparable workload before and after a justified change. No new events means none were recorded in that interval; an idle interval alone does not verify a fix.
-caveats:
-  - These totals do not establish a new increase or continuing blocking in the selected window. Capture dated events or compare counters wholly within that period before treating this as current pressure.
-  - SQL Server counts escalations since the table's indexes were loaded into memory, usually since it started, and keeps no time for each.
-queries:
-  - 10: 2% of database time
-    note: Returns about 973 rows a run. Its plan prefetches its key lookups, which keeps their row locks until the statement ends.
-brief:
-    # Row locks on support_tickets escalated to a table lock 5 times since SQL Server started (Oct 11)
-
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `lock-escalations:shop.support_tickets`: Information, low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
-
-    ## What's happening
-
-    SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times since it started, on Oct 11 at 11:06 UTC, 67 minutes before this scan, so none is older than that. The next scan compares with this one and says whether any happened since. That is once a day or more on average over the counter history; it does not date individual events. SQL Server can attempt escalation around 5,000 locks on one table reference, or under lock-memory pressure. A successful table lock can block incompatible lock requests until the transaction ends; the escalation counter alone does not establish that other sessions were blocked. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to support_tickets. A read can escalate too: an ordinary read under read committed usually releases row locks as it advances, but prefetching key lookups can retain locks until the statement ends. Locking hints (HOLDLOCK, UPDLOCK), REPEATABLE READ and SERIALIZABLE can retain them until the transaction ends. Reading many rows can acquire enough locks for an escalation attempt. The likeliest is a read from support_tickets, which returns about 973 rows a run on average: its plan prefetches its key lookups, which keeps their row locks until the statement ends.
-
-    ## Evidence
-
-    - Escalations since SQL Server started: 5
-
-    ## Queries involved
-
-    Query `10` — 2% of DB time, 4.0K runs over the last 5 hours, 1.4 ms average:
-
-    ```sql
-    SELECT [id], [subject], [opened_at], [status] FROM [shop].[support_tickets] WHERE [priority] = @P1
-    ```
-
-    ## Suggested fix
-
-    Start the event session below (culprit_lock_escalation) to learn which statement escalates: it keeps each escalation with its statement, in memory, at almost no cost. If it is a read, it escalates because it keeps its row locks until it ends: Without locking hints, READ_COMMITTED_SNAPSHOT lets ordinary reads under read committed avoid row locks (it changes what readers see and uses tempdb, so test it first); or consider reading fewer rows per run after checking the access path; row counts do not bound all locks or prevent escalation under lock-memory pressure. If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), consider smaller batches. Use separate transactions only if partial commits preserve required atomicity; an enclosing transaction may retain locks.
-
-    ```sql
-    -- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement.
-    -- It catches them on every table, so another table's finding starts this same session: once is enough.
-    IF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_lock_escalation')
-        CREATE EVENT SESSION culprit_lock_escalation ON SERVER
-        ADD EVENT sqlserver.lock_escalation (
-            SET collect_statement = 1
-            ACTION (sqlserver.sql_text, sqlserver.client_app_name)
-            WHERE sqlserver.database_name = N'culprit_demo')
-        ADD TARGET package0.ring_buffer
-        WITH (STARTUP_STATE = ON);
-    IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_lock_escalation')
-        ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;
-
-    -- Then read what it caught
-    SELECT e.x.value('@timestamp', 'datetime2') AS at_utc,
-           OBJECT_NAME(e.x.value('(data[@name="object_id"]/value)[1]', 'int')) AS table_name,
-           e.x.value('(data[@name="escalated_lock_count"]/value)[1]', 'int') AS locks,
-           e.x.value('(data[@name="statement"]/value)[1]', 'nvarchar(max)') AS statement,
-           e.x.value('(action[@name="client_app_name"]/value)[1]', 'nvarchar(256)') AS app
-      FROM (SELECT CAST(t.target_data AS xml) AS d
-              FROM sys.dm_xe_session_targets t
-              JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
-             WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r
-     CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);
-
-    -- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_lock_escalation ON SERVER;
-    ```
-
-    ## How to verify
-
-    - Compare new escalations on support_tickets and observed blocking under comparable workload before and after a justified change. No new events means none were recorded in that interval; an idle interval alone does not verify a fix.
-
-    ## Caveats
-
-    - These totals do not establish a new increase or continuing blocking in the selected window. Capture dated events or compare counters wholly within that period before treating this as current pressure.
-    - SQL Server counts escalations since the table's indexes were loaded into memory, usually since it started, and keeps no time for each.
-
-    ## What to do in the codebase
-
-    Information: inspect the evidence and follow its verification guidance if the workload warrants it. This observation requests no immediate database change. Use `culprit scan mssql-demo` for a later comparison if needed, as *How to verify* describes. If you start the optional diagnostic event session, remove it with the DROP statement supplied in the fix when collection is complete.
 
 === finding log-volume:255
 History · low severity · high confidence · queries

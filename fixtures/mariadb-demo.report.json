@@ -647,7 +647,7 @@
     "analyzer": {
       "component": "culprit-checks",
       "revision": null,
-      "version": "0.3.9"
+      "version": "0.4.2"
     },
     "baselines": [],
     "collection": null,
@@ -660,7 +660,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.3.9"
+          "version": "0.4.2"
         },
         "query": "375c64398248650e"
       },
@@ -670,7 +670,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.3.9"
+          "version": "0.4.2"
         },
         "query": "decf59629e790076"
       },
@@ -680,7 +680,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.3.9"
+          "version": "0.4.2"
         },
         "query": "258e3c9b580f1ecc"
       },
@@ -690,7 +690,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.3.9"
+          "version": "0.4.2"
         },
         "query": "46db559fdff712fd"
       },
@@ -700,7 +700,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.3.9"
+          "version": "0.4.2"
         },
         "query": "d1f45c9664edccf9"
       }
@@ -814,7 +814,11 @@
         "a caveat repeats nothing the summary or the fix says"
       ]
     },
-    "previous_analyzer": null
+    "previous_analyzer": {
+      "component": "culprit-checks",
+      "revision": null,
+      "version": "0.4.1"
+    }
   },
   "refinement": [
     {

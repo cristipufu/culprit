@@ -398,12 +398,18 @@ impl MeasurementContext {
                 a == b
                     && self.period.hours().zip(other.period.hours()).is_some_and(|(before, after)| {
                         // Query Store includes whole boundary intervals. Two reads of the same selected
-                        // window naturally differ by seconds (or an interval boundary) as that window rolls.
+                        // window naturally differ by seconds or an interval boundary (up to an hour) as that
+                        // window rolls. When a database or Query Store is younger than the requested window
+                        // (for example, 1 day old yesterday and 2 days old today, or capped at 2 days of
+                        // retention under a 7-day request), the window grows or rolls across hour boundaries
+                        // without losing earlier history; only a shrinking partial window cannot verify
+                        // disappearance.
                         let complete = a.is_some_and(|minutes| {
                             let requested = f64::from(minutes) / 60.0;
-                            before + 1.0 / 3600.0 >= requested && after + 1.0 / 3600.0 >= requested
+                            before + 1.0 >= requested * 0.9 && after + 1.0 >= requested * 0.9
                         });
-                        complete || ((before - after) * 3600.0).abs() <= 1.0
+                        let growing = before >= crate::RATE_MIN_HOURS && after + 1.0 >= before && after >= before * 0.8;
+                        complete || growing || ((before - after) * 3600.0).abs() <= 1.0
                     })
             }
             _ => false,
@@ -543,9 +549,11 @@ impl crate::Digest {
         }
         match (&self.identity, &later.identity) {
             (Some(a), Some(b)) => a.comparison(b),
-            (None, None) if self.database.eq_ignore_ascii_case(&later.server.database) => Comparison::Legacy,
-            (None, None) => Comparison::Incompatible(ComparisonReason::DifferentDatabase),
-            _ => Comparison::Incompatible(ComparisonReason::UnknownIdentity),
+            (None, _) if !self.database.is_empty() && self.database.eq_ignore_ascii_case(&later.server.database) => {
+                Comparison::Legacy
+            }
+            (None, _) => Comparison::Incompatible(ComparisonReason::DifferentDatabase),
+            (Some(_), None) => Comparison::Incompatible(ComparisonReason::UnknownIdentity),
         }
     }
     pub fn comparison(&self, later: &Snapshot) -> Comparison {
@@ -553,17 +561,20 @@ impl crate::Digest {
         if !identity.allows_comparison() {
             return identity;
         }
+        if !later.measurement_consistency().allows_comparison() {
+            return Comparison::Incompatible(ComparisonReason::UnknownIdentity);
+        }
         match (&self.measurement, later.captured_measurement()) {
             (Some(a), Some(b)) => {
                 if self.identity.as_ref().is_some_and(|id| !id.comparison(&a.database).allows_comparison())
                     || a.database.database != self.database
-                    || !later.measurement_consistency().allows_comparison()
                 {
                     Comparison::Incompatible(ComparisonReason::UnknownIdentity)
                 } else {
                     a.report_comparison(&b)
                 }
             }
+            (None, _) if self.identity.is_none() => identity,
             (None, None) => identity,
             _ => Comparison::Incompatible(ComparisonReason::DifferentSource),
         }
@@ -749,7 +760,16 @@ mod tests {
         let mut b = a.clone();
         b.period = MeasurementPeriod::Window { span: None, hours: Some(24.8), requested_minutes: Some(1440) };
         assert!(a.report_comparison(&b).allows_comparison());
+        b.period = MeasurementPeriod::Window { span: None, hours: Some(23.8), requested_minutes: Some(1440) };
+        assert!(a.report_comparison(&b).allows_comparison(), "Query Store interval boundary jitter compares");
+        a.period = MeasurementPeriod::Window { span: None, hours: Some(48.08), requested_minutes: Some(7 * 1440) };
+        b.period = MeasurementPeriod::Window { span: None, hours: Some(48.01), requested_minutes: Some(7 * 1440) };
+        assert!(
+            a.report_comparison(&b).allows_comparison(),
+            "2-day retention under 7d request with cron jitter compares"
+        );
         b.period = MeasurementPeriod::Window { span: None, hours: Some(2.0), requested_minutes: Some(1440) };
+        a.period = MeasurementPeriod::Window { span: None, hours: Some(24.2), requested_minutes: Some(1440) };
         assert!(!a.report_comparison(&b).allows_comparison(), "partial coverage cannot verify disappearance");
         b.period = MeasurementPeriod::Window { span: None, hours: Some(24.8), requested_minutes: Some(60) };
         assert!(!a.report_comparison(&b).allows_comparison(), "different requests still do not compare");

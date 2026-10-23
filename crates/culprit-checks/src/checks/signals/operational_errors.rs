@@ -30,16 +30,18 @@ pub fn operational_errors(s: &Snapshot) -> Vec<Finding> {
             Kind::ConnectionFailures => ("connection-failures","Failed client connection handshakes (whole server)","Clients attempted to connect to the server and failed during authentication, TLS negotiation or packet read (Aborted_connects). This is a shared server counter.","Inspect server connection logs and client configuration for bad credentials, TLS mismatches, connect_timeout settings, or health checks that close TCP sockets without completing the handshake."),
         };
         let now=parse_epoch_seconds(&s.taken_at);
-        let start=now.map(|n|n-f64::from(s.options.as_ref().map_or(24*60,|o|o.window_in_minutes()))*60.0);
+        let window_secs=f64::from(s.options.as_ref().map_or(24*60,|o|o.window_in_minutes()))*60.0;
+        let start=now.map(|n|n-window_secs*1.25);
         let recent=c.before.as_ref().filter(|b| parse_epoch_seconds(&b.at).zip(start).is_some_and(|(a,start)|a>=start)
-            && parse_epoch_seconds(&b.at).zip(now).is_some_and(|(a,n)|a<n) && c.count >= b.count);
+            && parse_epoch_seconds(&b.at).zip(now).is_some_and(|(a,n)|a<n) && c.count >= b.count
+            && (c.count > b.count || parse_epoch_seconds(&b.at).zip(now).is_some_and(|(a,n)| n - a >= window_secs * 0.8)));
         let delta=recent.map(|b|c.count-b.count);
         let shared=c.scope==FileScope::Server;
         let is_corruption = c.kind == Kind::ChecksumFailures && !shared;
         let current = is_corruption || (delta.is_some_and(|d|d>=10.0) && !shared);
         let mut f=finding("operational-errors",&format!("{key}:{}",c.subject),Category::Maintenance,subject(SubjectKind::Database,&c.subject));
         f.title=if let Some(delta)=delta {format!("{label}: {} newly counted between scans",format::count(delta))} else {format!("{label}: {} recorded in the source's history",format::count(c.count))};
-        if delta == Some(0.0) {return None;}
+        if delta == Some(0.0) && !is_corruption {return None;}
         f.summary=format!("{} {}{}{} {}",c.subject,why,c.since.as_deref().map(|a|format!(" The total covers since {a}.")).unwrap_or_else(||" Its statistics period is unknown.".into()),recent.map(|b|format!(" The comparison covers {} to {}.",b.at,s.taken_at)).unwrap_or_default(),if shared {"It is context for the whole server and is not graded as a problem in this database."}else if is_corruption{"Any recorded page checksum or I/O corruption in this database warrants immediate investigation of the server error log and backups."}else if recent.is_none(){"No comparable counter interval inside the requested period establishes new failures; this is historical information."}else{"These are newly recorded events over the stated interval, not proof that the cause persists now."});
         f.severity=if is_corruption {Severity::High} else if current {Severity::Medium} else {Severity::Low};f.actionability=if current{Actionability::NeedsAttention}else{Actionability::Information};f.confidence=Confidence::High;f.impact.score=base_score(f.severity);f.impact.label=if let Some(d)=delta{format!("{} between scans",format::count(d))}else if is_corruption{format!("{} corrupt pages",format::count(c.count))}else{"Historical counter".into()};
         f.metrics=vec![Metric::new("Source total",c.count,Unit::Count)];if let Some(d)=delta{f.metrics.push(Metric::new("New events between scans",d,Unit::Count));}

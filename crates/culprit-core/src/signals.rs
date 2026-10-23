@@ -585,7 +585,7 @@ impl EscalationBaseline {
     /// The same from a previous digest, which keeps each lock-escalations finding's count: what a scheduled job keeps
     /// between runs instead of the scans. `None` for a digest that doesn't say when the server started.
     pub fn from_digest(previous: &Digest, current: &Snapshot) -> Option<EscalationBaseline> {
-        if !previous.database_comparison(current).allows_comparison()
+        if !previous.comparison(current).allows_comparison()
             || crate::format::epoch_seconds(&previous.taken_at)? > crate::format::epoch_seconds(&current.taken_at)?
         {
             return None;

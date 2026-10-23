@@ -713,7 +713,7 @@
     "analyzer": {
       "component": "culprit-checks",
       "revision": null,
-      "version": "0.3.9"
+      "version": "0.4.2"
     },
     "baselines": [],
     "collection": null,
@@ -829,7 +829,11 @@
         "a caveat repeats nothing the summary or the fix says"
       ]
     },
-    "previous_analyzer": null
+    "previous_analyzer": {
+      "component": "culprit-checks",
+      "revision": null,
+      "version": "0.4.1"
+    }
   },
   "snapshot": {
     "columns": [
