@@ -11,6 +11,15 @@ pub(crate) struct Reports<'a> {
 }
 
 impl Reports<'_> {
+    pub(crate) async fn background<T: Send + 'static>(
+        &self,
+        read: impl for<'a> FnOnce(Reports<'a>) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let paths = Paths { config: self.paths.config.clone(), data: self.paths.data.clone() };
+        let checks = self.checks.to_vec();
+        crate::run_blocking(move || read(Reports { paths: &paths, checks: &checks })).await
+    }
+
     /// Re-run the checks on a snapshot or report file, so improved checks apply to old scans and shared snapshots.
     pub(crate) fn analyze_file(&self, path: &std::path::Path) -> Result<Report> {
         let mut input = reports::load_analysis_input(path)?;
@@ -187,10 +196,15 @@ impl Reports<'_> {
     }
 
     pub(crate) fn plan_report(&self, name: &str, report_id: Option<&str>) -> Result<Option<Report>> {
-        match report_id {
+        let mut report = match report_id {
             Some(id) => self.report_at(name, id).map(Some),
             None => self.latest_report(name, None),
+        }?;
+        // Contextualizing a plan needs the prepared picture, not retained copies held across a database await.
+        if let Some(report) = &mut report {
+            report.evidence = None;
         }
+        Ok(report)
     }
 
     /// Where the latest scan's database time went, by wait category, with the queries behind each. `None` when the scan

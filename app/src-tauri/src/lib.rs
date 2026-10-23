@@ -20,25 +20,13 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 mod screenshot;
 
 type Ws<'a> = State<'a, Arc<Workspace>>;
-static WORKSPACE_TASKS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// Store updates can wait for file locks; report reads decode and replay large artifacts. Keep both off UI/runtime threads.
 async fn blocking_workspace<T: Send + 'static>(
     ws: Arc<Workspace>,
     update: impl FnOnce(&Workspace) -> Result<T> + Send + 'static,
 ) -> Result<T> {
-    let permit = tokio::time::timeout(culprit_core::limits::QUERY_TIMEOUT, WORKSPACE_TASKS.acquire())
-        .await
-        .map_err(|_| {
-            Error::new(ErrorCode::Timeout, "The workspace is busy; try again after the current work finishes")
-        })?
-        .map_err(|_| Error::internal("Workspace workers are unavailable"))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        update(&ws)
-    })
-    .await
-    .map_err(|_| Error::internal("The workspace task stopped before completing"))?
+    culprit_engine::run_blocking(move || update(&ws)).await
 }
 
 /// The device code being shown, so "Open the sign-in page" opens Microsoft's page and nothing the webview asks for.
@@ -46,8 +34,8 @@ async fn blocking_workspace<T: Send + 'static>(
 struct SignIn(Mutex<Option<DeviceCodePrompt>>);
 
 #[tauri::command]
-fn connections(ws: Ws) -> Result<Vec<ConnectionInfo>> {
-    ws.connections()
+async fn connections(ws: Ws<'_>) -> Result<Vec<ConnectionInfo>> {
+    blocking_workspace(ws.inner().clone(), move |ws| ws.connections()).await
 }
 
 #[tauri::command]
@@ -92,7 +80,7 @@ async fn set_password(ws: Ws<'_>, name: String, password: String) -> Result<Conn
 
 #[tauri::command]
 async fn import_candidates(ws: Ws<'_>, source: Option<ImportSource>) -> Result<Vec<ImportCandidate>> {
-    ws.import_candidates(source)
+    blocking_workspace(ws.inner().clone(), move |ws| ws.import_candidates(source)).await
 }
 
 #[tauri::command]
@@ -249,7 +237,7 @@ async fn query_progress(
 /// A plan pasted or opened in the Plans view (.sqlplan, EXPLAIN JSON or text, MySQL JSON or tree).
 #[tauri::command]
 async fn parse_plan(text: String) -> Result<Plan> {
-    culprit_engine::plans::parse_plan(&text)
+    culprit_engine::run_blocking(move || culprit_engine::plans::parse_plan(&text)).await
 }
 
 /// `connection`, when the plans came from one, lets scenarios name stale statistics from its latest scan.
@@ -268,7 +256,7 @@ async fn diff_plans(
 
 #[tauri::command]
 async fn export_plan(plan: Plan, title: String, format: ExportFormat, options: ExportOptions) -> Result<ExportFile> {
-    culprit_engine::export_plan(&plan, &title, format, &options)
+    culprit_engine::run_blocking(move || culprit_engine::export_plan(&plan, &title, format, &options)).await
 }
 
 #[tauri::command]
@@ -320,7 +308,10 @@ async fn verify_findings(ws: Ws<'_>, name: String, ids: Vec<String>) -> Result<V
 
 #[tauri::command]
 async fn save_plan_file(name: String, contents: String) -> Result<String> {
-    culprit_engine::plans::save_to_downloads(&name, &contents).map(|path| path.display().to_string())
+    culprit_engine::run_blocking(move || {
+        culprit_engine::plans::save_to_downloads(&name, &contents).map(|path| path.display().to_string())
+    })
+    .await
 }
 
 /// Copy a picture of part of the window to the clipboard as PNG; nothing is written to disk.
@@ -446,8 +437,8 @@ async fn deadlocks(ws: Ws<'_>, name: String, since_hours: f64) -> Result<culprit
 
 /// Deadlocks in pasted or dropped text: SQL Server .xdl XML, InnoDB status, Postgres log lines. No connection needed.
 #[tauri::command]
-fn parse_deadlock(text: String) -> Result<Vec<culprit_core::Deadlock>> {
-    culprit_engine::deadlocks::parse_deadlock(&text)
+async fn parse_deadlock(text: String) -> Result<Vec<culprit_core::Deadlock>> {
+    culprit_engine::run_blocking(move || culprit_engine::deadlocks::parse_deadlock(&text)).await
 }
 
 #[tauri::command]
@@ -505,8 +496,8 @@ async fn catalog(ws: Ws<'_>, name: String) -> Result<culprit_engine::catalog::Ca
 }
 
 #[tauri::command]
-fn saved_queries(ws: Ws<'_>) -> Result<Vec<culprit_engine::saved::SavedQuery>> {
-    ws.saved_queries()
+async fn saved_queries(ws: Ws<'_>) -> Result<Vec<culprit_engine::saved::SavedQuery>> {
+    blocking_workspace(ws.inner().clone(), move |ws| ws.saved_queries()).await
 }
 
 #[tauri::command]
@@ -586,8 +577,12 @@ struct Announced(Mutex<HashSet<String>>);
 /// Statements coding agents are waiting to run. Polled by the window while it is open; that also tells `culprit mcp`
 /// someone is here to answer.
 #[tauri::command]
-fn pending_approvals(window: tauri::Window, ws: Ws, announced: State<Announced>) -> Result<Vec<ApprovalRequest>> {
-    let pending = ws.pending_approvals()?;
+async fn pending_approvals(
+    window: tauri::Window,
+    ws: Ws<'_>,
+    announced: State<'_, Announced>,
+) -> Result<Vec<ApprovalRequest>> {
+    let pending = blocking_workspace(ws.inner().clone(), |ws| ws.pending_approvals()).await?;
     let mut seen = announced.0.lock().unwrap_or_else(|e| e.into_inner());
     if pending.iter().any(|r| !seen.contains(&r.id)) {
         let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
@@ -597,8 +592,8 @@ fn pending_approvals(window: tauri::Window, ws: Ws, announced: State<Announced>)
 }
 
 #[tauri::command]
-fn decide_approval(ws: Ws, id: String, hash: String, approved: bool) -> Result<()> {
-    ws.decide_approval(&id, &hash, approved)
+async fn decide_approval(ws: Ws<'_>, id: String, hash: String, approved: bool) -> Result<()> {
+    blocking_workspace(ws.inner().clone(), move |ws| ws.decide_approval(&id, &hash, approved)).await
 }
 
 /// A newer release the last check found, kept for the install.

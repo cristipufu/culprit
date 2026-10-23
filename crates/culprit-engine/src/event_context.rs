@@ -18,7 +18,18 @@ impl Events<'_> {
     /// running totals answer from Culprit's saved scans, so periods snap to the scans nearest to what was asked.
     pub(crate) async fn changes(&self, name: &str, request: &changes::ChangeRequest) -> Result<culprit_core::Changes> {
         let info = self.connections.connection(name)?;
-        let latest = self.reports.latest_report(name, None)?;
+        let report_name = name.to_owned();
+        let (latest, latest_counters) = self
+            .reports
+            .background(move |reports| {
+                let mut latest = reports.latest_report(&report_name, None)?;
+                let counters = latest.as_ref().and_then(trends::Counters::of);
+                if let Some(report) = &mut latest {
+                    report.evidence = None;
+                }
+                Ok((latest, counters))
+            })
+            .await?;
         let options = changes::options(request);
         let now = chrono::Utc::now().timestamp() as f64;
         let workload = latest.as_ref().and_then(|r| r.snapshot.workload.as_ref());
@@ -41,43 +52,67 @@ impl Events<'_> {
             let since = workload.and_then(|w| w.window_start.as_deref()).and_then(culprit_core::changes::epoch);
             let (baseline, recent) = changes::resolve(request, (since.unwrap_or(now - 86_400.0), now))?;
             let provider = self.connections.provider(name).await?;
-            if let Some(data) =
-                self.connections.forget_rejected(name, provider.period_stats(&baseline, &recent).await)?
-            {
-                let mut out = culprit_core::changes::compare(name, info.engine, data, &options);
-                changes::describe_switches(&mut out, provider.as_ref(), 5).await;
-                // Query Store periods run up to now; what the database dated since the last scan isn't saved yet.
-                let last_scan =
-                    latest.as_ref().map(|r| r.snapshot.taken_at.clone()).unwrap_or_else(|| recent.start.clone());
-                let live = match self.connections.forget_rejected(name, provider.recorded_changes(&last_scan).await) {
-                    Ok(events) => events,
-                    Err(error) => {
-                        out.notes.push(format!("Database change events were unavailable: {}", error.message));
-                        Vec::new()
-                    }
-                };
+            let compared = crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, async {
+                if let Some(data) =
+                    self.connections.forget_rejected(name, provider.period_stats(&baseline, &recent).await)?
+                {
+                    let compare_name = name.to_owned();
+                    let compare_options = options.clone();
+                    let engine = info.engine;
+                    let mut out = crate::run_blocking(move || {
+                        Ok(culprit_core::changes::compare(&compare_name, engine, data, &compare_options))
+                    })
+                    .await?;
+                    changes::describe_switches(&mut out, provider.as_ref(), 5).await;
+                    // Query Store periods run up to now; what the database dated since the last scan isn't saved yet.
+                    let last_scan =
+                        latest.as_ref().map(|r| r.snapshot.taken_at.clone()).unwrap_or_else(|| recent.start.clone());
+                    let live = match self.connections.forget_rejected(name, provider.recorded_changes(&last_scan).await)
+                    {
+                        Ok(events) => events,
+                        Err(error) => {
+                            out.notes.push(format!("Database change events were unavailable: {}", error.message));
+                            Vec::new()
+                        }
+                    };
+                    return Ok(Some((out, live)));
+                }
+                Ok(None)
+            })
+            .await?;
+            if let Some((mut out, live)) = compared {
                 self.add_context(&info, &mut out, request.cloud, live).await;
                 return Ok(out);
             }
         }
         // Running totals only: the difference between two scans is what ran in between.
-        let latest_counters = latest.as_ref().and_then(trends::Counters::of);
         let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        let history: Vec<trends::Counters> = reports::counters_history(&self.reports.paths.reports_dir(name), &at)
-            .into_iter()
-            .filter(|c| latest_counters.as_ref().is_none_or(|l| l.same_series(c)))
-            .collect();
-        let times: Vec<f64> = history.iter().filter_map(|c| culprit_core::changes::epoch(&c.taken_at)).collect();
-        let first = times.iter().copied().fold(f64::INFINITY, f64::min);
-        let last = times.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let (first, last) = if first.is_finite() && last > first { (first, last) } else { (now - 86_400.0, now) };
-        let defaults = request.is_default().then(|| changes::default_scan_periods(&history)).flatten();
-        let (baseline, recent) = match defaults {
-            Some(periods) => periods,
-            None => changes::resolve(request, (first, last))?,
-        };
-        let data = changes::from_scans(&history, &baseline, &recent);
-        let mut out = culprit_core::changes::compare(name, info.engine, data, &options);
+        let report_name = name.to_owned();
+        let compare_request = request.clone();
+        let engine = info.engine;
+        let mut out = self
+            .reports
+            .background(move |reports| {
+                let history: Vec<trends::Counters> =
+                    reports::counters_history(&reports.paths.reports_dir(&report_name), &at)
+                        .into_iter()
+                        .filter(|c| latest_counters.as_ref().is_none_or(|l| l.same_series(c)))
+                        .collect();
+                let times: Vec<f64> =
+                    history.iter().filter_map(|c| culprit_core::changes::epoch(&c.taken_at)).collect();
+                let first = times.iter().copied().fold(f64::INFINITY, f64::min);
+                let last = times.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let (first, last) =
+                    if first.is_finite() && last > first { (first, last) } else { (now - 86_400.0, now) };
+                let defaults = compare_request.is_default().then(|| changes::default_scan_periods(&history)).flatten();
+                let (baseline, recent) = match defaults {
+                    Some(periods) => periods,
+                    None => changes::resolve(&compare_request, (first, last))?,
+                };
+                let data = changes::from_scans(&history, &baseline, &recent);
+                Ok(culprit_core::changes::compare(&report_name, engine, data, &options))
+            })
+            .await?;
         self.add_context(&info, &mut out, request.cloud, Vec::new()).await;
         Ok(out)
     }
@@ -112,8 +147,21 @@ impl Events<'_> {
         notes: &mut Vec<String>,
     ) -> Vec<culprit_core::ChangeEvent> {
         let dir = self.reports.paths.reports_dir(&info.name);
-        let mut events: Vec<culprit_core::ChangeEvent> = marks::list(&dir).iter().map(marks::Mark::event).collect();
-        events.extend(history::events(&dir, start, end));
+        let saved_dir = dir.clone();
+        let mut events = match crate::run_blocking(move || {
+            let mut events: Vec<culprit_core::ChangeEvent> =
+                marks::list(&saved_dir).iter().map(marks::Mark::event).collect();
+            events.extend(history::events(&saved_dir, start, end));
+            Ok(events)
+        })
+        .await
+        {
+            Ok(events) => events,
+            Err(error) => {
+                notes.push(format!("Saved change events unavailable: {}", error.message));
+                Vec::new()
+            }
+        };
         if cloud != Some(false) && cloud::target(info).is_some() {
             match cloud::signals(&dir, info, start, end, false).await {
                 Ok(signals) => events.extend(signals.events()),

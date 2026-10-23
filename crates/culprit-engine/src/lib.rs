@@ -45,6 +45,7 @@ pub use culprit_checks::{agent_brief, index_advice};
 pub use discover::{Cloud, DiscoveredDatabase};
 pub use import::{ImportCandidate, ImportSource};
 pub use marks::Mark;
+pub use operation::run_blocking;
 pub use plans::{PlanFormat, parse_plan};
 pub use reports::ReportSummary;
 use secrets::SecretStore;

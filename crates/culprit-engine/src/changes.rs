@@ -395,9 +395,16 @@ pub async fn describe_switches(changes: &mut Changes, provider: &dyn culprit_cor
         ) else {
             continue;
         };
-        switch.from_label = a.hottest().map(|n| n.op.clone());
-        switch.to_label = b.hottest().map(|n| n.op.clone());
-        switch.what = what_differs(&a, &b);
+        let Ok((from_label, to_label, what)) = crate::run_blocking(move || {
+            Ok((a.hottest().map(|n| n.op.clone()), b.hottest().map(|n| n.op.clone()), what_differs(&a, &b)))
+        })
+        .await
+        else {
+            continue;
+        };
+        switch.from_label = from_label;
+        switch.to_label = to_label;
+        switch.what = what;
         change.headline =
             culprit_core::changes::headline(change, changes.engine, changes.source, changes.min_executions);
     }

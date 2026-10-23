@@ -225,9 +225,12 @@ The modes print workload size and mean wall time as JSON. On macOS, prefix an in
 `/usr/bin/time -l` for peak resident memory. Compare the same file, build profile and iteration count; these local
 debug measurements describe the code path and are not release latency guarantees.
 
-The desktop dispatches cached-report replay, export, drift, advice and linting through a bounded pool of two blocking
-workspace workers, shared with store updates. Queue acquisition has a deadline; cancelled queued calls start no work.
-Database futures stay asynchronous. Editor linting checks the small latest pointer and releases its snapshot-cache
+`culprit_engine::run_blocking` owns one bounded pool of two workers shared by desktop commands and asynchronous
+engine services. Report context, scan history/analysis/persistence, period comparisons, plan parsing, exports and
+disk-backed commands use this pool. Queue acquisition has a deadline; cancelled queued calls start no work.
+Database futures stay asynchronous; live period statistics, switch-plan reads and recorded changes share an observation
+deadline after authentication. Context-only readers release retained evidence before awaiting the database.
+Editor linting checks the small latest pointer and releases its snapshot-cache
 mutex before analysis. Brief generation reads its global fallback only when the selected window has no saved report.
 
 The desktop, CLI JSON and generated browser demo omit `evidence` from their view projection while keeping provenance;

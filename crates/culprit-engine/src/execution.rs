@@ -21,14 +21,21 @@ impl Execution<'_> {
         window_minutes: Option<u32>,
         live: bool,
     ) -> Result<culprit_core::Dashboard> {
-        let report = self.reports.latest_report(name, window_minutes)?.ok_or_else(|| {
-            Error::not_found(format!("No saved report for '{name}'"))
-                .with_hint(format!("Run `culprit scan {name}` first"))
-        })?;
-        let mut dashboard = culprit_checks::dashboard(&report);
-        dashboard.connection = name.into();
+        let report_name = name.to_owned();
+        let dashboard = self
+            .reports
+            .background(move |reports| {
+                let report = reports.latest_report(&report_name, window_minutes)?.ok_or_else(|| {
+                    Error::not_found(format!("No saved report for '{report_name}'"))
+                        .with_hint(format!("Run `culprit scan {report_name}` first"))
+                })?;
+                let mut dashboard = culprit_checks::dashboard(&report);
+                dashboard.connection = report_name;
+                Ok(dashboard)
+            })
+            .await?;
         // An engine without sessions (SQLite) has none to read; its tile says so already.
-        if live && report.snapshot.server.engine.abilities().sessions {
+        if live && dashboard.engine.abilities().sessions {
             return Ok(self.dashboard_live(name, dashboard).await?.dashboard);
         }
         Ok(dashboard)
@@ -131,7 +138,10 @@ impl Execution<'_> {
         plan_id: Option<&str>,
         report_id: Option<&str>,
     ) -> Result<Plan> {
-        let report = self.reports.plan_report(name, report_id)?;
+        let report_name = name.to_owned();
+        let report_id = report_id.map(str::to_owned);
+        let report =
+            self.reports.background(move |reports| reports.plan_report(&report_name, report_id.as_deref())).await?;
         let provider = self.connections.provider(name).await?;
         crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, async {
             let plan = self.connections.forget_rejected(name, provider.last_actual_plan(query_id, plan_id).await)?;
@@ -175,7 +185,10 @@ impl Execution<'_> {
         plan_id: Option<&str>,
         report_id: Option<&str>,
     ) -> Result<Plan> {
-        let report = self.reports.plan_report(name, report_id)?;
+        let report_name = name.to_owned();
+        let report_id = report_id.map(str::to_owned);
+        let report =
+            self.reports.background(move |reports| reports.plan_report(&report_name, report_id.as_deref())).await?;
         let plan = self
             .connections
             .forget_rejected(name, self.query_plan_from(name, query_id, plan_id, report.as_ref()).await)?;
@@ -298,7 +311,9 @@ impl Execution<'_> {
             let mut report = self
                 .connections
                 .forget_rejected(name, provider.deadlocks(since_hours.clamp(1.0, 24.0 * 30.0)).await)?;
-            let latest = self.reports.latest_report(name, None).ok().flatten();
+            let report_name = name.to_owned();
+            let latest =
+                self.reports.background(move |reports| reports.latest_report(&report_name, None)).await.ok().flatten();
             deadlocks::link_findings(&mut report, latest.as_ref());
             Ok(report)
         })
