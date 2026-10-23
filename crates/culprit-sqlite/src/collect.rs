@@ -772,10 +772,18 @@ pub fn run(conn: &Connection, sql: &str, limit: usize) -> Result<ResultSet> {
     let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
     let mut rows = stmt.query([]).map_err(|e| map_error(&e))?;
     let mut out = Vec::new();
-    let mut truncated = false;
+    let mut budget = culprit_core::limits::ResultBudget::new(limit);
     while let Some(row) = rows.next().map_err(|e| map_error(&e))? {
-        if out.len() >= limit {
-            truncated = true;
+        let mut bytes = 0usize;
+        for i in 0..columns.len() {
+            let text = match row.get_ref(i).map_err(|e| map_error(&e))? {
+                ValueRef::Text(t) => culprit_core::limits::text_bytes(t),
+                ValueRef::Blob(_) => 40,
+                _ => 0,
+            };
+            bytes = bytes.saturating_add(text);
+        }
+        if !budget.retain(culprit_core::limits::row_bytes(columns.len(), bytes)) {
             break;
         }
         let mut values = Vec::with_capacity(columns.len());
@@ -793,15 +801,31 @@ pub fn run(conn: &Connection, sql: &str, limit: usize) -> Result<ResultSet> {
     Ok(ResultSet {
         columns,
         rows: out,
-        truncated,
+        truncated: budget.truncated(),
         elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
-        messages: Vec::new(),
+        messages: budget.notice().into_iter().collect(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interactive_results_share_row_and_byte_limits() {
+        let conn = Connection::open_in_memory().unwrap();
+        let result = run(&conn, "SELECT printf('%.*c', 9000000, 'x')", usize::MAX).unwrap();
+        assert!(result.truncated && result.rows.is_empty());
+        assert!(result.messages[0].contains("8 MiB"));
+        let result = run(
+            &conn,
+            "WITH RECURSIVE c(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM c WHERE x < 10001) SELECT x FROM c",
+            usize::MAX,
+        )
+        .unwrap();
+        assert_eq!(result.rows.len(), culprit_core::limits::MAX_RESULT_ROWS);
+        assert!(result.truncated);
+    }
 
     #[test]
     fn an_unavailable_virtual_module_does_not_fail_the_scan() {

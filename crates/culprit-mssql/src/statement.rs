@@ -137,13 +137,13 @@ fn best_plan(documents: &[String]) -> Result<Plan> {
         })
 }
 
-/// Runs on a dedicated session that is discarded afterwards, so stopping early at `limit` rows is safe.
+/// Retain bounded display rows and drain the batch, including late errors and write completion.
 pub(crate) async fn run(client: &mut MsClient, sql: &str, limit: usize) -> Result<ResultSet> {
     let started = Instant::now();
     let mut stream = client.simple_query(marked(sql)).await.map_err(map_error)?;
     let mut columns: Vec<String> = Vec::new();
     let mut rows = Vec::new();
-    let mut truncated = false;
+    let mut budget = culprit_core::limits::ResultBudget::new(limit);
     let mut result_sets = 0usize;
     let mut first_index: Option<usize> = None;
     while let Some(item) = stream.try_next().await.map_err(map_error)? {
@@ -159,9 +159,19 @@ pub(crate) async fn run(client: &mut MsClient, sql: &str, limit: usize) -> Resul
                 if Some(row.result_index()) != first_index {
                     continue;
                 }
-                if rows.len() >= limit {
-                    truncated = true;
-                    break;
+                if budget.truncated() {
+                    continue;
+                }
+                let bytes = row.cells().fold(0usize, |n, (_, data)| {
+                    n.saturating_add(match data {
+                        tiberius::ColumnData::String(Some(s)) => s.len(),
+                        tiberius::ColumnData::Binary(Some(b)) => b.len().saturating_mul(2).saturating_add(2),
+                        tiberius::ColumnData::Xml(Some(xml)) => AsRef::<str>::as_ref(xml.as_ref()).len(),
+                        _ => 64,
+                    })
+                });
+                if !budget.retain(culprit_core::limits::row_bytes(row.columns().len(), bytes)) {
+                    continue;
                 }
                 rows.push(row.cells().map(|(_, data)| to_json(data)).collect());
             }
@@ -174,7 +184,14 @@ pub(crate) async fn run(client: &mut MsClient, sql: &str, limit: usize) -> Resul
     if result_sets > 1 {
         messages.push(format!("The batch returned {result_sets} result sets; showing the first."));
     }
-    Ok(ResultSet { columns, rows, truncated, elapsed_ms: started.elapsed().as_secs_f64() * 1_000.0, messages })
+    messages.extend(budget.notice());
+    Ok(ResultSet {
+        columns,
+        rows,
+        truncated: budget.truncated(),
+        elapsed_ms: started.elapsed().as_secs_f64() * 1_000.0,
+        messages,
+    })
 }
 
 /// A statement that changes data and returns no rows (INSERT/UPDATE/DELETE/MERGE without OUTPUT, DDL): run it through

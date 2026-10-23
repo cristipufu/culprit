@@ -16,6 +16,7 @@ pub mod history;
 mod http;
 pub mod import;
 pub mod marks;
+mod operation;
 pub mod plans;
 mod private_fs;
 mod query_log;

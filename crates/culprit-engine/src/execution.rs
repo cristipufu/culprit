@@ -66,32 +66,36 @@ impl Execution<'_> {
         culprit_core::sql::single_statement(sql, info.engine)?;
         guard_execution(&info, sql, mode == ExplainMode::Analyze, confirmed)?;
         let provider = self.connections.provider(name).await?;
-        // A measured run executes the text inside a rolled-back transaction: the server must see one statement (and on
-        // production, one read), or a second statement could end the transaction.
-        if mode == ExplainMode::Analyze
-            && let Some(types) = self.connections.forget_rejected(name, provider.statement_types(sql).await)?
-        {
-            let seen = format!("The server reads this text as: {}.", types.join(", ").to_lowercase());
-            if types.len() != 1 {
-                return Err(Error::invalid("Explain Analyze measures one statement at a time").with_hint(seen));
-            }
-            if info.environment.is_production() && !is_read_type(&types[0]) {
-                return Err(Error::new(
-                    ErrorCode::PermissionDenied,
-                    format!(
-                        "'{}' is a production connection; Explain Analyze would execute a statement that changes data",
-                        info.name
-                    ),
-                )
-                .with_hint(format!(
-                    "{seen} Use the estimated plan (Explain), or measure it on a non-production copy."
-                )));
-            }
-        }
-        let mut plan = self.connections.forget_rejected(name, provider.explain(sql, mode).await)?;
-        culprit_core::insights::annotate(&mut plan);
-        culprit_checks::present_plan(&mut plan, None);
-        Ok(plan)
+        crate::operation::within(
+            if mode == ExplainMode::Analyze {
+                culprit_core::limits::QUERY_TIMEOUT
+            } else {
+                culprit_core::limits::OBSERVE_TIMEOUT
+            },
+            async {
+                // A measured run executes the text inside a rolled-back transaction: the server must see one statement (and on
+                // production, one read), or a second statement could end the transaction.
+                if mode == ExplainMode::Analyze
+                    && let Some(types) = self.connections.forget_rejected(name, provider.statement_types(sql).await)?
+                {
+                    let seen = format!("The server reads this text as: {}.", types.join(", ").to_lowercase());
+                    if types.len() != 1 {
+                        return Err(Error::invalid("Explain Analyze measures one statement at a time").with_hint(seen));
+                    }
+                    if info.environment.is_production() && !is_read_type(&types[0]) {
+                        let message = format!("'{}' is a production connection; Explain Analyze would execute a statement that changes data", info.name);
+                        return Err(Error::new(ErrorCode::PermissionDenied, message).with_hint(format!(
+                            "{seen} Use the estimated plan (Explain), or measure it on a non-production copy."
+                        )));
+                    }
+                }
+                let mut plan = self.connections.forget_rejected(name, provider.explain(sql, mode).await)?;
+                culprit_core::insights::annotate(&mut plan);
+                culprit_checks::present_plan(&mut plan, None);
+                Ok(plan)
+            },
+        )
+        .await
     }
 
     /// Estimated plan of `sql` with one or more virtual indexes (`CREATE INDEX ...`) in planner memory (`hypopg`).
@@ -105,10 +109,13 @@ impl Execution<'_> {
             }
         }
         let provider = self.connections.provider(name).await?;
-        let mut plan = self.connections.forget_rejected(name, provider.explain_hypothetical(sql, indexes).await)?;
-        culprit_core::insights::annotate(&mut plan);
-        culprit_checks::present_plan(&mut plan, None);
-        Ok(plan)
+        crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, async {
+            let mut plan = self.connections.forget_rejected(name, provider.explain_hypothetical(sql, indexes).await)?;
+            culprit_core::insights::annotate(&mut plan);
+            culprit_checks::present_plan(&mut plan, None);
+            Ok(plan)
+        })
+        .await
     }
 
     /// The actual plan of a query's last run as the engine kept it (SQL Server 2019+ with LAST_QUERY_PLAN_STATS).
@@ -126,8 +133,11 @@ impl Execution<'_> {
     ) -> Result<Plan> {
         let report = self.reports.plan_report(name, report_id)?;
         let provider = self.connections.provider(name).await?;
-        let plan = self.connections.forget_rejected(name, provider.last_actual_plan(query_id, plan_id).await)?;
-        Ok(Self::contextual_plan(plan, report.as_ref().map(|r| &r.snapshot), query_id, plan_id))
+        crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, async {
+            let plan = self.connections.forget_rejected(name, provider.last_actual_plan(query_id, plan_id).await)?;
+            Ok(Self::contextual_plan(plan, report.as_ref().map(|r| &r.snapshot), query_id, plan_id))
+        })
+        .await
     }
 
     /// How far along a session's running statement is: per-operator progress on SQL Server, the estimated plan with
@@ -140,11 +150,15 @@ impl Execution<'_> {
     ) -> Result<culprit_core::QueryProgress> {
         culprit_core::session_number(session)?;
         let provider = self.connections.provider(name).await?;
-        let mut progress = self.connections.forget_rejected(name, provider.query_progress(session, with_plan).await)?;
-        if let Some(plan) = &mut progress.plan {
-            culprit_checks::present_progress_plan(plan);
-        }
-        Ok(progress)
+        crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, async {
+            let mut progress =
+                self.connections.forget_rejected(name, provider.query_progress(session, with_plan).await)?;
+            if let Some(plan) = &mut progress.plan {
+                culprit_checks::present_progress_plan(plan);
+            }
+            Ok(progress)
+        })
+        .await
     }
 
     /// A plan for a query from the latest report: the stored plan when the engine keeps them (Query Store), otherwise an
@@ -207,6 +221,7 @@ impl Execution<'_> {
         report: Option<&Report>,
     ) -> Result<Plan> {
         let provider = self.connections.provider(name).await?;
+        crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, async {
         if let Some(plan_id) = plan_id {
             return provider
                 .stored_plan(query_id, plan_id)
@@ -235,48 +250,59 @@ impl Execution<'_> {
                 Err(Error { hint: Some(e.hint.clone().unwrap_or_else(|| hint.into())), ..e })
             }
         }
+        }).await
     }
 
     /// What the server waits on right now: a sample `seconds` long (capped at 60). Reads statistics views only.
     pub(crate) async fn wait_sample(&self, name: &str, seconds: u32) -> Result<culprit_core::WaitSample> {
         let seconds = seconds.clamp(1, 60);
         let provider = self.connections.provider(name).await?;
-        self.connections.forget_rejected(name, provider.wait_sample(seconds).await)
+        crate::operation::within(std::time::Duration::from_secs(u64::from(seconds) + 15), async {
+            self.connections.forget_rejected(name, provider.wait_sample(seconds).await)
+        })
+        .await
     }
 
     /// Sessions, blocking and waits, plus what Live may do to other sessions here (nothing on production).
     pub(crate) async fn live(&self, name: &str) -> Result<LiveState> {
         let info = self.connections.connection(name)?;
         let provider = self.connections.provider(name).await?;
-        let mut live = self.connections.forget_rejected(name, provider.live().await)?;
-        // Lock details are read only when someone waits, so a quiet server costs one query per refresh.
-        if live.blocking.is_none() && live.sessions.iter().any(|s| s.blocked_by.is_some()) {
-            let locks = match self.connections.forget_rejected(name, provider.lock_waits().await) {
-                Ok(locks) => locks,
-                Err(error) => {
-                    live.notes.push(format!("Lock details were unavailable: {}", error.message));
-                    Vec::new()
-                }
-            };
-            live.blocking = culprit_core::blocking::analyze(info.engine, &live.sessions, &locks);
-        }
-        if info.environment.is_production() {
-            live.session_actions = Vec::new();
-            live.session_actions_note = Some(PRODUCTION_SESSIONS.to_string());
-        } else {
-            live.session_actions = provider.session_actions();
-        }
-        Ok(live)
+        crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, async {
+            let mut live = self.connections.forget_rejected(name, provider.live().await)?;
+            // Lock details are read only when someone waits, so a quiet server costs one query per refresh.
+            if live.blocking.is_none() && live.sessions.iter().any(|s| s.blocked_by.is_some()) {
+                let locks = match self.connections.forget_rejected(name, provider.lock_waits().await) {
+                    Ok(locks) => locks,
+                    Err(error) => {
+                        live.notes.push(format!("Lock details were unavailable: {}", error.message));
+                        Vec::new()
+                    }
+                };
+                live.blocking = culprit_core::blocking::analyze(info.engine, &live.sessions, &locks);
+            }
+            if info.environment.is_production() {
+                live.session_actions = Vec::new();
+                live.session_actions_note = Some(PRODUCTION_SESSIONS.to_string());
+            } else {
+                live.session_actions = provider.session_actions();
+            }
+            Ok(live)
+        })
+        .await
     }
 
     /// Recent deadlocks on `name` (newest first, explained), with fixes linked to the latest report's findings.
     pub(crate) async fn deadlocks(&self, name: &str, since_hours: f64) -> Result<DeadlockReport> {
         let provider = self.connections.provider(name).await?;
-        let mut report =
-            self.connections.forget_rejected(name, provider.deadlocks(since_hours.clamp(1.0, 24.0 * 30.0)).await)?;
-        let latest = self.reports.latest_report(name, None).ok().flatten();
-        deadlocks::link_findings(&mut report, latest.as_ref());
-        Ok(report)
+        crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, async {
+            let mut report = self
+                .connections
+                .forget_rejected(name, provider.deadlocks(since_hours.clamp(1.0, 24.0 * 30.0)).await)?;
+            let latest = self.reports.latest_report(name, None).ok().flatten();
+            deadlocks::link_findings(&mut report, latest.as_ref());
+            Ok(report)
+        })
+        .await
     }
 
     /// Cancel another session's statement or end the session. Refused on production connections, whatever the caller says.
@@ -291,22 +317,25 @@ impl Execution<'_> {
         }
         culprit_core::session_number(session)?;
         let provider = self.connections.provider(name).await?;
-        if !provider.session_actions().contains(&action) {
-            return Err(Error::new(
-                ErrorCode::Unsupported,
-                match action {
-                    SessionAction::Cancel => {
-                        format!("{} can't stop another session's statement on its own", info.engine)
-                    }
-                    SessionAction::Terminate => format!("{} sessions can't be ended from Culprit", info.engine),
-                },
-            )
-            .with_hint(match action {
-                SessionAction::Cancel => "End the session instead; its open transaction rolls back.",
-                SessionAction::Terminate => "Use the database's own tooling.",
-            }));
-        }
-        self.connections.forget_rejected(name, provider.interrupt_session(session, action).await)
+        crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, async {
+            if !provider.session_actions().contains(&action) {
+                return Err(Error::new(
+                    ErrorCode::Unsupported,
+                    match action {
+                        SessionAction::Cancel => {
+                            format!("{} can't stop another session's statement on its own", info.engine)
+                        }
+                        SessionAction::Terminate => format!("{} sessions can't be ended from Culprit", info.engine),
+                    },
+                )
+                .with_hint(match action {
+                    SessionAction::Cancel => "End the session instead; its open transaction rolls back.",
+                    SessionAction::Terminate => "Use the database's own tooling.",
+                }));
+            }
+            self.connections.forget_rejected(name, provider.interrupt_session(session, action).await)
+        })
+        .await
     }
 
     /// `confirmed` is the caller's explicit, per-action consent to execute on production.
@@ -314,6 +343,7 @@ impl Execution<'_> {
     /// Anything else commits; on production only when the person confirmed it, otherwise this returns
     /// `ConfirmationRequired` with what the statement does, for the question to ask.
     pub(crate) async fn run(&self, name: &str, sql: &str, limit: usize, confirmed: bool) -> Result<ResultSet> {
+        let limit = limit.min(culprit_core::limits::MAX_RESULT_ROWS);
         let info = self.connections.connection(name)?;
         let check = culprit_core::sql::check(sql, info.engine);
         // Text that isn't exactly one statement never runs, confirmed or not: on SQL Server, statements need no
@@ -332,9 +362,8 @@ impl Execution<'_> {
         // An engine Culprit only reads (a SQLite file, opened read-only) never changes: say so before asking anyone to
         // confirm.
         if !info.engine.abilities().writes {
-            return self
-                .connections
-                .forget_rejected(name, self.connections.provider(name).await?.execute(sql, limit).await);
+            let provider = self.connections.provider(name).await?;
+            return self.connections.forget_rejected(name, crate::operation::run(provider.execute(sql, limit)).await);
         }
         if info.environment.is_production() && !confirmed {
             let what = if check.verb.is_empty() { "statement".to_string() } else { check.verb.clone() };
@@ -352,13 +381,15 @@ impl Execution<'_> {
                     .unwrap_or_else(|| "Confirm to run it (--yes-execute-on-production in the CLI).".to_string()),
             ));
         }
-        self.connections.forget_rejected(name, self.connections.provider(name).await?.execute(sql, limit).await)
+        let provider = self.connections.provider(name).await?;
+        self.connections.forget_rejected(name, crate::operation::run(provider.execute(sql, limit)).await)
     }
 
     /// Run a statement that must only read (agents, previews, the editor's reads). Refused unless Culprit's classifier
     /// proves it reads; Postgres and MySQL run it in a read-only transaction, and SQL Server, which has none, inside a
     /// transaction that is always rolled back.
     pub(crate) async fn run_read(&self, name: &str, sql: &str, limit: usize) -> Result<ResultSet> {
+        let limit = limit.min(culprit_core::limits::MAX_RESULT_ROWS);
         let info = self.connections.connection(name)?;
         let statement = culprit_core::sql::single_statement(sql, info.engine)?;
         if !culprit_core::sql::reads_only(statement, info.engine) {
@@ -366,36 +397,44 @@ impl Execution<'_> {
                 .with_hint("Send a single SELECT: no writes, DDL, procedure calls or locking reads."));
         }
         let provider = self.connections.provider(name).await?;
-        // The server's own parser has the last word where it can give one (SQL Server compiles the text under SHOWPLAN):
-        // exactly one statement, and a read.
-        let server_checked = match self.connections.forget_rejected(name, provider.statement_types(statement).await)? {
-            Some(types) if !(types.len() == 1 && is_read_type(&types[0])) => {
-                return Err(Error::new(ErrorCode::PermissionDenied, "Only statements that read data run here")
-                    .with_hint(format!("The server reads this text as: {}.", types.join(", ").to_lowercase())));
+        crate::operation::run(async {
+            // The server's own parser has the last word where it can give one (SQL Server compiles the text under SHOWPLAN):
+            // exactly one statement, and a read.
+            let server_checked = match self.connections.forget_rejected(name, provider.statement_types(statement).await)? {
+                Some(types) if !(types.len() == 1 && is_read_type(&types[0])) => {
+                    return Err(Error::new(ErrorCode::PermissionDenied, "Only statements that read data run here")
+                        .with_hint(format!("The server reads this text as: {}.", types.join(", ").to_lowercase())));
+                }
+                Some(_) => true,
+                None => false,
+            };
+            let batch = read_only_batch(info.engine, statement);
+            let mut result = self.connections.forget_rejected(name, provider.run(&batch, limit).await)?;
+            // Say so when the second opinion couldn't be asked for: the person (or the agent's approver) should know.
+            if !server_checked && info.engine == Engine::Mssql {
+                result.messages.push(
+                    "SQL Server couldn't double-check that this only reads (the login has no SHOWPLAN permission); Culprit's own check decided."
+                        .to_string(),
+                );
             }
-            Some(_) => true,
-            None => false,
-        };
-        let batch = read_only_batch(info.engine, statement);
-        let mut result = self.connections.forget_rejected(name, provider.run(&batch, limit).await)?;
-        // Say so when the second opinion couldn't be asked for: the person (or the agent's approver) should know.
-        if !server_checked && info.engine == Engine::Mssql {
-            result.messages.push(
-                "SQL Server couldn't double-check that this only reads (the login has no SHOWPLAN permission); Culprit's own check decided."
-                    .to_string(),
-            );
-        }
-        Ok(result)
+            Ok(result)
+        }).await
     }
 
     /// Databases, tables, views and columns for editor completion, read live through the read-only run path.
     pub(crate) async fn catalog(&self, name: &str) -> Result<catalog::Catalog> {
         let info = self.connections.connection(name)?;
         let provider = self.connections.provider(name).await?;
-        let columns = self.connections.forget_rejected(name, catalog::columns(provider.as_ref(), info.engine).await)?;
-        let databases =
-            self.connections.forget_rejected(name, provider.run(catalog::databases_sql(info.engine), 500).await).ok();
-        Ok(catalog::fold(columns, databases))
+        crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, async {
+            let columns =
+                self.connections.forget_rejected(name, catalog::columns(provider.as_ref(), info.engine).await)?;
+            let databases = self
+                .connections
+                .forget_rejected(name, provider.run(catalog::databases_sql(info.engine), 500).await)
+                .ok();
+            Ok(catalog::fold(columns, databases))
+        })
+        .await
     }
 }
 

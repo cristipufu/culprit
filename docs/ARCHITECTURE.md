@@ -49,6 +49,16 @@ factory applies to subsequent calls without maintaining a second copy of configu
 Services do not hold a `Workspace` or call the façade to perform their work. Existing modules continue to own storage,
 provider registration, cloud transport and pure analysis; services compose them without duplicating their rules.
 
+Interactive database work uses the shared policy in `culprit-core/src/limits.rs`: 30 seconds for queries and measured
+plans, 10 seconds for observations, and at most 10,000 retained result rows or 8 MiB of cell data. `execution.rs` bounds
+the provider future, including database connection setup and server validation, with one deadline per operation;
+human credential sign-in happens before that deadline. Wait samples have their requested duration plus bounded
+overhead. Dropping a caller drops its driver future and session. Native workers keep an `OperationGuard` in the async
+caller and observe its handle before starting work and in SQLite's VM progress handler, including time spent queued.
+Providers use `ResultBudget` before allocating display values and drain network results through completion even after
+retention stops, so a late failure cannot become a successful write. Runtime providers follow the same cancellation
+and retention contract; the workspace also clamps the row request before handing it to them.
+
 ## 1. Sources: what a provider reads
 
 A provider (`culprit_core::Provider`, one per engine, chosen in `culprit-engine/src/registry.rs`) collects a snapshot

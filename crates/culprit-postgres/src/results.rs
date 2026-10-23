@@ -1,14 +1,15 @@
 //! Bounded result display. Writes are drained through command completion so truncation cannot hide a late error
 //! or report a committed write before PostgreSQL finishes it.
-use culprit_core::{Result, ResultSet};
+use culprit_core::{
+    Result, ResultSet,
+    limits::{MAX_RESULT_ROWS, ResultBudget, row_bytes},
+};
 use futures_util::TryStreamExt;
-use serde_json::Value;
 use tokio_postgres::{Client, SimpleQueryMessage, types::Type};
 
 use crate::{connect::map_error, json_value};
 
-pub const MAX_ROWS: usize = 10_000;
-const MAX_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_ROWS: usize = MAX_RESULT_ROWS;
 
 pub async fn collect(
     client: &Client,
@@ -19,32 +20,23 @@ pub async fn collect(
 ) -> Result<ResultSet> {
     let stream = client.simple_query_raw(sql).await.map_err(map_error)?;
     futures_util::pin_mut!(stream);
-    let limit = limit.min(MAX_ROWS);
+    let mut budget = ResultBudget::new(limit);
     let mut rows = Vec::new();
-    let mut used = 0usize;
-    let mut truncated = false;
-    let mut byte_limit = false;
     let mut affected = 0;
     while let Some(message) = stream.try_next().await.map_err(map_error)? {
         match message {
             SimpleQueryMessage::Row(row) => {
-                if truncated || rows.len() >= limit {
-                    truncated = true;
+                if budget.truncated() {
                     continue;
                 }
                 let values = (0..columns.len())
                     .map(|i| row.try_get(i))
                     .collect::<std::result::Result<Vec<_>, _>>()
                     .map_err(map_error)?;
-                let size = values.iter().fold(values.len().saturating_mul(std::mem::size_of::<Value>()), |n, v| {
-                    n.saturating_add(v.map_or(0, str::len))
-                });
-                if used.saturating_add(size) > MAX_BYTES {
-                    truncated = true;
-                    byte_limit = true;
+                let size = row_bytes(values.len(), values.iter().map(|v| v.map_or(0, str::len)).sum());
+                if !budget.retain(size) {
                     continue;
                 }
-                used += size;
                 rows.push(
                     values
                         .into_iter()
@@ -59,17 +51,17 @@ pub async fn collect(
     }
     let count = if columns.is_empty() { affected } else { rows.len() as u64 };
     let mut message = format!("{count} row{}", if count == 1 { "" } else { "s" });
-    if byte_limit {
-        message.push_str(" (results limited to 8 MiB)");
-    } else if truncated {
-        message.push_str(&format!(" (stopped at {limit})"));
+    if let Some(notice) = budget.notice() {
+        message.push_str(&format!(" ({notice})"));
     }
-    Ok(ResultSet { columns, rows, truncated, elapsed_ms: 0.0, messages: vec![message] })
+    Ok(ResultSet { columns, rows, truncated: budget.truncated(), elapsed_ms: 0.0, messages: vec![message] })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use culprit_core::limits::MAX_RESULT_BYTES as MAX_BYTES;
+    use serde_json::Value;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     async fn message(socket: &mut tokio::io::DuplexStream, tag: u8, body: &[u8]) {

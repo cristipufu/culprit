@@ -20,16 +20,18 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Timeouts applied to a session. Collectors read bigger catalogs than interactive calls.
 #[derive(Clone, Copy)]
 pub struct SessionLimits {
-    pub statement_timeout: &'static str,
+    pub statement_timeout: Duration,
     /// Culprit's own statements only (a scan): names resolve in the catalog alone, whatever search_path the database
     /// or role sets, so no schema someone else controls can stand in for a catalog view, function or operator. The
     /// sessions that run what a person writes keep the database's search_path.
     pub catalog_path: bool,
 }
 
-pub const INTERACTIVE: SessionLimits = SessionLimits { statement_timeout: "10s", catalog_path: false };
-pub const COLLECTOR: SessionLimits = SessionLimits { statement_timeout: "20s", catalog_path: true };
-pub const EXECUTION: SessionLimits = SessionLimits { statement_timeout: "30s", catalog_path: false };
+pub const INTERACTIVE: SessionLimits =
+    SessionLimits { statement_timeout: culprit_core::limits::OBSERVE_TIMEOUT, catalog_path: false };
+pub const COLLECTOR: SessionLimits = SessionLimits { statement_timeout: Duration::from_secs(20), catalog_path: true };
+pub const EXECUTION: SessionLimits =
+    SessionLimits { statement_timeout: culprit_core::limits::QUERY_TIMEOUT, catalog_path: false };
 
 #[derive(Clone)]
 pub struct Connector {
@@ -106,7 +108,7 @@ impl Connector {
         });
         let mut setup = vec![
             "SET default_transaction_read_only = on".to_string(),
-            format!("SET statement_timeout = '{}'", limits.statement_timeout),
+            format!("SET statement_timeout = '{}ms'", limits.statement_timeout.as_millis()),
             "SET lock_timeout = '2s'".to_string(),
             "SET idle_in_transaction_session_timeout = '30s'".to_string(),
         ];

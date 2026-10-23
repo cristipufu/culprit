@@ -448,23 +448,31 @@ async fn run_in_transaction(conn: &mut Conn, statement: &str, limit: usize) -> R
     let types: Vec<ColumnType> =
         columns_meta.as_deref().map(|cols| cols.iter().map(|c| c.column_type()).collect()).unwrap_or_default();
     let mut rows: Vec<Vec<Json>> = Vec::new();
-    let mut truncated = false;
+    let mut budget = culprit_core::limits::ResultBudget::new(limit);
     while let Some(row) = result.next().await.map_err(map_error)? {
-        if rows.len() == limit {
-            truncated = true;
-            break;
+        if budget.truncated() {
+            continue;
         }
         let values = row.unwrap();
+        let bytes = values.iter().fold(0usize, |n, v| {
+            n.saturating_add(match v {
+                Value::Bytes(b) => culprit_core::limits::text_bytes(b),
+                _ => 64,
+            })
+        });
+        if !budget.retain(culprit_core::limits::row_bytes(values.len(), bytes)) {
+            continue;
+        }
         rows.push(values.iter().enumerate().map(|(i, v)| json_value(v, types.get(i))).collect());
     }
     let affected = result.affected_rows();
     result.drop_result().await.map_err(map_error)?;
     let count = if columns.is_empty() { affected } else { rows.len() as u64 };
     let mut message = format!("{count} row{}", if count == 1 { "" } else { "s" });
-    if truncated {
-        message.push_str(&format!(" (stopped at {limit})"));
+    if let Some(notice) = budget.notice() {
+        message.push_str(&format!(" ({notice})"));
     }
-    Ok(ResultSet { columns, rows, truncated, elapsed_ms: 0.0, messages: vec![message] })
+    Ok(ResultSet { columns, rows, truncated: budget.truncated(), elapsed_ms: 0.0, messages: vec![message] })
 }
 
 fn json_value(value: &Value, kind: Option<&ColumnType>) -> Json {

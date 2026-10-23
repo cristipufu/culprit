@@ -7,10 +7,6 @@ pub mod plan;
 pub mod sources;
 
 use std::path::PathBuf;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -90,15 +86,8 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'sta
     tokio::task::spawn_blocking(f).await.map_err(|e| Error::internal(format!("The SQLite task stopped: {e}")))?
 }
 
-const STATEMENT_TIMEOUT: Duration = Duration::from_secs(30);
+const STATEMENT_TIMEOUT: Duration = culprit_core::limits::QUERY_TIMEOUT;
 static STATEMENTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
-
-struct CancelOnDrop(Arc<AtomicBool>);
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Release);
-    }
-}
 
 /// Dropping an async caller cannot abort spawn_blocking: make SQLite observe the cancellation inside its VM instead.
 async fn interactive<T: Send + 'static>(
@@ -106,15 +95,18 @@ async fn interactive<T: Send + 'static>(
     budget: Duration,
     operation: impl FnOnce(&Connection) -> Result<T> + Send + 'static,
 ) -> Result<T> {
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let _cancel_on_drop = CancelOnDrop(cancelled.clone());
-    let permit = STATEMENTS.acquire().await.map_err(|_| Error::internal("SQLite execution is unavailable"))?;
+    let guard = culprit_core::limits::OperationGuard::new(budget)?;
+    let handle = guard.handle();
+    let permit = tokio::time::timeout(handle.remaining(), STATEMENTS.acquire())
+        .await
+        .map_err(|_| culprit_core::limits::timeout_error())?
+        .map_err(|_| Error::internal("SQLite execution is unavailable"))?;
     blocking(move || {
         let _permit = permit;
-        let deadline = Instant::now() + budget;
+        handle.check()?;
         let conn = open(&path)?;
-        conn.progress_handler(1_000, Some(move || cancelled.load(Ordering::Acquire) || Instant::now() >= deadline))
-            .map_err(|e| map_error(&e))?;
+        handle.check()?;
+        conn.progress_handler(1_000, Some(move || handle.stopped())).map_err(|e| map_error(&e))?;
         operation(&conn)
     })
     .await
@@ -190,6 +182,19 @@ mod tests {
         let result = interactive(path.clone(), Duration::from_millis(10), |conn| collect::run(conn, SLOW, 1));
         let error = tokio::time::timeout(Duration::from_secs(2), result).await.unwrap().unwrap_err();
         assert_eq!(error.code, ErrorCode::Timeout);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn execution_deadline_includes_waiting_for_a_worker() {
+        let workers = STATEMENTS.acquire_many(4).await.unwrap();
+        let path = query_file("queued-deadline");
+        let result = interactive(path.clone(), Duration::from_millis(10), |_| -> Result<()> {
+            panic!("expired queued work must not start");
+        });
+        let error = tokio::time::timeout(Duration::from_secs(2), result).await.unwrap().unwrap_err();
+        assert_eq!(error.code, ErrorCode::Timeout);
+        drop(workers);
         std::fs::remove_file(path).unwrap();
     }
 

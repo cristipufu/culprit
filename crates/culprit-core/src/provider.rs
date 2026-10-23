@@ -56,6 +56,9 @@ pub enum ExplainMode {
 }
 
 /// One database engine. Implementations open their own connections from the configuration they were built with.
+/// Interactive futures must release their sessions when dropped. Native work must observe an
+/// [`crate::limits::OperationGuard`] handle; result collectors use [`crate::limits::ResultBudget`] and drain
+/// completion/errors even after display retention stops.
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn engine(&self) -> Engine;

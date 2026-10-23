@@ -20,6 +20,7 @@ pub mod fingerprint;
 pub mod format;
 pub mod index_filter;
 pub mod insights;
+pub mod limits;
 pub mod measurement;
 pub mod model;
 pub mod operations;

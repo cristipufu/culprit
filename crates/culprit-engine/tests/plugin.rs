@@ -68,7 +68,8 @@ impl Provider for Replay {
         Err(Error::invalid("replay has no live state"))
     }
 
-    async fn run(&self, _: &str, _: usize) -> Result<ResultSet> {
+    async fn run(&self, _: &str, limit: usize) -> Result<ResultSet> {
+        assert!(limit <= culprit_core::limits::MAX_RESULT_ROWS);
         Ok(ResultSet {
             columns: vec![],
             rows: vec![],
@@ -78,7 +79,8 @@ impl Provider for Replay {
         })
     }
 
-    async fn execute(&self, _: &str, _: usize) -> Result<ResultSet> {
+    async fn execute(&self, _: &str, limit: usize) -> Result<ResultSet> {
+        assert!(limit <= culprit_core::limits::MAX_RESULT_ROWS);
         Ok(ResultSet {
             columns: vec![],
             rows: vec![],
@@ -257,6 +259,8 @@ async fn reads_run_freely_and_production_writes_need_confirmation() {
     }
     let path = |r: ResultSet| r.messages[0].clone();
     assert_eq!(path(ws.run("prod", "SELECT * FROM orders", 10, false).await.unwrap()), "read");
+    assert_eq!(path(ws.run("prod", "SELECT * FROM orders", usize::MAX, false).await.unwrap()), "read");
+    assert_eq!(path(ws.run("dev", "DELETE FROM orders WHERE id = 1", usize::MAX, false).await.unwrap()), "wrote");
     let refused = ws.run("prod", "DELETE FROM orders", 10, false).await.unwrap_err();
     assert_eq!(refused.code, ErrorCode::ConfirmationRequired);
     assert!(refused.hint.unwrap().contains("every row"));
