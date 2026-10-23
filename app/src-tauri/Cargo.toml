@@ -20,7 +20,8 @@ culprit-engine.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2.12.3", features = [] }
-tauri-plugin-updater = "=2.13.1"
+# Releases use native v2 packages; legacy ZIP extraction is unnecessary.
+tauri-plugin-updater = { version = "=2.13.1", default-features = false, features = ["rustls-tls", "system-proxy"] }
 # Native file dialogs, opened by Culprit's own commands only: the window gets no dialog or file system permission.
 tauri-plugin-dialog = "=2.8.0"
 tokio.workspace = true

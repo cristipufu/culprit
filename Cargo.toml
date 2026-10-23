@@ -30,7 +30,7 @@ keyring = "4.2.0"
 ring = "0.17.14"
 mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust", "default-rustls-ring"] }
 roxmltree = "0.21.1"
-rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1.0.229", features = ["alloc", "derive", "rc"] }
 serde_json = { version = "1.0.152", features = ["alloc"] }
 sha2 = "0.11.0"
@@ -44,7 +44,7 @@ tokio-util = { version = "0.7.20", features = ["compat"] }
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 toml = "1.1.8"
 ts-rs = { version = "12.0.1", features = ["serde-json-impl"] }
-webpki-roots = "1.0.9"
+webpki-roots = "1.0.11"
 rustls-pki-types = "1.15.1"
 
 [profile.release]
