@@ -93,15 +93,29 @@ pub fn save(dir: &Path, report: &Report) -> Result<()> {
     let summary = summary_of(report);
     let json = serde_json::to_vec_pretty(&summary).map_err(|e| Error::internal(e.to_string()))?;
     write_atomic(&dir.join(format!("{}.summary.json", report.snapshot.id)), &json)?;
-    if latest_summary(dir, None).is_none_or(|old| old.id <= summary.id) {
+    if latest_summary(dir, None).is_none_or(|old| may_replace_latest(&old, &summary)) {
         write_atomic(&summary_path(dir, None), &json)?;
     }
     if let Some(minutes) = summary.window()
-        && latest_summary(dir, Some(minutes)).is_none_or(|old| old.id <= summary.id)
+        && latest_summary(dir, Some(minutes)).is_none_or(|old| may_replace_latest(&old, &summary))
     {
         write_atomic(&summary_path(dir, Some(minutes)), &json)?;
     }
     Ok(())
+}
+
+fn may_replace_latest(old: &ReportSummary, new: &ReportSummary) -> bool {
+    fn time(summary: &ReportSummary) -> Option<chrono::DateTime<chrono::Utc>> {
+        let at = chrono::DateTime::parse_from_rfc3339(&summary.taken_at).ok()?.to_utc();
+        // Workspace timestamps have second precision, but their IDs distinguish scans within that second.
+        let precise = chrono::NaiveDateTime::parse_from_str(&summary.id, "%Y%m%dT%H%M%S%.fZ")
+            .ok()
+            .map(|t| t.and_utc())
+            .filter(|id| at.timestamp_subsec_nanos() == 0 && id.timestamp() == at.timestamp());
+        Some(precise.unwrap_or(at))
+    }
+    // Unparseable legacy timestamps cannot establish an ordering: preserve last-writer behavior for them.
+    time(old).zip(time(new)).is_none_or(|(old, new)| old <= new)
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -576,6 +590,9 @@ mod tests {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/mssql-demo.report.json");
         let mut report: Report = serde_json::from_str(&fs::read_to_string(path).expect("fixture")).expect("report");
         report.snapshot.id = id.into();
+        if let Some(at) = id_epoch(id) {
+            report.snapshot.taken_at = culprit_core::format::iso_from_epoch(at);
+        }
         report.snapshot.options = Some(SnapshotOptions::default().with_window_minutes(window_minutes));
         report
     }
@@ -670,6 +687,32 @@ mod tests {
         let summary = latest_summary(&dir, Some(360)).expect("6h summary");
         assert_eq!((summary.window_days, summary.window_minutes, summary.window()), (None, Some(360), Some(360)));
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn latest_pointers_compare_scan_times_instead_of_id_spellings() {
+        let dir = std::env::temp_dir().join(format!("culprit-reports-order-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let assert_latest = |expected: &str| {
+            for window in [None, Some(60)] {
+                assert_eq!(latest_summary(&dir, window).unwrap().id, expected);
+                assert_eq!(latest(&dir, window).unwrap().unwrap().snapshot.id, expected);
+            }
+        };
+        // A UTC ID without fractional digits sorts after every fractional ID in the same second.
+        save(&dir, &fixture_report("20261021T100000Z", 60)).unwrap();
+        save(&dir, &fixture_report("20261021T100000.500Z", 60)).unwrap();
+        save(&dir, &fixture_report("20261021T100000.250Z", 60)).unwrap();
+        assert_latest("20261021T100000.500Z");
+
+        let mut newer = fixture_report("release-10", 60);
+        newer.snapshot.taken_at = "2026-10-21T12:00:01+02:00".into();
+        save(&dir, &newer).unwrap();
+        let mut older = fixture_report("release-9", 60);
+        older.snapshot.taken_at = "2026-10-21T10:00:00Z".into();
+        save(&dir, &older).unwrap();
+        assert_latest("release-10");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
