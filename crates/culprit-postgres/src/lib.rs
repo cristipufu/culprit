@@ -19,6 +19,7 @@ pub mod sources;
 mod tables;
 mod timescale;
 mod trust;
+pub mod wire;
 mod workload;
 
 use std::time::Instant;
@@ -65,29 +66,14 @@ impl PostgresProvider {
     fn environment(&self) -> Environment {
         self.spec.environment
     }
-}
 
-#[async_trait]
-impl Provider for PostgresProvider {
-    fn collector_version(&self) -> culprit_core::ComponentVersion {
-        component_version()
-    }
-
-    fn engine(&self) -> Engine {
-        Engine::Postgres
-    }
-
-    async fn probe(&self) -> Result<ServerInfo> {
-        let client = self.connector.connect(COLLECTOR).await?;
-        let probe = probe::probe(&client, &self.connector.host).await?;
-        Ok(probe.server_info())
-    }
-
-    async fn snapshot(&self, connection: &str, options: &SnapshotOptions) -> Result<Snapshot> {
-        collect::snapshot(&self.connector, &self.spec, connection, options).await
-    }
-
-    async fn explain(&self, sql: &str, mode: ExplainMode) -> Result<Plan> {
+    async fn explain_wire(
+        &self,
+        sql: &str,
+        mode: ExplainMode,
+        fill_table_sizes: bool,
+        distributed: bool,
+    ) -> Result<Plan> {
         let statement = single_statement(sql)?;
         match mode {
             ExplainMode::Estimated => {
@@ -111,7 +97,9 @@ impl Provider for PostgresProvider {
                     let json = generic::plan_json(&client, statement, server_version(&client).await?, elevated).await?;
                     plan_json::parse(&json, PlanKind::Generic, Some(statement))?
                 };
-                tables::fill(&client, &mut plan).await;
+                if fill_table_sizes {
+                    tables::fill(&client, &mut plan).await;
+                }
                 Ok(plan)
             }
             ExplainMode::Analyze => {
@@ -126,7 +114,10 @@ impl Provider for PostgresProvider {
                     }
                     explain_text(
                         &client,
-                        &format!("EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) {statement}"),
+                        &format!(
+                            "EXPLAIN (ANALYZE, {}, VERBOSE, FORMAT JSON) {statement}",
+                            if distributed { "DIST" } else { "BUFFERS" }
+                        ),
                         PlanKind::Actual,
                         statement,
                     )
@@ -139,6 +130,31 @@ impl Provider for PostgresProvider {
                 Ok(plan)
             }
         }
+    }
+}
+
+#[async_trait]
+impl Provider for PostgresProvider {
+    fn collector_version(&self) -> culprit_core::ComponentVersion {
+        component_version()
+    }
+
+    fn engine(&self) -> Engine {
+        Engine::Postgres
+    }
+
+    async fn probe(&self) -> Result<ServerInfo> {
+        let client = self.connector.connect(COLLECTOR).await?;
+        let probe = probe::probe(&client, &self.connector.host).await?;
+        Ok(probe.server_info())
+    }
+
+    async fn snapshot(&self, connection: &str, options: &SnapshotOptions) -> Result<Snapshot> {
+        collect::snapshot(&self.connector, &self.spec, connection, options).await
+    }
+
+    async fn explain(&self, sql: &str, mode: ExplainMode) -> Result<Plan> {
+        self.explain_wire(sql, mode, true, false).await
     }
 
     async fn interrupt_session(&self, session: &str, action: SessionAction) -> Result<()> {

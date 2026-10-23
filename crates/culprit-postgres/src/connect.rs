@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use culprit_core::{
@@ -10,8 +11,8 @@ use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signat
 use rustls::{CertificateError, ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
-use tokio_postgres::Client;
 use tokio_postgres::config::SslMode;
+use tokio_postgres::{AsyncMessage, Client};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 pub const DEFAULT_PORT: u16 = 5432;
@@ -39,6 +40,19 @@ pub struct Connector {
     tls: MakeRustlsConnect,
     pub host: String,
     pub port: u16,
+}
+
+/// One connection's server notices, without retaining server-controlled message text. Distributed statistics can
+/// return rows after skipping a node: callers must distinguish that partial read from an empty successful read.
+pub struct ObservedSession {
+    pub client: Client,
+    notices: Arc<AtomicU64>,
+}
+
+impl ObservedSession {
+    pub fn notices(&self) -> u64 {
+        self.notices.load(Ordering::SeqCst)
+    }
 }
 
 impl Connector {
@@ -101,10 +115,24 @@ impl Connector {
 
     /// Open a session with Culprit's safety settings applied: read-only by default, bounded statement and lock waits.
     pub async fn connect(&self, limits: SessionLimits) -> Result<Client> {
-        let (client, connection) =
+        Ok(self.connect_observed(limits).await?.client)
+    }
+
+    pub async fn connect_observed(&self, limits: SessionLimits) -> Result<ObservedSession> {
+        let (client, mut connection) =
             self.config.connect(self.tls.clone()).await.map_err(|e| map_connect_error(e, &self.host, self.port))?;
+        let notices = Arc::new(AtomicU64::new(0));
+        let observed = notices.clone();
         tokio::spawn(async move {
-            let _ = connection.await;
+            while let Some(message) = futures_util::future::poll_fn(|cx| connection.poll_message(cx)).await {
+                match message {
+                    Ok(AsyncMessage::Notice(_)) => {
+                        observed.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Err(_) => break,
+                    _ => {}
+                }
+            }
         });
         let mut setup = vec![
             "SET default_transaction_read_only = on".to_string(),
@@ -117,7 +145,7 @@ impl Connector {
         }
         let setup = setup.iter().map(|statement| crate::rows::tagged(statement)).collect::<Vec<_>>().join("; ");
         client.batch_execute(&setup).await.map_err(map_error)?;
-        Ok(client)
+        Ok(ObservedSession { client, notices })
     }
 }
 
