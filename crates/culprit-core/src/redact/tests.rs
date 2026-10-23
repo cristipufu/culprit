@@ -361,3 +361,22 @@ fn plan_facts_and_plugin_fix_sql_share_the_same_redaction_boundary() {
     });
     assert!(!serde_json::to_string(&redact_finding(finding, Engine::Mssql)).unwrap().contains("literal-value-canary"));
 }
+
+#[test]
+fn native_xml_redaction_handles_xml_syntax_and_fails_closed() {
+    for quote in ['\'', '"'] {
+        let xml = format!("<?xml version=\"1.0\"?>\n<StmtSimple\n\tStatementText \n= {quote}SELECT * FROM t WHERE token = &apos;PLANTED-secret&apos;{quote}>
+<ColumnReference ParameterCompiledValue={quote}&apos;PLANTED-value&apos;{quote}/>
+<Object Database={quote}[PLANTED-database]{quote} Server={quote}[PLANTED-host]{quote}/>
+<!-- PLANTED-comment --></StmtSimple>");
+        let out = redact_native(&xml, Engine::Mssql);
+        assert!(!redact_native(&format!("\u{feff}{xml}"), Engine::Mssql).contains("PLANTED"));
+        assert!(!out.contains("PLANTED"), "{out}");
+        assert!(out.starts_with("<?xml version=\"1.0\"?>"));
+        let doc = roxmltree::Document::parse(&out).unwrap();
+        assert_eq!(doc.root_element().attribute("StatementText"), Some("SELECT * FROM t WHERE token = '?'"));
+    }
+    for xml in ["<StmtSimple StatementText='PLANTED", "<!DOCTYPE x [<!ENTITY secret 'PLANTED'>]><x/>"] {
+        assert!(!redact_native(xml, Engine::Mssql).contains("PLANTED"));
+    }
+}

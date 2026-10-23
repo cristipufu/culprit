@@ -208,9 +208,9 @@ const SHOWPLAN_TEXT: &[&str] = &[
 /// The plan's original text (a .sqlplan, EXPLAIN JSON or text) with literal values redacted, keeping its format so it
 /// opens in the engine's own tools.
 pub fn redact_native(raw: &str, engine: Engine) -> String {
-    let trimmed = raw.trim_start();
+    let trimmed = raw.trim_start_matches('\u{feff}').trim_start();
     if trimmed.starts_with('<') {
-        return generic_database(&redact_showplan(raw));
+        return redact_showplan(raw);
     }
     if (trimmed.starts_with('{') || trimmed.starts_with('['))
         && let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw)
@@ -222,46 +222,53 @@ pub fn redact_native(raw: &str, engine: Engine) -> String {
 }
 
 fn redact_showplan(xml: &str) -> String {
-    let mut out = String::with_capacity(xml.len());
-    let mut rest = xml;
-    loop {
-        let next = SHOWPLAN_TEXT
-            .iter()
-            .filter_map(|name| {
-                let pattern = format!(" {name}=\"");
-                rest.find(&pattern).map(|p| (p, pattern.len()))
-            })
-            .min_by_key(|(p, _)| *p);
-        let Some((start, len)) = next else {
-            out.push_str(rest);
-            return out;
-        };
-        let value_start = start + len;
-        let Some(value_len) = rest[value_start..].find('"') else {
-            out.push_str(rest);
-            return out;
-        };
-        out.push_str(&rest[..value_start]);
-        let value = xml_unescape(&rest[value_start..value_start + value_len]);
-        out.push_str(&xml_escape(&strip_database(&redact_sql(&value, Engine::Mssql))));
-        rest = &rest[value_start + value_len..];
+    // Wrap fragments too (some tools copy individual Showplan elements). Leave the original declaration in place
+    // when writing the result, but not inside the wrapper used to parse attributes and their exact source ranges.
+    let trimmed = xml.trim_start_matches('\u{feff}').trim_start();
+    let offset = if trimmed.starts_with("<?xml") {
+        let Some(end) = trimmed.find("?>") else { return redaction_failed() };
+        xml.len() - trimmed.len() + end + 2
+    } else {
+        0
+    };
+    const PREFIX: &str = "<culprit>";
+    let wrapped = format!("{PREFIX}{}</culprit>", &xml[offset..]);
+    let Ok(doc) = roxmltree::Document::parse(&wrapped) else { return redaction_failed() };
+    let mut replacements = Vec::new();
+    for node in doc.descendants() {
+        if node.is_comment() {
+            replacements.push((node.range(), "<!-- … -->".to_string()));
+        }
+        for attr in node.attributes() {
+            let replacement = match attr.name() {
+                "Database" => Some("[database]".to_string()),
+                "Server" => Some("[server]".to_string()),
+                name if SHOWPLAN_TEXT.contains(&name) => {
+                    Some(xml_escape(&strip_database(&redact_sql(attr.value(), Engine::Mssql))))
+                }
+                _ => None,
+            };
+            if let Some(replacement) = replacement {
+                replacements.push((attr.range_value(), replacement));
+            }
+        }
     }
+    replacements.sort_by_key(|(range, _)| range.start);
+    let mut out = String::with_capacity(xml.len());
+    let mut copied = 0;
+    for (range, replacement) in replacements {
+        let start = range.start - PREFIX.len() + offset;
+        let end = range.end - PREFIX.len() + offset;
+        out.push_str(&xml[copied..start]);
+        out.push_str(&replacement);
+        copied = end;
+    }
+    out.push_str(&xml[copied..]);
+    out
 }
 
-/// Showplan names the database on every object and column reference (`Database="[shop_prod]"`); a redacted export
-/// says `[database]` instead, which SSMS still opens.
-fn generic_database(xml: &str) -> String {
-    let mut out = String::with_capacity(xml.len());
-    let mut rest = xml;
-    while let Some(p) = rest.find(" Database=\"") {
-        let start = p + " Database=\"".len();
-        let Some(len) = rest[start..].find('"') else { break };
-        out.push_str(&rest[..start]);
-        out.push_str("[database]");
-        rest = &rest[start + len..];
-    }
-    out.push_str(rest);
-    out
+fn redaction_failed() -> String {
+    "<!-- Culprit could not safely redact this XML plan. -->".into()
 }
 
 fn redact_json(value: &mut serde_json::Value, engine: Engine) {
@@ -321,39 +328,6 @@ fn redact_text_line(line: &str, engine: Engine) -> String {
         return format!("{indent}{key}: {}", redact_sql(value, engine));
     }
     redact_strings(line, engine)
-}
-
-fn xml_unescape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(p) = rest.find('&') {
-        out.push_str(&rest[..p]);
-        let tail = &rest[p..];
-        let Some(end) = tail.find(';') else {
-            out.push_str(tail);
-            return out;
-        };
-        let entity = &tail[1..end];
-        let ch = match entity {
-            "amp" => Some('&'),
-            "lt" => Some('<'),
-            "gt" => Some('>'),
-            "quot" => Some('"'),
-            "apos" => Some('\''),
-            e if e.starts_with("#x") || e.starts_with("#X") => {
-                u32::from_str_radix(&e[2..], 16).ok().and_then(char::from_u32)
-            }
-            e if e.starts_with('#') => e[1..].parse().ok().and_then(char::from_u32),
-            _ => None,
-        };
-        match ch {
-            Some(c) => out.push(c),
-            None => out.push_str(&tail[..=end]),
-        }
-        rest = &tail[end + 1..];
-    }
-    out.push_str(rest);
-    out
 }
 
 fn xml_escape(s: &str) -> String {
