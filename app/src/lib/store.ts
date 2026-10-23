@@ -4,7 +4,7 @@ import type { ConnectionInfo } from "../gen/ConnectionInfo";
 import type { Report } from "../gen/Report";
 import type { SavedQuery } from "../gen/SavedQuery";
 import { api } from "./api";
-import { ReportRequests, type ReportState } from "./report-requests";
+import { ReportRequests, type ReportState, withConnectionName } from "./report-requests";
 import { LatestRequest } from "./requests";
 export type { ReportState } from "./report-requests";
 
@@ -162,6 +162,34 @@ export async function loadConnections(): Promise<ConnectionInfo[]> {
   const connections = await (await api()).connections();
   if (owns()) setState({ connections });
   return connections;
+}
+
+/** Carry the current UI session and its preferences to the saved alias without changing the selected view. */
+export async function renameConnection(old: string, next: string): Promise<ConnectionInfo> {
+  const saved = await (await api()).renameConnection(old, next);
+  connectionRequests.invalidate();
+  const current = getState();
+  const active = current.active === old;
+  try {
+    const remembered = active ? String(current.windowMinutes) : localStorage.getItem(windowKey(old));
+    if (remembered !== null) localStorage.setItem(windowKey(saved.name), remembered);
+    if (old !== saved.name) localStorage.removeItem(windowKey(old));
+  } catch {}
+  if (active || lastConnection() === old) rememberLast(saved.name);
+  const resume = active && (current.report.status === "loading" || (current.report.status === "ready" && current.report.scanning));
+  const connections = current.connections.some((c) => c.name === old)
+    ? current.connections.map((c) => c.name === old ? saved : c)
+    : [...current.connections.filter((c) => c.name !== saved.name), saved];
+  setState({ connections, ...(active ? {
+    active: saved.name,
+    report: current.report.status === "ready"
+      ? { ...current.report, report: withConnectionName(current.report.report, saved.name) }
+      : current.report,
+  } : {}) });
+  if (resume) void reports.open(saved.name, current.windowMinutes, true);
+  // A failed metadata refresh must not turn a successful rename into a retry against the retired alias.
+  void loadConnections().catch(() => {});
+  return saved;
 }
 
 /** Open a connection: show its last report for the remembered window instantly, then refresh it in place. */

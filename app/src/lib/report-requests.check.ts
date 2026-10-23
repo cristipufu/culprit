@@ -157,3 +157,20 @@ console.log("Report requests: navigation, windows, overlapping scans, cache race
   equal(scans, 0, "A retired cache continuation started another scan");
 }
 console.log("API initialization retries after failure; retired cache continuations launch no scan");
+
+// Historical reports retain their saved alias; both cache and scan results route actions through the current name.
+{
+  const cached = report("before rename"), fresh = report("after rename");
+  const h = harness(async () => ({ latestReport: async () => cached, scan: async () => fresh }));
+  h.target("renamed");
+  await h.requests.open("renamed", 60, false);
+  const connection = () => {
+    const value = h.read().report;
+    return value.status === "ready" ? value.report.snapshot.connection : null;
+  };
+  equal(connection(), "renamed", "Cached report actions still use the previous alias");
+  await h.requests.scan("renamed", 60);
+  equal(connection(), "renamed", "Scan actions still use the previous alias");
+  equal([cached.snapshot.connection, fresh.snapshot.connection], ["a", "a"], "UI alias binding mutated saved observations");
+}
+console.log("Report actions follow the requested alias without changing saved observations");

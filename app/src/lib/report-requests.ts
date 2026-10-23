@@ -14,6 +14,11 @@ type Update = { report: ReportState; finding?: string | null };
 type Client = Pick<Api, "latestReport" | "scan">;
 type Request = { name: string; windowMinutes: number; current: () => boolean };
 
+/** Saved observations keep their original alias on disk; UI actions address the connection's current name. */
+export function withConnectionName(report: Report, name: string): Report {
+  return report.snapshot.connection === name ? report : { ...report, snapshot: { ...report.snapshot, connection: name } };
+}
+
 /** Own the complete cache → scan lifecycle. Target identity alone cannot distinguish A → B → A or two scans of A. */
 export class ReportRequests {
   private readonly owner = new LatestRequest();
@@ -44,7 +49,7 @@ export class ReportRequests {
       if (!request.current()) return;
       const cached = await client.latestReport(name, windowMinutes);
       if (!request.current()) return;
-      if (cached) this.accept(cached, rescan);
+      if (cached) this.accept(cached, rescan, request.name);
       if (!cached || rescan) await this.collect(client, request);
     } catch (error) {
       this.failed(request, error);
@@ -70,11 +75,11 @@ export class ReportRequests {
       ? { ...current, scanning: true, scanError: null } : { status: "loading" } });
   }
 
-  private accept(report: Report, scanning: boolean): void {
+  private accept(report: Report, scanning: boolean, name: string): void {
     const selected = this.options.read().finding;
     const finding = selected && report.findings.some((f) => f.id === selected)
       ? selected : report.findings.find(isActionable)?.id ?? null;
-    this.options.publish({ report: { status: "ready", report, scanning, scanError: null }, finding });
+    this.options.publish({ report: { status: "ready", report: withConnectionName(report, name), scanning, scanError: null }, finding });
   }
 
   private async collect(client: Client, request: Request): Promise<void> {
@@ -83,7 +88,7 @@ export class ReportRequests {
     if (!request.current()) return;
     const report = await client.scan(request.name, request.windowMinutes);
     if (!request.current()) return;
-    this.accept(report, false);
+    this.accept(report, false, request.name);
     // Sidebar metadata has its own request owner; a refresh failure cannot invalidate a successful scan.
     void Promise.resolve().then(() => this.options.collected()).catch(() => {});
   }

@@ -7,7 +7,7 @@ import type { ConnectionInfo } from "../../gen/ConnectionInfo";
 import { api, errorMessage, isDesktop } from "../../lib/api";
 import { serverName } from "../../lib/engines";
 import { ago } from "../../lib/format";
-import { loadConnections, openConnection } from "../../lib/store";
+import { loadConnections, openConnection, renameConnection } from "../../lib/store";
 
 const AUTH_LABEL: Partial<Record<AuthKind, string>> = { entra: "Entra ID", "aws-iam": "AWS IAM" };
 
@@ -15,16 +15,23 @@ export function ConnectionCard({ connection: c }: { connection: ConnectionInfo }
   const [editing, setEditing] = useState(false);
   const [alias, setAlias] = useState(c.name);
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const submitted = useRef(false);
 
   const save = async () => {
+    if (submitted.current) return;
+    submitted.current = true;
     if (alias === c.name) return setEditing(false);
+    setSaving(true);
     try {
-      await (await api()).renameConnection(c.name, alias);
-      await loadConnections();
+      await renameConnection(c.name, alias);
       setEditing(false);
       setError(null);
     } catch (e) {
+      submitted.current = false;
       setError(errorMessage(e).message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -36,14 +43,24 @@ export function ConnectionCard({ connection: c }: { connection: ConnectionInfo }
           className="alias-input"
           autoFocus
           value={alias}
+          readOnly={saving}
+          aria-label={`Rename ${c.name}`}
+          aria-busy={saving}
           onChange={(e) => setAlias(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") save();
-            if (e.key === "Escape") setEditing(false);
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void save();
+            }
+            if (e.key === "Escape" && !submitted.current) {
+              e.preventDefault();
+              submitted.current = true;
+              setEditing(false);
+            }
           }}
           onBlur={save}
         />
-        <span className="last muted">Enter to save</span>
+        <span className="last muted">{saving ? "Saving…" : "Enter to save"}</span>
         <span className="sub">{error ?? `${serverName(c.engine, c.last_report?.product)} · ${c.display}`}</span>
       </div>
     );
@@ -59,6 +76,9 @@ export function ConnectionCard({ connection: c }: { connection: ConnectionInfo }
           title="Rename"
           onClick={(e) => {
             e.stopPropagation();
+            submitted.current = false;
+            setAlias(c.name);
+            setError(null);
             setEditing(true);
           }}
         >
