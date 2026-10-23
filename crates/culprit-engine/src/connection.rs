@@ -417,7 +417,16 @@ impl Connections<'_> {
     }
 
     pub(crate) async fn probe(&self, name: &str) -> Result<ServerInfo> {
-        self.forget_rejected(name, self.provider(name).await?.probe().await)
+        let provider = self.provider(name).await?;
+        self.forget_rejected(
+            name,
+            crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, provider.probe()).await,
+        )
+    }
+
+    pub(crate) async fn test_connection(&self, new: &NewConnection) -> Result<ServerInfo> {
+        let provider = self.provider_for(new).await?;
+        crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, provider.probe()).await
     }
 
     /// A rejected password may have been changed elsewhere since this process read it: forget the copy so the next

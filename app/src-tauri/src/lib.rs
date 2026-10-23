@@ -45,7 +45,7 @@ fn parse_connection(input: String, engine: Option<culprit_core::Engine>) -> Resu
 
 #[tauri::command]
 async fn test_connection(ws: Ws<'_>, input: NewConnection) -> Result<ServerInfo> {
-    ws.provider_for(&input).await?.probe().await
+    ws.test_connection(&input).await
 }
 
 #[tauri::command]

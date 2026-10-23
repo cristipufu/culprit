@@ -148,7 +148,10 @@ impl Provider for SqliteProvider {
             return Err(Engine::Sqlite.refused(Ability::MeasuresRuns));
         }
         let statement = culprit_core::sql::single_statement(sql, Engine::Sqlite)?.to_string();
-        interactive(self.path.clone(), STATEMENT_TIMEOUT, move |conn| plan::explain(conn, &statement)).await
+        interactive(self.path.clone(), culprit_core::limits::OBSERVE_TIMEOUT, move |conn| {
+            plan::explain(conn, &statement)
+        })
+        .await
     }
 
     async fn live(&self) -> Result<LiveState> {

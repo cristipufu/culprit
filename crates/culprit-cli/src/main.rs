@@ -1117,7 +1117,7 @@ async fn conn(ws: &Workspace, command: ConnCommand, out: &Out) -> culprit_core::
                 None
             } else {
                 out.progress(&format!("Testing {}…", args.name));
-                Some(ws.provider_for(&new).await?.probe().await?)
+                Some(ws.test_connection(&new).await?)
             };
             let mut info = ws.add_connection(new)?;
             if let Some(log) = args.query_log.as_deref() {

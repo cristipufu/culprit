@@ -400,6 +400,11 @@ impl Workspace {
         self.connection_service().probe(name).await
     }
 
+    /// Test an unsaved connection within the observation deadline, after any interactive authentication completes.
+    pub async fn test_connection(&self, new: &NewConnection) -> Result<ServerInfo> {
+        self.connection_service().test_connection(new).await
+    }
+
     pub async fn scan(&self, name: &str, options: &SnapshotOptions) -> Result<Report> {
         self.scan_with_log(name, options, None).await
     }

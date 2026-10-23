@@ -146,6 +146,23 @@ fn plugged_in_checks_reach_listing_and_offline_analysis() {
 }
 
 #[tokio::test]
+async fn testing_an_unsaved_connection_uses_its_provider_without_persisting_it() {
+    let home = temp_home("test-connection");
+    let ws = Workspace::open_in(&home)
+        .with_provider(Engine::Postgres, Arc::new(|_| Ok(Box::new(Replay) as Box<dyn Provider>)));
+    let new = NewConnection {
+        name: "unsaved".into(),
+        input: "postgres://reader@replay.invalid:5432/demo".into(),
+        auth: Some(AuthKind::None),
+        ..Default::default()
+    };
+    assert_eq!(ws.test_connection(&new).await.expect("test unsaved connection").engine, Engine::Postgres);
+    assert!(ws.connections().unwrap().is_empty());
+    assert_eq!(ws.probe("unsaved").await.unwrap_err().code, ErrorCode::NotFound);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
 async fn a_plugged_in_provider_serves_a_full_scan() {
     let home = temp_home("provider");
     let ws = Workspace::open_in(&home)
