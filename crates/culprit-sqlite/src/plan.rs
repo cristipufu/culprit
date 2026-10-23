@@ -3,7 +3,9 @@
 //! `AUTOMATIC COVERING INDEX ON t(x)`. Before 3.36 a table was `SCAN TABLE orders`. There are no rows, costs or
 //! timings: what a step does is all the plan says.
 
-use culprit_core::{Engine, NodeKind, Plan, PlanKind, PlanNode, Result};
+use std::collections::{HashMap, HashSet};
+
+use culprit_core::{Engine, Error, NodeKind, Plan, PlanKind, PlanNode, Result};
 use rusqlite::Connection;
 
 use crate::map_error;
@@ -23,7 +25,7 @@ pub fn explain(conn: &Connection, statement: &str) -> Result<Plan> {
         .map_err(|e| map_error(&e))?
         .collect::<rusqlite::Result<_>>()
         .map_err(|e| map_error(&e))?;
-    let mut plan = plan_from_rows(statement, &rows);
+    let mut plan = plan_from_rows(statement, &rows)?;
     if parameters > 0 {
         let reason = "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them.";
         plan.facts_mut().generic_plan_reason = Some(reason.into());
@@ -51,7 +53,18 @@ pub fn is_text_plan(text: &str) -> bool {
 /// A pasted plan: the shell's tree or its rows. The statement isn't in the text, so a table keeps the alias the
 /// statement gave it.
 pub fn parse_text(text: &str) -> Result<Plan> {
-    let lines: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+    let lines: Vec<&str> =
+        text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).take(MAX_NODES + 2).collect();
+    if lines.len()
+        > MAX_NODES
+            + usize::from(
+                lines
+                    .first()
+                    .is_some_and(|l| l.trim() == "QUERY PLAN" || l.replace(' ', "") == "id|parent|notused|detail"),
+            )
+    {
+        return Err(Error::invalid(format!("The SQLite plan exceeds {MAX_NODES} steps")));
+    }
     let rows: Vec<(i64, i64, String)> = if lines.first().is_some_and(|l| l.trim() == "QUERY PLAN") {
         // Each level indents three columns ("|  " or "   ") before its "|--" or "`--".
         let mut parents: Vec<i64> = vec![0];
@@ -61,6 +74,9 @@ pub fn parse_text(text: &str) -> Result<Plan> {
                 return Err(culprit_core::Error::invalid(format!("Line {} isn't a plan step: {line}", n + 2)));
             };
             let depth = at / 3;
+            if depth >= parents.len() {
+                return Err(Error::invalid(format!("Line {} skips a parent level", n + 2)));
+            }
             let id = n as i64 + 1;
             parents.truncate(depth + 1);
             let parent = *parents.last().unwrap_or(&0);
@@ -69,12 +85,16 @@ pub fn parse_text(text: &str) -> Result<Plan> {
         }
         rows
     } else {
-        lines.iter().filter_map(|l| list_row(l)).collect()
+        lines
+            .iter()
+            .filter(|l| l.replace(' ', "") != "id|parent|notused|detail")
+            .map(|l| list_row(l).ok_or_else(|| Error::invalid("A SQLite plan row must be id|parent|notused|detail")))
+            .collect::<Result<_>>()?
     };
     if rows.is_empty() {
         return Err(culprit_core::Error::invalid("The plan has no steps"));
     }
-    let mut plan = plan_from_rows("", &rows);
+    let mut plan = plan_from_rows("", &rows)?;
     plan.statement = None;
     Ok(plan)
 }
@@ -90,14 +110,16 @@ fn list_row(line: &str) -> Option<(i64, i64, String)> {
 }
 
 /// The plan for `EXPLAIN QUERY PLAN` rows (`id`, `parent`, `detail`), under a root that stands for the statement.
-pub fn plan_from_rows(statement: &str, rows: &[(i64, i64, String)]) -> Plan {
+/// Rejects malformed graphs and oversized trees before constructing recursively inspected nodes.
+pub fn plan_from_rows(statement: &str, rows: &[(i64, i64, String)]) -> Result<Plan> {
+    let children_by_parent = validate_rows(rows)?;
     let raw = rows.iter().map(|(_, _, d)| d.as_str()).collect::<Vec<_>>().join("\n");
     let mut root = node(0, "QUERY PLAN", NodeKind::Other);
-    root.children = children(0, rows);
+    root.children = children(0, rows, &children_by_parent);
     // SQLite names a table by the alias the statement gave it (`SCAN o`): put the table back, keep the alias.
     let aliases = culprit_core::sql::table_aliases(statement, Engine::Sqlite);
     resolve_aliases(&mut root, &aliases);
-    Plan {
+    Ok(Plan {
         facts: Some(Default::default()),
         view: None,
         engine: Engine::Sqlite,
@@ -110,7 +132,7 @@ pub fn plan_from_rows(statement: &str, rows: &[(i64, i64, String)]) -> Plan {
         props: Default::default(),
         raw: Some(raw.into()),
         insights: None,
-    }
+    })
 }
 
 fn resolve_aliases(n: &mut PlanNode, aliases: &[(String, String)]) {
@@ -129,12 +151,51 @@ fn resolve_aliases(n: &mut PlanNode, aliases: &[(String, String)]) {
     }
 }
 
-fn children(parent: i64, rows: &[(i64, i64, String)]) -> Vec<PlanNode> {
-    rows.iter()
-        .filter(|(_, p, _)| *p == parent)
-        .map(|(id, _, detail)| {
+// Plans are recursively inspected and rendered after import, so bound their depth before constructing a tree.
+const MAX_DEPTH: usize = 64;
+const MAX_NODES: usize = 10_000;
+
+fn validate_rows(rows: &[(i64, i64, String)]) -> Result<HashMap<i64, Vec<usize>>> {
+    if rows.len() > MAX_NODES {
+        return Err(Error::invalid(format!("The SQLite plan exceeds {MAX_NODES} steps")));
+    }
+    let mut ids = HashSet::new();
+    let mut parents: HashMap<i64, Vec<usize>> = HashMap::new();
+    for (at, (id, parent, _)) in rows.iter().enumerate() {
+        if *id <= 0 || u32::try_from(*id).is_err() || !ids.insert(*id) {
+            return Err(Error::invalid("SQLite plan step IDs must be unique positive 32-bit integers"));
+        }
+        parents.entry(*parent).or_default().push(at);
+    }
+    if rows.iter().any(|(_, parent, _)| *parent != 0 && !ids.contains(parent)) {
+        return Err(Error::invalid("The SQLite plan references a missing parent step"));
+    }
+    let mut pending = vec![(0, 0)];
+    let mut visited = 0;
+    while let Some((parent, depth)) = pending.pop() {
+        for &at in parents.get(&parent).into_iter().flatten() {
+            if depth >= MAX_DEPTH {
+                return Err(Error::invalid(format!("The SQLite plan exceeds {MAX_DEPTH} nested steps")));
+            }
+            visited += 1;
+            pending.push((rows[at].0, depth + 1));
+        }
+    }
+    if visited != rows.len() {
+        return Err(Error::invalid("The SQLite plan contains a cycle between steps"));
+    }
+    Ok(parents)
+}
+
+fn children(parent: i64, rows: &[(i64, i64, String)], parents: &HashMap<i64, Vec<usize>>) -> Vec<PlanNode> {
+    parents
+        .get(&parent)
+        .into_iter()
+        .flatten()
+        .map(|&at| {
+            let (id, _, detail) = &rows[at];
             let mut n = step(*id, detail);
-            n.children = children(*id, rows);
+            n.children = children(*id, rows, parents);
             n
         })
         .collect()
@@ -318,7 +379,8 @@ mod tests {
         let mut plan = plan_from_rows(
             "SELECT * FROM orders o JOIN items i ON i.order_id = o.id",
             &rows(&[(1, 0, "SCAN o"), (2, 0, "SEARCH i USING AUTOMATIC COVERING INDEX (order_id=?)")]),
-        );
+        )
+        .unwrap();
         let expected = culprit_core::insights::engine_built_indexes(&plan);
         assert_eq!(expected.len(), 1);
         assert_eq!(plan.root.children[1].facts().automatic_index.as_ref().unwrap().table, "items");
@@ -337,6 +399,29 @@ mod tests {
     }
 
     #[test]
+    fn malformed_graphs_are_rejected_before_building_a_tree() {
+        for text in [
+            "0|0|0|SCAN items",
+            "1|1|0|SCAN items",
+            "1|2|0|SCAN a\n2|1|0|SCAN b",
+            "1|0|0|SCAN a\n1|0|0|SCAN b",
+            "1|9|0|SCAN items",
+            "-1|0|0|SCAN items",
+            "4294967296|0|0|SCAN items",
+            "1|0|0|SCAN items\nmalformed row",
+            "QUERY PLAN\n|--SCAN items\n         `--SCAN orders",
+        ] {
+            assert!(parse_text(text).is_err(), "{text}");
+        }
+        let deep: Vec<_> = (1..=MAX_DEPTH as i64 + 1).map(|id| (id, id - 1, "SCAN items".into())).collect();
+        assert!(plan_from_rows("", &deep).is_err());
+        assert!(plan_from_rows("", &deep[..MAX_DEPTH]).is_ok());
+        let wide: Vec<_> = (1..=MAX_NODES as i64 + 1).map(|id| (id, 0, "SCAN items".into())).collect();
+        assert!(plan_from_rows("", &wide).is_err());
+        assert_eq!(plan_from_rows("", &wide[..MAX_NODES]).unwrap().root.children.len(), MAX_NODES);
+    }
+
+    #[test]
     fn steps_become_the_shared_tree() {
         let plan = plan_from_rows(
             "SELECT …",
@@ -346,7 +431,8 @@ mod tests {
                 (9, 0, "SEARCH order_items USING INDEX ix_items_order (order_id=?)"),
                 (14, 0, "USE TEMP B-TREE FOR ORDER BY"),
             ]),
-        );
+        )
+        .unwrap();
         let kids = &plan.root.children;
         assert_eq!(kids.len(), 4);
         assert_eq!((kids[0].kind, kids[0].object.as_deref()), (NodeKind::Scan, Some("orders")));
@@ -365,7 +451,8 @@ mod tests {
                 (7, 0, "SEARCH orders USING AUTOMATIC COVERING INDEX (customer_id=?) LEFT-JOIN"),
                 (9, 0, "SEARCH items USING INDEX ix_items (order_id=? AND product_id>?) LEFT-JOIN"),
             ]),
-        );
+        )
+        .unwrap();
         let kids = &plan.root.children;
         assert_eq!(kids[1].seek_predicate.as_deref(), Some("customer_id=?"));
         assert_eq!(kids[1].props.get("Join").map(String::as_str), Some("left"));
@@ -399,7 +486,8 @@ mod tests {
         let plan = plan_from_rows(
             "SELECT …",
             &rows(&[(3, 0, "SCAN TABLE events AS e"), (7, 0, "AUTOMATIC COVERING INDEX ON visits(event_id)")]),
-        );
+        )
+        .unwrap();
         assert_eq!(plan.root.children[0].object.as_deref(), Some("events"));
         let auto = &plan.root.children[1];
         assert_eq!(auto.object.as_deref(), Some("visits"));
@@ -415,7 +503,8 @@ mod tests {
                 (4, 0, "BLOOM FILTER ON i (product_id=?)"),
                 (7, 0, "SEARCH i USING AUTOMATIC COVERING INDEX (product_id=?)"),
             ]),
-        );
+        )
+        .unwrap();
         let bloom = &plan.root.children[1];
         assert_eq!((bloom.op.as_str(), bloom.object.as_deref()), ("Bloom Filter", Some("order_items")));
         let search = &plan.root.children[2];
@@ -428,7 +517,8 @@ mod tests {
         let plan = plan_from_rows(
             "SELECT o.id FROM orders AS o JOIN customers c ON c.id = o.customer_id WHERE o.customer_id = 42",
             &rows(&[(2, 0, "SEARCH c USING INTEGER PRIMARY KEY (rowid=?)"), (5, 0, "SCAN o")]),
-        );
+        )
+        .unwrap();
         assert_eq!(plan.root.children[0].object.as_deref(), Some("customers"));
         assert_eq!(plan.root.children[1].object.as_deref(), Some("orders"));
         assert_eq!(plan.root.children[1].props.get("Alias").map(String::as_str), Some("o"));
@@ -443,7 +533,8 @@ mod tests {
                 (4, 0, "CORRELATED SCALAR SUBQUERY 1"),
                 (6, 4, "SEARCH b USING INDEX ix_b (a_id=?)"),
             ]),
-        );
+        )
+        .unwrap();
         assert_eq!(plan.root.children[1].children[0].object.as_deref(), Some("b"));
     }
 }
