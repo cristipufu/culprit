@@ -253,9 +253,7 @@ impl Workspace {
     }
 
     pub fn set_agent_access(&self, name: &str, access: AgentAccess) -> Result<crate::ConnectionInfo> {
-        let mut stored = self.store.get(name)?;
-        stored.agent = (access != AgentAccess::default()).then_some(access);
-        self.store.put(name, stored)?;
+        self.store.update(name, |stored| stored.agent = (access != AgentAccess::default()).then_some(access))?;
         self.connection(name)
     }
 

@@ -75,6 +75,7 @@ pub fn add(dir: &Path, text: &str, at: Option<&str>, by: &str) -> Result<Mark> {
         }
         None => now,
     };
+    let _lock = private_fs::lock(&path(dir)).map_err(|e| Error::internal(e.to_string()))?;
     let mut marks = list(dir);
     let mut stamp = now.timestamp_millis();
     while marks.iter().any(|m| m.id == format!("m{stamp}")) {
@@ -97,6 +98,7 @@ pub fn add(dir: &Path, text: &str, at: Option<&str>, by: &str) -> Result<Mark> {
 }
 
 pub fn remove(dir: &Path, id: &str) -> Result<Mark> {
+    let _lock = private_fs::lock(&path(dir)).map_err(|e| Error::internal(e.to_string()))?;
     let mut marks = list(dir);
     let index = marks.iter().position(|m| m.id == id).ok_or_else(|| {
         Error::not_found(format!("No mark '{id}' on this connection"))

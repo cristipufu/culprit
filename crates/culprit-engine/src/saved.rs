@@ -105,6 +105,7 @@ impl SavedQueries {
 
     /// Create or update (by name, or by `previous_name` to rename) and return the stored query.
     pub fn put(&self, input: SaveQuery) -> Result<SavedQuery> {
+        let _lock = private_fs::lock(&self.file).map_err(|e| io_error(&self.file, e))?;
         let name = input.name.trim().to_string();
         if name.is_empty() || name.chars().count() > MAX_NAME || name.chars().any(char::is_control) {
             return Err(Error::invalid(format!("A saved query needs a name of 1 to {MAX_NAME} characters")));
@@ -148,6 +149,7 @@ impl SavedQueries {
     }
 
     pub fn delete(&self, name: &str) -> Result<()> {
+        let _lock = private_fs::lock(&self.file).map_err(|e| io_error(&self.file, e))?;
         let mut file = self.load()?;
         let before = file.queries.len();
         file.queries.retain(|q| !same(&q.name, name));
@@ -159,6 +161,7 @@ impl SavedQueries {
 
     /// Record a run so the list puts the queries in use first.
     pub fn touch(&self, name: &str) -> Result<()> {
+        let _lock = private_fs::lock(&self.file).map_err(|e| io_error(&self.file, e))?;
         let mut file = self.load()?;
         if let Some(query) = file.queries.iter_mut().find(|q| same(&q.name, name)) {
             query.last_run_at = Some(now());

@@ -84,6 +84,7 @@ pub fn save(dir: &Path, report: &Report) -> Result<()> {
     private_fs::create_dir(dir).map_err(|e| Error::internal(format!("{}: {e}", dir.display())))?;
     let path = dir.join(format!("{}.json", report.snapshot.id));
     let json = storage::encode(report).map_err(|e| Error::internal(e.to_string()))?;
+    let _lock = private_fs::lock(&dir.join("latest.json")).map_err(|e| Error::internal(e.to_string()))?;
     write_atomic(&path, &json)?;
     if let Some(counters) = Counters::of(report) {
         let json = serde_json::to_vec(&counters).map_err(|e| Error::internal(e.to_string()))?;
@@ -92,8 +93,12 @@ pub fn save(dir: &Path, report: &Report) -> Result<()> {
     let summary = summary_of(report);
     let json = serde_json::to_vec_pretty(&summary).map_err(|e| Error::internal(e.to_string()))?;
     write_atomic(&dir.join(format!("{}.summary.json", report.snapshot.id)), &json)?;
-    write_atomic(&summary_path(dir, None), &json)?;
-    if let Some(minutes) = summary.window() {
+    if latest_summary(dir, None).is_none_or(|old| old.id <= summary.id) {
+        write_atomic(&summary_path(dir, None), &json)?;
+    }
+    if let Some(minutes) = summary.window()
+        && latest_summary(dir, Some(minutes)).is_none_or(|old| old.id <= summary.id)
+    {
         write_atomic(&summary_path(dir, Some(minutes)), &json)?;
     }
     Ok(())
@@ -658,6 +663,10 @@ mod tests {
         assert_eq!(id(Some(MINUTES_PER_DAY)), "20261013T080000");
         assert_eq!(id(Some(360)), "20261013T090000");
         assert_eq!(id(None), "20261013T090000");
+        // An earlier scan that finishes later cannot replace the newer global or per-window pointer.
+        save(&dir, &fixture_report("20261013T083000", 360)).unwrap();
+        assert_eq!(id(None), "20261013T090000");
+        assert_eq!(id(Some(360)), "20261013T090000");
         let summary = latest_summary(&dir, Some(360)).expect("6h summary");
         assert_eq!((summary.window_days, summary.window_minutes, summary.window()), (None, Some(360), Some(360)));
         fs::remove_dir_all(&dir).ok();

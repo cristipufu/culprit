@@ -55,16 +55,118 @@ mod tests {
     }
 }
 
-/// Write to a temporary sibling and rename, so readers never see a half-written file.
+/// Write through a unique, exclusively created sibling. Concurrent writers cannot truncate a published inode.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let tmp = path.with_extension("tmp");
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    for _ in 0..128 {
+        let mut name = path.file_name().ok_or_else(|| io::Error::other("No file name"))?.to_os_string();
+        name.push(format!(".{}.{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let tmp = path.with_file_name(name);
+        let mut options = private_options();
+        let mut file = match options.write(true).create_new(true).open(&tmp) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+        let result = (|| {
+            io::Write::write_all(&mut file, bytes)?;
+            drop(file);
+            fs::rename(&tmp, path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        return result;
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "Cannot create a unique temporary file"))
+}
+
+fn private_options() -> fs::OpenOptions {
+    #[cfg(unix)]
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    #[cfg(not(unix))]
+    let options = fs::OpenOptions::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    io::Write::write_all(&mut options.open(&tmp)?, bytes)?;
-    fs::rename(&tmp, path)
+    options
+}
+
+/// Hold this file while reading and updating a store. Keep the lock file: deleting it could split concurrent locks
+/// across two inodes. Readers need no lock because publication is atomic.
+pub fn lock(path: &Path) -> io::Result<fs::File> {
+    use std::time::{Duration, Instant};
+    if let Some(parent) = path.parent() {
+        create_dir(parent)?;
+    }
+    let mut name = path.file_name().ok_or_else(|| io::Error::other("No file name"))?.to_os_string();
+    name.push(".lock");
+    let file = private_options().read(true).write(true).create(true).truncate(false).open(path.with_file_name(name))?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(fs::TryLockError::WouldBlock) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Another Culprit process is still saving this file",
+                ));
+            }
+            Err(fs::TryLockError::Error(e)) => return Err(e),
+        }
+    }
+}
+
+#[cfg(test)]
+mod concurrent_tests {
+    use super::*;
+    use std::sync::{
+        Arc, Barrier,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    #[test]
+    fn concurrent_writers_publish_only_complete_files() {
+        let root = std::env::temp_dir().join(format!("culprit-atomic-{}", std::process::id()));
+        create_dir(&root).unwrap();
+        let path = root.join("state.json");
+        let done = Arc::new(AtomicBool::new(false));
+        let reader = {
+            let (path, done) = (path.clone(), done.clone());
+            std::thread::spawn(move || {
+                while !done.load(Ordering::Acquire) {
+                    if let Ok(data) = fs::read(&path) {
+                        assert_eq!(data.len(), 128 * 1024);
+                        assert!(data.iter().all(|b| *b == data[0]));
+                    }
+                }
+            })
+        };
+        let barrier = Arc::new(Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let (path, barrier) = (path.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    let data = vec![b'A' + i; 128 * 1024];
+                    barrier.wait();
+                    for _ in 0..20 {
+                        write_atomic(&path, &data).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        done.store(true, Ordering::Release);
+        reader.join().unwrap();
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1, "temporary files are removed");
+        fs::remove_dir_all(root).unwrap();
+    }
 }

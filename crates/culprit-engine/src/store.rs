@@ -178,13 +178,24 @@ impl Store {
     }
 
     pub fn put(&self, name: &str, connection: StoredConnection) -> Result<()> {
+        let _lock = private_fs::lock(&self.file).map_err(|e| io_error(&self.file, e))?;
         validate_name(name)?;
         let mut file = self.load()?;
         file.connections.insert(name.to_string(), connection);
         self.save(&file)
     }
 
+    pub fn update(&self, name: &str, edit: impl FnOnce(&mut StoredConnection)) -> Result<()> {
+        let _lock = private_fs::lock(&self.file).map_err(|e| io_error(&self.file, e))?;
+        let mut file = self.load()?;
+        let stored =
+            file.connections.get_mut(name).ok_or_else(|| Error::not_found(format!("No connection named '{name}'")))?;
+        edit(stored);
+        self.save(&file)
+    }
+
     pub fn rename(&self, old: &str, new: &str) -> Result<()> {
+        let _lock = private_fs::lock(&self.file).map_err(|e| io_error(&self.file, e))?;
         validate_name(new)?;
         let mut file = self.load()?;
         if file.connections.contains_key(new) {
@@ -197,6 +208,7 @@ impl Store {
     }
 
     pub fn remove(&self, name: &str) -> Result<()> {
+        let _lock = private_fs::lock(&self.file).map_err(|e| io_error(&self.file, e))?;
         let mut file = self.load()?;
         if file.connections.remove(name).is_none() {
             return Err(Error::not_found(format!("No connection named '{name}'")));
@@ -246,5 +258,42 @@ mod windows_names {
         ] {
             assert_eq!(windows_safe(name.to_string()), safe, "{name}");
         }
+    }
+}
+
+#[cfg(test)]
+mod concurrent_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn independent_stores_do_not_lose_concurrent_updates() {
+        let root = std::env::temp_dir().join(format!("culprit-stores-{}", std::process::id()));
+        private_fs::create_dir(&root).unwrap();
+        let file = root.join("connections.toml");
+        let barrier = Arc::new(Barrier::new(8));
+        let workers: Vec<_> = (0..8)
+            .map(|i| {
+                let (file, barrier) = (file.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    let store = Store { file };
+                    barrier.wait();
+                    for n in 0..8 {
+                        let connection = toml::from_str("engine='sqlite'\nenvironment='local'\nhost=''\n").unwrap();
+                        store.put(&format!("c{i}-{n}"), connection).unwrap();
+                    }
+                    store.update(&format!("c{i}-0"), |c| c.environment = Environment::Production).unwrap();
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let store = Store { file };
+        assert_eq!(store.list().unwrap().len(), 64);
+        for i in 0..8 {
+            assert_eq!(store.get(&format!("c{i}-0")).unwrap().environment, Environment::Production);
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }

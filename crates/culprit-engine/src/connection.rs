@@ -78,8 +78,7 @@ impl Connections<'_> {
     /// It must hold statements in a format Culprit reads, so a wrong file (or one the framework writes without SQL) is
     /// said now rather than at the next scan. `None` stops reading one, and stops looking for one too.
     pub(crate) fn set_query_log(&self, name: &str, path: Option<&std::path::Path>) -> Result<ConnectionInfo> {
-        let mut stored = self.store.get(name)?;
-        stored.query_log = match path {
+        let query_log = match path {
             None => None,
             Some(path) => {
                 let absolute = std::fs::canonicalize(path).map_err(|e| {
@@ -93,22 +92,31 @@ impl Connections<'_> {
                 Some(absolute.to_string_lossy().into_owned())
             }
         };
-        stored.no_query_log = path.is_none();
-        self.store.put(name, stored)?;
+        self.store.update(name, |stored| {
+            stored.query_log = query_log;
+            stored.no_query_log = path.is_none();
+        })?;
         self.connection(name)
     }
 
     /// The log a file database's application writes beside it, found and saved on the connection when it has none and
     /// the person didn't remove one ([`query_log::discover`]).
     pub(crate) fn discover_query_log(&self, name: &str) -> Option<std::path::PathBuf> {
-        let mut stored = self.store.get(name).ok()?;
+        let stored = self.store.get(name).ok()?;
         if stored.engine.has_server() || stored.query_log.is_some() || stored.no_query_log {
             return None;
         }
         let found = query_log::discover(&culprit_core::expand_home(stored.database.as_deref()?))?;
-        stored.query_log = Some(found.to_string_lossy().into_owned());
-        self.store.put(name, stored).ok()?;
-        Some(found)
+        let mut saved = false;
+        self.store
+            .update(name, |stored| {
+                if stored.query_log.is_none() && !stored.no_query_log {
+                    stored.query_log = Some(found.to_string_lossy().into_owned());
+                    saved = true;
+                }
+            })
+            .ok()?;
+        saved.then_some(found)
     }
 
     /// Where to look for a connection's query log: beside the log it reads, else beside its database file (the app's
@@ -157,7 +165,7 @@ impl Connections<'_> {
 
     /// Store the password for a password-authenticated connection in the OS keychain.
     pub(crate) fn set_password(&self, name: &str, password: &str) -> Result<ConnectionInfo> {
-        let mut stored = self.store.get(name)?;
+        let stored = self.store.get(name)?;
         if stored.auth != AuthKind::Password {
             return Err(Error::invalid(format!("'{name}' does not use password authentication")));
         }
@@ -165,9 +173,10 @@ impl Connections<'_> {
             return Err(Error::invalid("The password is empty"));
         }
         self.secrets.set(name, password)?;
-        stored.password_saved = Some(true);
-        stored.password_env = None;
-        self.store.put(name, stored)?;
+        self.store.update(name, |stored| {
+            stored.password_saved = Some(true);
+            stored.password_env = None;
+        })?;
         self.connection(name)
     }
 
@@ -183,9 +192,7 @@ impl Connections<'_> {
     /// Mark a connection production, staging, development or local. Production refuses session kills and asks before
     /// anything that changes data.
     pub(crate) fn set_environment(&self, name: &str, environment: Environment) -> Result<ConnectionInfo> {
-        let mut stored = self.store.get(name)?;
-        stored.environment = environment;
-        self.store.put(name, stored)?;
+        self.store.update(name, |stored| stored.environment = environment)?;
         self.connection(name)
     }
 
