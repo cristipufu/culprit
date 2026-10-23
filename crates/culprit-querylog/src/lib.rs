@@ -106,6 +106,7 @@ pub struct Aggregator {
     first: Option<Moment>,
     last: Option<Moment>,
     entries: u64,
+    total_ms: f64,
     failures: HashMap<(String, String), culprit_core::operations::LoggedFailure>,
 }
 
@@ -113,7 +114,7 @@ struct Shape {
     display: String,
     runs: f64,
     total_ms: f64,
-    squares: f64,
+    stddev_ms: f64,
     max_ms: f64,
     first: Option<Moment>,
     last: Option<Moment>,
@@ -132,6 +133,7 @@ impl Aggregator {
             first: None,
             last: None,
             entries: 0,
+            total_ms: 0.0,
             failures: HashMap::new(),
         }
     }
@@ -146,6 +148,10 @@ impl Aggregator {
         }
         let print = fingerprint(&entry.sql, self.engine);
         if print.key.is_empty() {
+            return;
+        }
+        if entry.ms.is_finite() && entry.ms >= 0.0 && !(self.total_ms + entry.ms).is_finite() {
+            self.limited = true;
             return;
         }
         let new_shape = entry.ms.is_finite() && entry.ms >= 0.0 && !self.shapes.contains_key(&print.key);
@@ -190,6 +196,7 @@ impl Aggregator {
             return;
         }
         self.entries += 1;
+        self.total_ms += entry.ms;
         let earliest = |a: Option<Moment>, b: Option<Moment>| match (a, b) {
             (Some(a), Some(b)) => Some(if b.epoch < a.epoch { b } else { a }),
             (a, b) => a.or(b),
@@ -204,16 +211,21 @@ impl Aggregator {
             display: print.display,
             runs: 0.0,
             total_ms: 0.0,
-            squares: 0.0,
+            stddev_ms: 0.0,
             max_ms: 0.0,
             first: None,
             last: None,
             requests: HashMap::new(),
             requests_truncated: false,
         });
+        let old_mean = shape.total_ms / shape.runs.max(1.0);
         shape.runs += 1.0;
+        // Update population standard deviation directly. Squaring large finite durations can overflow even when
+        // their mean, total and standard deviation are all representable; hypot avoids that intermediate square.
+        let delta = (entry.ms - old_mean) / shape.runs;
+        shape.stddev_ms =
+            (shape.stddev_ms * ((shape.runs - 1.0) / shape.runs).sqrt()).hypot(delta * (shape.runs - 1.0).sqrt());
         shape.total_ms += entry.ms;
-        shape.squares += entry.ms * entry.ms;
         shape.max_ms = shape.max_ms.max(entry.ms);
         shape.first = earliest(shape.first, entry.at);
         shape.last = latest(shape.last, entry.at);
@@ -255,6 +267,8 @@ impl Aggregator {
             }
             kept
         });
+        // Regrouping already bounded nonnegative totals can round differently at f64::MAX.
+        self.total_ms = self.shapes.values().map(|s| s.total_ms).sum::<f64>().min(f64::MAX);
         self.first = None;
         self.last = None;
         for shape in self.shapes.values() {
@@ -290,7 +304,7 @@ impl Aggregator {
             _ => 0.0,
         };
         let dated = span_hours > 0.0;
-        let total_time_ms: f64 = self.shapes.values().map(|s| s.total_ms).sum();
+        let total_time_ms = self.total_ms;
         let total_executions: f64 = self.shapes.values().map(|s| s.runs).sum();
         let query_count = self.shapes.len() as f64;
         let mut shapes: Vec<(String, Shape)> = self.shapes.into_iter().collect();
@@ -303,7 +317,6 @@ impl Aggregator {
             .take(top)
             .map(|(key, s)| {
                 let mean = s.total_ms / s.runs.max(1.0);
-                let variance = (s.squares / s.runs.max(1.0) - mean * mean).max(0.0);
                 QueryStat {
                     requests: (!s.requests.is_empty()).then(|| culprit_core::operations::RequestEvidence {
                         requests: s.requests.len() as u32,
@@ -321,7 +334,7 @@ impl Aggregator {
                     total_time_ms: s.total_ms,
                     mean_time_ms: mean,
                     max_time_ms: Some(s.max_ms),
-                    stddev_time_ms: (s.runs > 1.0).then(|| variance.sqrt()),
+                    stddev_time_ms: (s.runs > 1.0).then_some(s.stddev_ms),
                     cpu_time_ms: None,
                     rows: None,
                     logical_reads: None,
@@ -435,6 +448,44 @@ pub fn read<'a>(
 #[cfg(test)]
 mod budget_tests {
     use super::*;
+
+    #[test]
+    fn finite_durations_cannot_overflow_report_totals() {
+        for distinct_shapes in [false, true] {
+            let mut a = Aggregator::new(Engine::Sqlite);
+            for i in 0..3 {
+                a.add(&Entry {
+                    sql: format!("SELECT * FROM t_{}", if distinct_shapes { i } else { 0 }),
+                    ms: f64::MAX / 2.0,
+                    ..Default::default()
+                });
+            }
+            assert!(a.limited());
+            assert_eq!(a.entries(), 2);
+            // Filtering a shared log must also leave finite totals.
+            a.retain(|_| true);
+            let workload = a.workload("test", 10);
+            assert!(workload.total_time_ms.is_finite());
+            assert_eq!(workload.total_executions, 2.0);
+            let json = serde_json::to_vec(&workload).unwrap();
+            let _: Workload = serde_json::from_slice(&json).unwrap();
+        }
+    }
+
+    #[test]
+    fn standard_deviation_does_not_square_large_durations() {
+        let mut a = Aggregator::new(Engine::Sqlite);
+        for ms in [1e200, 3e200] {
+            a.add(&Entry { sql: "SELECT * FROM items".into(), ms, ..Default::default() });
+        }
+        assert!(!a.limited());
+        let w = a.workload("test", 10);
+        let stddev = w.queries[0].stddev_time_ms.unwrap();
+        assert!((stddev / 1e200 - 1.0).abs() < 1e-12);
+        let json = serde_json::to_vec(&w).unwrap();
+        let _: Workload = serde_json::from_slice(&json).unwrap();
+    }
+
     #[test]
     fn distinct_shapes_and_long_statements_are_bounded() {
         let mut a = Aggregator::new(Engine::Sqlite);
