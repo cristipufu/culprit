@@ -262,7 +262,8 @@ async fn diff_plans(
     name_b: String,
     connection: Option<String>,
 ) -> Result<PlanDiff> {
-    Ok(ws.diff_plans(&a, &name_a, &b, &name_b, connection.as_deref()))
+    blocking_workspace(ws.inner().clone(), move |ws| Ok(ws.diff_plans(&a, &name_a, &b, &name_b, connection.as_deref())))
+        .await
 }
 
 #[tauri::command]
@@ -282,8 +283,11 @@ async fn export_diff(
     options: ExportOptions,
     connection: Option<String>,
 ) -> Result<ExportFile> {
-    let diff = ws.diff_plans(&a, &name_a, &b, &name_b, connection.as_deref());
-    culprit_engine::export_diff(&a, &b, &diff, &name_a, &name_b, format, &options)
+    blocking_workspace(ws.inner().clone(), move |ws| {
+        let diff = ws.diff_plans(&a, &name_a, &b, &name_b, connection.as_deref());
+        culprit_engine::export_diff(&a, &b, &diff, &name_a, &name_b, format, &options)
+    })
+    .await
 }
 
 #[tauri::command]

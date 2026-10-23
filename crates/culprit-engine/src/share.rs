@@ -12,10 +12,8 @@ impl Workspace {
     /// What the latest scan of `name` knows that explains plan differences (optimizer statistics). Empty when there's
     /// no scan.
     pub fn compare_context(&self, name: &str) -> CompareContext {
-        match self.latest_report(name, None) {
-            Ok(Some(report)) => {
-                CompareContext { statistics: report.snapshot.statistics, taken_at: Some(report.snapshot.taken_at) }
-            }
+        match self.latest_snapshot(name) {
+            Ok(Some(snapshot)) => CompareContext { statistics: snapshot.statistics, taken_at: Some(snapshot.taken_at) },
             _ => CompareContext::default(),
         }
     }
@@ -104,6 +102,36 @@ impl Workspace {
         let options = before.snapshot.options.clone().unwrap_or_else(SnapshotOptions::default);
         let after = self.scan(name, &options).await?;
         Ok(compare_reports(&before, &after, ids))
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+
+    #[test]
+    fn comparisons_read_prepared_statistics_without_replaying_retained_evidence() {
+        let dir = std::env::temp_dir().join(format!("culprit-compare-context-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let workspace = Workspace::open_in(&dir);
+        let report: culprit_core::Report =
+            serde_json::from_str(include_str!("../../../fixtures/mssql-demo.report.json")).unwrap();
+        let saved = workspace.paths().reports_dir(&report.snapshot.connection);
+        crate::reports::save(&saved, &report).unwrap();
+        let path = saved.join(format!("{}.json", report.snapshot.id));
+        let mut value: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        value["_culprit_store"] =
+            serde_json::json!({"version": 2, "input": {"changes": []}, "collected": null, "recorded_changes": []});
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(workspace.latest_report(&report.snapshot.connection, None).is_err());
+        let context = workspace.compare_context(&report.snapshot.connection);
+        assert_eq!(context.taken_at.as_deref(), Some(report.snapshot.taken_at.as_str()));
+        assert_eq!(
+            serde_json::to_value(context.statistics).unwrap(),
+            serde_json::to_value(&report.snapshot.statistics).unwrap()
+        );
+        assert!(workspace.compare_context("missing").taken_at.is_none());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 
