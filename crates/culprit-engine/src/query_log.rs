@@ -209,6 +209,7 @@ struct LogLines {
     deadline: Instant,
     line_limit: u64,
     end: u64,
+    initial_len: u64,
     limitation: Option<String>,
 }
 impl LogLines {
@@ -227,6 +228,7 @@ impl LogLines {
             deadline: Instant::now() + limits.time,
             line_limit: limits.line,
             end,
+            initial_len: metadata.len(),
             limitation: None,
         })
     }
@@ -245,11 +247,15 @@ impl LogLines {
             .take(self.line_limit + 1)
             .read_until(b'\n', &mut self.buffer)
             .map_err(|e| Error::new(ErrorCode::QueryFailed, format!("Reading the query log failed: {e}")))?;
-        let at_limit = self.reader.get_ref().limit() == 0
-            && self.reader.buffer().is_empty()
-            && self.reader.get_ref().get_ref().metadata().map_err(|e| Error::invalid(e.to_string()))?.len() > self.end;
+        let at_end = read == 0
+            || !self.buffer.ends_with(b"\n")
+            || (self.reader.get_ref().limit() == 0 && self.reader.buffer().is_empty());
+        let at_limit = at_end
+            && (self.initial_len > self.end
+                || self.reader.get_ref().get_ref().metadata().map_err(|e| Error::invalid(e.to_string()))?.len()
+                    != self.initial_len);
         if at_limit && (read == 0 || !self.buffer.ends_with(b"\n")) {
-            self.limitation = Some("The log grew or exceeds Culprit's reading budget; only complete earlier records were collected. Use a smaller or rotated log for recent activity.".into());
+            self.limitation = Some("The log changed while reading or exceeds Culprit's reading budget; only complete earlier records were collected. Use a smaller or rotated log for recent activity.".into());
             return Ok(None);
         }
         if read as u64 > self.line_limit {
@@ -401,12 +407,29 @@ mod tests {
             drop(writer);
             let (_, a, reason) = read_lines(&path, culprit_core::Engine::Sqlite, lines).unwrap();
             assert_eq!(a.entries(), 1, "a cut statement must not count: {ending:?}");
-            assert!(reason.unwrap().contains("grew"));
+            assert!(reason.unwrap().contains("changed"));
             // A static EOF still completes a final statement, including one without a trailing newline.
             std::fs::write(&path, text).unwrap();
             let (_, a, reason) = read_file(&path, culprit_core::Engine::Sqlite).unwrap();
             assert_eq!(a.entries(), 2);
             assert!(reason.is_none());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_truncated_log_does_not_flush_a_cut_multiline_statement() {
+        let root = app("truncated");
+        let path = root.join("log/production.log");
+        let prefix = "Executed DbCommand (1ms) SELECT * FROM items\ninfo: ready\n\
+                      Executed DbCommand (2ms)\n    SELECT * FROM other_items";
+        for ending in ["", "\n"] {
+            std::fs::write(&path, format!("{prefix}\n    WHERE id = 1\ninfo: ready\n")).unwrap();
+            let lines = LogLines::open(&path, LogLimits::default()).unwrap();
+            std::fs::write(&path, format!("{prefix}{ending}")).unwrap();
+            let (_, a, reason) = read_lines(&path, culprit_core::Engine::Sqlite, lines).unwrap();
+            assert_eq!(a.entries(), 1, "a cut statement must not count: {ending:?}");
+            assert!(reason.unwrap().contains("changed"));
         }
         std::fs::remove_dir_all(root).unwrap();
     }
