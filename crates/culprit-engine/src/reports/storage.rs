@@ -183,26 +183,38 @@ pub(super) fn analysis_input(mut value: Value) -> serde_json::Result<crate::anal
         }
         let mut snapshot =
             value.get_mut("snapshot").map(Value::take).ok_or_else(|| serde_json::Error::custom("No saved snapshot"))?;
+        drop(value);
         apply(&mut snapshot, stored.input)?;
-        let collected = if let Some(diff) = stored.collected {
-            let mut collected = snapshot.clone();
-            apply(&mut collected, diff)?;
-            Some(collected)
-        } else {
-            None
+        let (snapshot, collected) = match stored.collected {
+            Some(diff) if diff.changes.is_empty() => {
+                let snapshot: culprit_core::Snapshot = serde_json::from_value(snapshot)?;
+                let collected = Some(Box::new(snapshot.clone()));
+                (snapshot, collected)
+            }
+            diff => {
+                let collected = if let Some(diff) = diff {
+                    let mut collected = snapshot.clone();
+                    apply(&mut collected, diff)?;
+                    Some(collected)
+                } else {
+                    None
+                };
+                (serde_json::from_value(snapshot)?, collected.map(serde_json::from_value).transpose()?.map(Box::new))
+            }
         };
         crate::analysis::Input::retained(culprit_core::ReportEvidence {
-            input: Box::new(serde_json::from_value(snapshot)?),
-            collected: collected.map(serde_json::from_value).transpose()?.map(Box::new),
+            input: Box::new(snapshot),
+            collected,
             recorded_changes: stored.recorded_changes,
         })
     } else if let Some(evidence) = value.get_mut("evidence").map(Value::take).filter(|e| !e.is_null()) {
         // Full-report JSON from before compact storage retained the two original snapshots directly.
-        drop(value.get_mut("snapshot").map(Value::take));
+        drop(value);
         crate::analysis::Input::retained(serde_json::from_value(evidence)?)
     } else {
         let snapshot =
             value.get_mut("snapshot").map(Value::take).ok_or_else(|| serde_json::Error::custom("No saved snapshot"))?;
+        drop(value);
         crate::analysis::Input::prepared(serde_json::from_value(snapshot)?)
     }
     .with_provenance(provenance);
@@ -354,5 +366,27 @@ mod tests {
             }
             assert!(analysis_input(value).is_err());
         }
+    }
+
+    #[test]
+    fn identical_collection_is_cloned_after_decoding_and_keeps_shared_native_text() {
+        let snapshot: culprit_core::Snapshot =
+            serde_json::from_str(include_str!("../../../../fixtures/mssql-demo.json")).unwrap();
+        let mut report = culprit_checks::analyze(snapshot);
+        let evidence = report.evidence.as_mut().unwrap();
+        evidence.collected = Some(evidence.input.clone());
+        let value: Value = serde_json::from_slice(&encode(&report).unwrap()).unwrap();
+        assert!(value[KEY]["collected"]["changes"].as_array().unwrap().is_empty());
+        let replay = analysis_input(value).unwrap();
+        let collected = replay.collected.as_ref().unwrap();
+        assert_eq!(serde_json::to_value(&replay.snapshot).unwrap(), serde_json::to_value(collected).unwrap());
+        assert_eq!(
+            serde_json::to_value(&replay.snapshot).unwrap(),
+            serde_json::to_value(report.analysis_input()).unwrap()
+        );
+        let native = |s: &culprit_core::Snapshot| {
+            s.queries().iter().find_map(|q| q.plan.as_ref().and_then(|p| p.raw.clone())).unwrap()
+        };
+        assert!(std::sync::Arc::ptr_eq(&native(&replay.snapshot), &native(collected)));
     }
 }
