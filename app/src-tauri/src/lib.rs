@@ -21,6 +21,16 @@ mod screenshot;
 
 type Ws<'a> = State<'a, Arc<Workspace>>;
 
+/// Store updates may wait for another Culprit process's file lock. Keep them off the UI and async runtime threads.
+async fn write_workspace<T: Send + 'static>(
+    ws: Arc<Workspace>,
+    update: impl FnOnce(&Workspace) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(move || update(&ws))
+        .await
+        .map_err(|_| Error::internal("The workspace update stopped before completing"))?
+}
+
 /// The device code being shown, so "Open the sign-in page" opens Microsoft's page and nothing the webview asks for.
 #[derive(Default)]
 struct SignIn(Mutex<Option<DeviceCodePrompt>>);
@@ -41,18 +51,18 @@ async fn test_connection(ws: Ws<'_>, input: NewConnection) -> Result<ServerInfo>
 }
 
 #[tauri::command]
-fn add_connection(ws: Ws, input: NewConnection) -> Result<ConnectionInfo> {
-    ws.add_connection(input)
+async fn add_connection(ws: Ws<'_>, input: NewConnection) -> Result<ConnectionInfo> {
+    write_workspace(ws.inner().clone(), move |ws| ws.add_connection(input)).await
 }
 
 #[tauri::command]
-fn remove_connection(ws: Ws, name: String) -> Result<()> {
-    ws.remove_connection(&name)
+async fn remove_connection(ws: Ws<'_>, name: String) -> Result<()> {
+    write_workspace(ws.inner().clone(), move |ws| ws.remove_connection(&name)).await
 }
 
 #[tauri::command]
-fn rename_connection(ws: Ws, old: String, new: String) -> Result<ConnectionInfo> {
-    ws.rename_connection(&old, &new)
+async fn rename_connection(ws: Ws<'_>, old: String, new: String) -> Result<ConnectionInfo> {
+    write_workspace(ws.inner().clone(), move |ws| ws.rename_connection(&old, &new)).await
 }
 
 #[tauri::command]
@@ -66,8 +76,8 @@ async fn discover_aws(ws: Ws<'_>, terms: Vec<String>, regions: Vec<String>) -> R
 }
 
 #[tauri::command]
-fn set_password(ws: Ws, name: String, password: String) -> Result<ConnectionInfo> {
-    ws.set_password(&name, &password)
+async fn set_password(ws: Ws<'_>, name: String, password: String) -> Result<ConnectionInfo> {
+    write_workspace(ws.inner().clone(), move |ws| ws.set_password(&name, &password)).await
 }
 
 #[tauri::command]
@@ -76,8 +86,8 @@ async fn import_candidates(ws: Ws<'_>, source: Option<ImportSource>) -> Result<V
 }
 
 #[tauri::command]
-fn import_connections(ws: Ws, items: Vec<ImportCandidate>) -> Result<Vec<ConnectionInfo>> {
-    ws.import_connections(&items)
+async fn import_connections(ws: Ws<'_>, items: Vec<ImportCandidate>) -> Result<Vec<ConnectionInfo>> {
+    write_workspace(ws.inner().clone(), move |ws| ws.import_connections(&items)).await
 }
 
 #[tauri::command]
@@ -115,8 +125,8 @@ fn open_sign_in_page(sign_in: State<SignIn>) -> Result<()> {
 }
 
 #[tauri::command]
-fn add_discovered(ws: Ws, items: Vec<DiscoveredDatabase>) -> Result<Vec<ConnectionInfo>> {
-    items.iter().map(|d| ws.add_discovered(d)).collect()
+async fn add_discovered(ws: Ws<'_>, items: Vec<DiscoveredDatabase>) -> Result<Vec<ConnectionInfo>> {
+    write_workspace(ws.inner().clone(), move |ws| items.iter().map(|d| ws.add_discovered(d)).collect()).await
 }
 
 /// The UI never shows raw plan XML/JSON, and on busy databases it is most of a report's size; keep it on disk only.
@@ -388,13 +398,13 @@ async fn cloud(ws: Ws<'_>, name: String, request: culprit_engine::EventsRequest)
 
 /// Put a moment (a deploy, a migration) on a connection's timeline.
 #[tauri::command]
-fn mark(ws: Ws<'_>, name: String, text: String, at: Option<String>) -> Result<culprit_engine::Mark> {
-    ws.mark(&name, &text, at.as_deref(), "app")
+async fn mark(ws: Ws<'_>, name: String, text: String, at: Option<String>) -> Result<culprit_engine::Mark> {
+    write_workspace(ws.inner().clone(), move |ws| ws.mark(&name, &text, at.as_deref(), "app")).await
 }
 
 #[tauri::command]
-fn unmark(ws: Ws<'_>, name: String, id: String) -> Result<culprit_engine::Mark> {
-    ws.unmark(&name, &id)
+async fn unmark(ws: Ws<'_>, name: String, id: String) -> Result<culprit_engine::Mark> {
+    write_workspace(ws.inner().clone(), move |ws| ws.unmark(&name, &id)).await
 }
 
 /// Recent deadlocks on a connection, explained (pattern, statements, fixes).
@@ -462,28 +472,29 @@ fn saved_queries(ws: Ws<'_>) -> Result<Vec<culprit_engine::saved::SavedQuery>> {
 }
 
 #[tauri::command]
-fn save_query(ws: Ws<'_>, query: culprit_engine::saved::SaveQuery) -> Result<culprit_engine::saved::SavedQuery> {
-    ws.save_query(query)
+async fn save_query(ws: Ws<'_>, query: culprit_engine::saved::SaveQuery) -> Result<culprit_engine::saved::SavedQuery> {
+    write_workspace(ws.inner().clone(), move |ws| ws.save_query(query)).await
 }
 
 #[tauri::command]
-fn delete_saved_query(ws: Ws<'_>, name: String) -> Result<()> {
-    ws.delete_saved_query(&name)
+async fn delete_saved_query(ws: Ws<'_>, name: String) -> Result<()> {
+    write_workspace(ws.inner().clone(), move |ws| ws.delete_saved_query(&name)).await
 }
 
 #[tauri::command]
-fn saved_query_ran(ws: Ws<'_>, name: String) -> Result<()> {
-    ws.saved_query_ran(&name)
+async fn saved_query_ran(ws: Ws<'_>, name: String) -> Result<()> {
+    write_workspace(ws.inner().clone(), move |ws| ws.saved_query_ran(&name)).await
 }
 
 #[tauri::command]
-fn set_agent_access(ws: Ws, name: String, access: AgentAccess) -> Result<ConnectionInfo> {
-    ws.set_agent_access(&name, access)
+async fn set_agent_access(ws: Ws<'_>, name: String, access: AgentAccess) -> Result<ConnectionInfo> {
+    write_workspace(ws.inner().clone(), move |ws| ws.set_agent_access(&name, access)).await
 }
 
 #[tauri::command]
-fn set_query_log(ws: Ws, name: String, path: Option<String>) -> Result<ConnectionInfo> {
-    ws.set_query_log(&name, path.as_deref().map(std::path::Path::new))
+async fn set_query_log(ws: Ws<'_>, name: String, path: Option<String>) -> Result<ConnectionInfo> {
+    write_workspace(ws.inner().clone(), move |ws| ws.set_query_log(&name, path.as_deref().map(std::path::Path::new)))
+        .await
 }
 
 /// Choose a SQLite database file in a native dialog, for the new-connection form. Culprit opens the dialog itself, so the
@@ -527,7 +538,7 @@ async fn choose_query_log(app: AppHandle, ws: Ws<'_>, name: String) -> Result<Op
     });
     let Some(picked) = receiver.await.ok().flatten() else { return Ok(None) };
     let path = picked.into_path().map_err(|e| Error::invalid(format!("That file can't be read from here: {e}")))?;
-    ws.set_query_log(&name, Some(&path)).map(Some)
+    write_workspace(ws.inner().clone(), move |ws| ws.set_query_log(&name, Some(&path)).map(Some)).await
 }
 
 /// Approval requests already announced to the person, so the dock/taskbar only asks for attention once per request.
@@ -747,6 +758,44 @@ pub fn run() {
     if let Err(e) = run_app() {
         eprintln!("culprit: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod workspace_write_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_contended_store_write_leaves_the_command_runtime_responsive() {
+        let dir = std::env::temp_dir().join(format!("culprit-app-write-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join("queries.toml.lock"))
+            .unwrap();
+        held.lock().unwrap();
+        let ws = Arc::new(Workspace::open_in(&dir));
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let write = tokio::spawn(write_workspace(ws.clone(), move |ws| {
+            let _ = started.send(());
+            ws.save_query(culprit_engine::saved::SaveQuery {
+                name: "health".into(),
+                sql: "SELECT 1".into(),
+                ..Default::default()
+            })
+        }));
+        tokio::time::timeout(Duration::from_secs(2), waiting).await.unwrap().unwrap();
+        let runtime_progressed_while_waiting = !write.is_finished();
+        drop(held);
+        let saved = tokio::time::timeout(Duration::from_secs(2), write).await.unwrap().unwrap().unwrap();
+        assert!(runtime_progressed_while_waiting);
+        assert_eq!(saved.name, "health");
+        assert_eq!(ws.saved_queries().unwrap().len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 
