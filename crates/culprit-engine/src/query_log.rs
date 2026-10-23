@@ -5,8 +5,9 @@
 //! A connection names its log, or Culprit finds it ([`discover`]): frameworks write their log beside the database by
 //! convention (Rails keeps `db/production.sqlite3` and logs to `log/production.log`).
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use culprit_core::{Capability, CollectorNote, Error, ErrorCode, Provider, Result, Snapshot, SnapshotOptions};
 use culprit_querylog::{Aggregator, Reader};
@@ -110,10 +111,15 @@ pub async fn attach(
     }
     let engine = snapshot.server.engine;
     let file = path.to_path_buf();
-    let (format, aggregator) = tokio::task::spawn_blocking(move || read_file(&file, engine))
+    let read = tokio::task::spawn_blocking(move || read_file(&file, engine))
         .await
-        .map_err(|e| Error::internal(format!("Reading the query log stopped: {e}")))??;
-    let mut aggregator = aggregator;
+        .map_err(|e| Error::internal(format!("Reading the query log stopped: {e}")))
+        .and_then(|result| result);
+    let mut coverage = culprit_core::Coverage::default();
+    let Some((format, mut aggregator, limitation)) = coverage.read(&QUERY_LOG_SOURCE, read) else {
+        coverage.append_to(snapshot);
+        return Ok(());
+    };
     // Another database's statements (a log shared by an app's primary, cache and queue files): one that names tables
     // and none of them is here isn't this database's time.
     let here: std::collections::HashSet<String> = snapshot.tables.iter().map(|t| t.name.to_ascii_lowercase()).collect();
@@ -167,8 +173,10 @@ pub async fn attach(
             culprit_core::format::count(elsewhere as f64)
         )));
     }
-    let mut coverage = culprit_core::Coverage::default();
     coverage.completed(&QUERY_LOG_SOURCE, workload.queries.len() + snapshot.operations.log_failures.len());
+    if let Some(reason) = limitation {
+        coverage.partial(&QUERY_LOG_SOURCE, reason);
+    }
     coverage.append_to(snapshot);
     snapshot.workload = Some(workload);
     if let Some(identity) = snapshot.identity.clone() {
@@ -183,36 +191,115 @@ fn note(message: String) -> CollectorNote {
 
 /// The file, line by line: its format told from the first lines, every statement fingerprinted. A line that isn't
 /// UTF-8 is read as well as it can be rather than stopping the read.
-fn read_file(path: &Path, engine: culprit_core::Engine) -> Result<(&'static str, Aggregator)> {
-    let display = path.display().to_string();
-    let file =
-        std::fs::File::open(path).map_err(|e| Error::new(ErrorCode::NotFound, format!("Can't read {display}: {e}")))?;
-    let mut lines = BufReader::new(file);
-    let mut buffer = Vec::new();
-    let mut next = move || -> Result<Option<String>> {
-        buffer.clear();
-        match lines.read_until(b'\n', &mut buffer) {
-            Ok(0) => Ok(None),
-            Ok(_) => Ok(Some(String::from_utf8_lossy(&buffer).trim_end_matches(['\n', '\r']).to_string())),
-            Err(e) => Err(Error::new(ErrorCode::QueryFailed, format!("Reading {display} failed: {e}"))),
+#[derive(Clone, Copy)]
+struct LogLimits {
+    bytes: u64,
+    line: u64,
+    time: Duration,
+}
+impl Default for LogLimits {
+    fn default() -> Self {
+        Self { bytes: 64 * 1024 * 1024, line: 256 * 1024, time: Duration::from_secs(5) }
+    }
+}
+
+struct LogLines {
+    reader: BufReader<std::io::Take<std::fs::File>>,
+    buffer: Vec<u8>,
+    deadline: Instant,
+    line_limit: u64,
+    clipped: bool,
+    limitation: Option<String>,
+}
+impl LogLines {
+    fn next(&mut self) -> Result<Option<String>> {
+        if self.limitation.is_some() {
+            return Ok(None);
         }
+        if Instant::now() >= self.deadline {
+            self.limitation =
+                Some("Stopped at the query-log reading deadline; only complete earlier records were collected.".into());
+            return Ok(None);
+        }
+        self.buffer.clear();
+        let read = Read::by_ref(&mut self.reader)
+            .take(self.line_limit + 1)
+            .read_until(b'\n', &mut self.buffer)
+            .map_err(|e| Error::new(ErrorCode::QueryFailed, format!("Reading the query log failed: {e}")))?;
+        let at_limit = self.clipped && self.reader.get_ref().limit() == 0 && self.reader.buffer().is_empty();
+        if at_limit && (read == 0 || !self.buffer.ends_with(b"\n")) {
+            self.limitation = Some("The log is larger than Culprit can read in one scan; only complete earlier records were collected. Use a smaller or rotated log for recent activity.".into());
+            return Ok(None);
+        }
+        if read as u64 > self.line_limit {
+            self.limitation =
+                Some("Stopped before an oversized log line; only complete earlier records were collected.".into());
+            return Ok(None);
+        }
+        if read == 0 {
+            return Ok(None);
+        }
+        Ok(Some(String::from_utf8_lossy(&self.buffer).trim_end_matches(['\n', '\r']).to_string()))
+    }
+}
+
+fn read_file(path: &Path, engine: culprit_core::Engine) -> Result<(&'static str, Aggregator, Option<String>)> {
+    read_file_with_limits(path, engine, LogLimits::default())
+}
+
+fn read_file_with_limits(
+    path: &Path,
+    engine: culprit_core::Engine,
+    limits: LogLimits,
+) -> Result<(&'static str, Aggregator, Option<String>)> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| Error::new(ErrorCode::NotFound, format!("Can't read {}: {e}", path.display())))?;
+    let metadata = file.metadata().map_err(|e| Error::invalid(e.to_string()))?;
+    if !metadata.is_file() {
+        return Err(Error::invalid("A query log must be a regular file"));
+    }
+    // Snapshot the length so a log growing faster than collection cannot keep a scan alive indefinitely.
+    let mut lines = LogLines {
+        reader: BufReader::new(file.take(metadata.len().min(limits.bytes))),
+        buffer: Vec::new(),
+        deadline: Instant::now() + limits.time,
+        line_limit: limits.line,
+        clipped: metadata.len() > limits.bytes,
+        limitation: None,
     };
     let mut sample = Vec::new();
-    while sample.len() < SAMPLE_LINES {
-        match next()? {
-            Some(line) => sample.push(line),
+    let mut sample_bytes = 0;
+    while sample.len() < SAMPLE_LINES && sample_bytes < SAMPLE_BYTES as usize {
+        match lines.next()? {
+            Some(line) => {
+                sample_bytes += line.len();
+                sample.push(line);
+            }
             None => break,
         }
     }
-    let mut reader = Reader::detect(sample.iter().map(String::as_str), engine).ok_or_else(|| no_statements(path))?;
+    let mut reader = Reader::detect(sample.iter().map(String::as_str), engine).ok_or_else(|| {
+        lines.limitation.as_ref().map_or_else(|| no_statements(path), |reason| Error::invalid(reason.clone()))
+    })?;
     let format = reader.format();
     for line in &sample {
         reader.line(line);
+        if reader.limited() {
+            break;
+        }
     }
-    while let Some(line) = next()? {
+    while !reader.limited() {
+        let Some(line) = lines.next()? else { break };
         reader.line(&line);
     }
-    Ok((format, reader.finish()))
+    let partial = lines.limitation.is_some() || reader.limited();
+    let aggregator = if partial { reader.discard_pending() } else { reader.finish() };
+    if aggregator.limited() && lines.limitation.is_none() {
+        lines.limitation = Some(
+            "Stopped at the query-log aggregation budget; only complete earlier statements were collected.".into(),
+        );
+    }
+    Ok((format, aggregator, lines.limitation))
 }
 
 #[cfg(test)]
@@ -228,6 +315,58 @@ mod tests {
         std::fs::create_dir_all(root.join("log")).unwrap();
         std::fs::write(root.join("db/production.sqlite3"), b"").unwrap();
         root
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn bounded_and_missing_logs_report_coverage_without_failing_collection() {
+        let root = app("coverage");
+        let database = root.join("db/production.sqlite3");
+        let conn = rusqlite::Connection::open(&database).unwrap();
+        conn.execute_batch("CREATE TABLE items (id INTEGER)").unwrap();
+        drop(conn);
+        let provider = culprit_sqlite::SqliteProvider::new(&culprit_core::ConnectionSpec {
+            database: Some(database.to_string_lossy().into_owned()),
+            ..Default::default()
+        })
+        .unwrap();
+        let options = SnapshotOptions { plans: 0, ..Default::default() };
+        let mut snapshot = provider.snapshot("test", &options).await.unwrap();
+        let path = root.join("log/production.log");
+        std::fs::write(&path, format!("{{\"sql\":\"SELECT * FROM items\",\"ms\":1}}\n{}", "x".repeat(300 * 1024)))
+            .unwrap();
+        attach(&provider, &mut snapshot, &path, &options, false).await.unwrap();
+        assert_eq!(snapshot.source_outcome("query log").unwrap().state, culprit_core::SourceState::Partial);
+        assert_eq!(snapshot.workload.as_ref().unwrap().total_executions, 1.0);
+        let mut snapshot = provider.snapshot("test", &options).await.unwrap();
+        attach(&provider, &mut snapshot, &root.join("missing.log"), &options, false).await.unwrap();
+        assert_eq!(snapshot.source_outcome("query log").unwrap().state, culprit_core::SourceState::Unavailable);
+        assert!(snapshot.workload.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn input_budgets_never_turn_partial_records_into_statements() {
+        let root = app("budgets");
+        let path = root.join("log/production.log");
+        let first = "{\"sql\":\"SELECT 1\",\"ms\":1}\n";
+        std::fs::write(&path, format!("{first}{{\"sql\":\"SELECT 999\",\"ms\":999}}\n")).unwrap();
+        let limits = LogLimits { bytes: first.len() as u64 + 12, line: 1024, time: Duration::from_secs(1) };
+        let (_, a, reason) = read_file_with_limits(&path, culprit_core::Engine::Sqlite, limits).unwrap();
+        assert_eq!(a.entries(), 1);
+        assert!(reason.is_some());
+        std::fs::write(&path, format!("{first}{}\n", "x".repeat(200))).unwrap();
+        let (_, a, reason) =
+            read_file_with_limits(&path, culprit_core::Engine::Sqlite, LogLimits { bytes: 1024, line: 100, ..limits })
+                .unwrap();
+        assert_eq!(a.entries(), 1);
+        assert!(reason.unwrap().contains("oversized"));
+        let error =
+            read_file_with_limits(&path, culprit_core::Engine::Sqlite, LogLimits { time: Duration::ZERO, ..limits })
+                .err()
+                .unwrap();
+        assert!(error.message.contains("deadline"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

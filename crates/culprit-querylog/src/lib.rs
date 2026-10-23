@@ -9,8 +9,8 @@
 //! - JSON lines (`{"sql": …, "ms": …, "at": …}`), for anything that already logs that way.
 //!
 //! Each format is a module implementing [`Format`]; [`formats`] lists them, and a new framework is one more. Entries are
-//! fingerprinted as they arrive ([`Aggregator`]), so a log of any size is read once without keeping it, and the result
-//! is an ordinary [`Workload`]: repeats of one statement shape add up and are ranked by total time.
+//! fingerprinted as they arrive ([`Aggregator`]) with bounded retained state. A resource limit marks the input as
+//! partial; the result is an ordinary [`Workload`] for the complete observed records, ranked by total time.
 
 mod formats;
 
@@ -51,14 +51,30 @@ pub trait Format {
     fn line(&mut self, line: &str, out: &mut Vec<Entry>);
     /// The end of the log: push an entry still being read.
     fn finish(&mut self, _out: &mut Vec<Entry>) {}
+    /// A record exceeded the format's bounded pending buffer; the caller must report partial coverage.
+    fn limited(&self) -> bool {
+        false
+    }
 }
 
 /// Lines read to tell the format.
 const DETECT_LINES: usize = 5_000;
+pub const MAX_STATEMENT_BYTES: usize = 64 * 1024;
+const MAX_SHAPES: usize = 10_000;
+const MAX_RETAINED_BYTES: usize = 32 * 1024 * 1024;
+const MAX_REQUEST_IDS: usize = 64_000;
 
 /// The format whose lines `sample` holds most of, if `sample` yields at least one SQL statement with a duration.
 pub fn detect<'a>(sample: impl IntoIterator<Item = &'a str>) -> Option<Box<dyn Format>> {
-    let lines: Vec<&str> = sample.into_iter().take(DETECT_LINES).collect();
+    let mut bytes = 0usize;
+    let lines: Vec<&str> = sample
+        .into_iter()
+        .take(DETECT_LINES)
+        .take_while(|line| {
+            bytes = bytes.saturating_add(line.len());
+            bytes <= 4 * 1024 * 1024
+        })
+        .collect();
     let winner = formats()
         .into_iter()
         .enumerate()
@@ -84,7 +100,9 @@ pub fn detect<'a>(sample: impl IntoIterator<Item = &'a str>) -> Option<Box<dyn F
 pub struct Aggregator {
     engine: Engine,
     shapes: HashMap<String, Shape>,
-    order: Vec<String>,
+    retained_bytes: usize,
+    request_ids: usize,
+    limited: bool,
     first: Option<Moment>,
     last: Option<Moment>,
     entries: u64,
@@ -108,7 +126,9 @@ impl Aggregator {
         Aggregator {
             engine,
             shapes: HashMap::new(),
-            order: Vec::new(),
+            retained_bytes: 0,
+            request_ids: 0,
+            limited: false,
             first: None,
             last: None,
             entries: 0,
@@ -117,7 +137,31 @@ impl Aggregator {
     }
 
     pub fn add(&mut self, entry: &Entry) {
+        if self.limited {
+            return;
+        }
+        if entry.sql.len() > MAX_STATEMENT_BYTES {
+            self.limited = true;
+            return;
+        }
         let print = fingerprint(&entry.sql, self.engine);
+        if print.key.is_empty() {
+            return;
+        }
+        let new_shape = entry.ms.is_finite() && entry.ms >= 0.0 && !self.shapes.contains_key(&print.key);
+        let new_failure =
+            entry.error_code.is_some_and(|code| !self.failures.contains_key(&(print.key.clone(), code.into())));
+        let shape_bytes =
+            if new_shape { print.key.len() + print.display.len() + std::mem::size_of::<Shape>() } else { 0 };
+        let failure_bytes = if new_failure { print.key.len() + print.display.len() + 256 } else { 0 };
+        if (new_shape && self.shapes.len() >= MAX_SHAPES)
+            || (new_failure && self.failures.len() >= MAX_SHAPES)
+            || self.retained_bytes.saturating_add(shape_bytes).saturating_add(failure_bytes) > MAX_RETAINED_BYTES
+        {
+            self.limited = true;
+            return;
+        }
+        self.retained_bytes += shape_bytes + failure_bytes;
         if !print.key.is_empty()
             && let Some(code) = entry.error_code
         {
@@ -156,9 +200,6 @@ impl Aggregator {
         };
         self.first = earliest(self.first, entry.at);
         self.last = latest(self.last, entry.at);
-        if !self.shapes.contains_key(&print.key) {
-            self.order.push(print.key.clone());
-        }
         let shape = self.shapes.entry(print.key).or_insert_with(|| Shape {
             display: print.display,
             runs: 0.0,
@@ -178,13 +219,22 @@ impl Aggregator {
         shape.last = latest(shape.last, entry.at);
         if let Some(request) = &entry.request_id {
             let hashed = id(request);
-            if shape.requests.contains_key(&hashed) || shape.requests.len() < 10_000 {
+            let existing = shape.requests.contains_key(&hashed);
+            if existing || (shape.requests.len() < 10_000 && self.request_ids < MAX_REQUEST_IDS) {
+                if !existing {
+                    self.request_ids += 1;
+                }
                 let count = shape.requests.entry(hashed).or_default();
                 *count = count.saturating_add(1);
             } else {
                 shape.requests_truncated = true;
             }
         }
+    }
+
+    /// Whether a resource budget ended aggregation. The retained entries describe only the observed prefix.
+    pub fn limited(&self) -> bool {
+        self.limited
     }
 
     /// Statements read so far.
@@ -205,7 +255,6 @@ impl Aggregator {
             }
             kept
         });
-        self.order.retain(|key| self.shapes.contains_key(key));
         self.first = None;
         self.last = None;
         for shape in self.shapes.values() {
@@ -321,7 +370,7 @@ fn bookkeeping(key: &str) -> bool {
 }
 
 /// A log being read: its format, told from its first lines, and the shapes so far. Lines are fed one at a time, so a
-/// log of any size is read without keeping it.
+/// log is read without keeping it; [`Reader::limited`] reports when aggregation must stop.
 pub struct Reader {
     format: Box<dyn Format>,
     aggregator: Aggregator,
@@ -341,10 +390,23 @@ impl Reader {
     }
 
     pub fn line(&mut self, line: &str) {
+        if self.limited() {
+            return;
+        }
         self.format.line(line, &mut self.out);
         for entry in self.out.drain(..) {
             self.aggregator.add(&entry);
         }
+        self.aggregator.limited |= self.format.limited();
+    }
+
+    pub fn limited(&self) -> bool {
+        self.aggregator.limited()
+    }
+
+    /// Discard a pending multiline record when an input budget cuts it short.
+    pub fn discard_pending(self) -> Aggregator {
+        self.aggregator
     }
 
     /// The end of the log: the shapes read.
@@ -368,4 +430,60 @@ pub fn read<'a>(
         reader.line(line);
     }
     Some((name, reader.finish()))
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    #[test]
+    fn distinct_shapes_and_long_statements_are_bounded() {
+        let mut a = Aggregator::new(Engine::Sqlite);
+        for i in 0..=MAX_SHAPES {
+            a.add(&Entry { sql: format!("SELECT * FROM t_{i}"), ms: 1.0, ..Default::default() });
+        }
+        assert!(a.limited());
+        let w = a.workload("test", usize::MAX);
+        assert_eq!(w.query_count, MAX_SHAPES as f64);
+        assert_eq!(w.total_executions, MAX_SHAPES as f64);
+        let mut a = Aggregator::new(Engine::Sqlite);
+        a.add(&Entry { sql: "x".repeat(MAX_STATEMENT_BYTES + 1), ms: 1.0, ..Default::default() });
+        assert!(a.limited() && a.entries() == 0);
+    }
+
+    #[test]
+    fn oversized_multiline_statements_are_discarded_whole() {
+        let sample = [
+            "Executed DbCommand (1ms) [Parameters=[], CommandType='Text', CommandTimeout='30']",
+            "  SELECT value FROM items",
+        ];
+        let mut reader = Reader::detect(sample, Engine::Sqlite).unwrap();
+        for line in sample {
+            reader.line(line);
+        }
+        for _ in 0..1024 {
+            reader.line(&format!("  {}", "x".repeat(128)));
+        }
+        assert!(reader.limited());
+        assert_eq!(reader.discard_pending().entries(), 0);
+    }
+
+    #[test]
+    fn request_samples_have_a_global_bound_and_report_truncation() {
+        let mut a = Aggregator::new(Engine::Sqlite);
+        for shape in 0..7 {
+            for request in 0..10_000 {
+                a.add(&Entry {
+                    sql: format!("SELECT * FROM t_{shape}"),
+                    ms: 1.0,
+                    request_id: Some(request.to_string()),
+                    ..Default::default()
+                });
+            }
+        }
+        assert_eq!(a.request_ids, MAX_REQUEST_IDS);
+        assert!(!a.limited(), "timing totals still cover all calls");
+        let w = a.workload("test", 10);
+        assert_eq!(w.total_executions, 70_000.0);
+        assert!(w.queries.iter().any(|q| q.requests.as_ref().unwrap().sample_truncated));
+    }
 }

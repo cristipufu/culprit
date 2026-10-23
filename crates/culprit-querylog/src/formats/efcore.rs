@@ -18,12 +18,14 @@ const MARKER: &str = "Executed DbCommand (";
 #[derive(Default)]
 pub struct EfCore {
     pending: Option<Pending>,
+    limited: bool,
 }
 
 struct Pending {
     ms: f64,
     at: Option<Moment>,
     sql: Vec<String>,
+    bytes: usize,
 }
 
 impl EfCore {
@@ -53,17 +55,32 @@ impl Format for EfCore {
             if !rest.trim().is_empty() {
                 sql.push(rest.trim().to_string());
             }
-            self.pending = Some(Pending { ms, at: leading_timestamp(line).map(|(m, _)| m), sql });
+            let bytes = sql.iter().map(String::len).sum();
+            self.limited |= bytes > crate::MAX_STATEMENT_BYTES;
+            self.pending =
+                (!self.limited).then_some(Pending { ms, at: leading_timestamp(line).map(|(m, _)| m), sql, bytes });
             return;
         }
         // The statement continues on indented lines; a blank line after a `.TagWith()` comment precedes the SQL, while
         // any other unindented or blank line ends a statement that has already started.
         match &mut self.pending {
-            Some(p) if line.starts_with([' ', '\t']) && !line.trim().is_empty() => p.sql.push(line.trim().to_string()),
+            Some(p) if line.starts_with([' ', '\t']) && !line.trim().is_empty() => {
+                p.bytes = p.bytes.saturating_add(line.trim().len() + 1);
+                if p.bytes > crate::MAX_STATEMENT_BYTES {
+                    self.pending = None;
+                    self.limited = true;
+                } else {
+                    p.sql.push(line.trim().to_string());
+                }
+            }
             Some(p) if line.trim().is_empty() && !starts_like_sql(&p.sql.join("\n")) => {}
             Some(_) => self.flush(out),
             None => {}
         }
+    }
+
+    fn limited(&self) -> bool {
+        self.limited
     }
 
     fn finish(&mut self, out: &mut Vec<Entry>) {
