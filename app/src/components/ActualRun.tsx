@@ -4,6 +4,7 @@ import type { Engine } from "../gen/Engine";
 import type { Plan } from "../gen/Plan";
 import type { QueryStat } from "../gen/QueryStat";
 import { api, errorMessage, type ApiError } from "../lib/api";
+import { canOpenQueryInEditor, prepareQueryForEditor } from "../lib/editor-sql";
 import { serverName } from "../lib/engines";
 import { currentReport, setState, useStore } from "../lib/store";
 import { PlanSurface, type PlanLook } from "./PlanSurface";
@@ -137,9 +138,16 @@ export function LastActualRun(props: { connection: string; engine: Engine; query
             <Play size={13} /> Measure it once
           </button>
         )}
-        <button className="btn" onClick={() => setState({ view: "editor", editorSql: query.text })}>
-          <SquarePen size={13} /> Open in editor
-        </button>
+        {(() => {
+          const editorSql = prepareQueryForEditor(query, engine);
+          return (
+            canOpenQueryInEditor(query.text, editorSql) && (
+              <button className="btn" onClick={() => setState({ view: "editor", editorSql })}>
+                <SquarePen size={13} /> Open in editor
+              </button>
+            )
+          );
+        })()}
       </div>
     </div>
   );

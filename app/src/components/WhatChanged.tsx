@@ -7,6 +7,7 @@ import type { PeriodStats } from "../gen/PeriodStats";
 import type { QueryChange } from "../gen/QueryChange";
 import type { Report } from "../gen/Report";
 import { api, errorMessage, type ApiError } from "../lib/api";
+import { canOpenQueryInEditor, prepareQueryForEditor, prepareRawQueryTextForEditor } from "../lib/editor-sql";
 import { count, duration, percent } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { querySummary } from "../lib/query-summary";
@@ -313,7 +314,7 @@ export default function WhatChanged({ report, request, onClose }: { report: Repo
                         </span>
                         <Context q={q} changes={changes} />
                       </button>
-                      {expanded && <Detail q={q} changes={changes} inReport={known.has(q.query_id)} />}
+                      {expanded && <Detail q={q} changes={changes} report={report} inReport={known.has(q.query_id)} />}
                     </div>
                   );
                 })}
@@ -397,7 +398,9 @@ function Summary({ changes }: { changes: Changes }) {
   );
 }
 
-function Detail({ q, changes, inReport }: { q: QueryChange; changes: Changes; inReport: boolean }) {
+function Detail({ q, changes, report, inReport }: { q: QueryChange; changes: Changes; report: Report; inReport: boolean }) {
+  const stat = report.snapshot.workload?.queries.find((x) => x.id === q.query_id);
+  const editorSql = stat ? prepareQueryForEditor(stat, report.snapshot.server.engine) : prepareRawQueryTextForEditor(q.text);
   const row = (label: string, pick: (s: PeriodStats) => string) => (
     <tr>
       <th>{label}</th>
@@ -462,9 +465,11 @@ function Detail({ q, changes, inReport }: { q: QueryChange; changes: Changes; in
             Open in Queries
           </button>
         )}
-        <button className="btn small" onClick={() => setState({ view: "editor", editorSql: q.text })}>
-          <SquarePen size={12} /> Open in editor
-        </button>
+        {canOpenQueryInEditor(q.text, editorSql) && (
+          <button className="btn small" onClick={() => setState({ view: "editor", editorSql })}>
+            <SquarePen size={12} /> Open in editor
+          </button>
+        )}
       </div>
     </div>
   );

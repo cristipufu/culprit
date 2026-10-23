@@ -20,16 +20,19 @@ import type { ResultSet } from "../gen/ResultSet";
 import type { SavedQuery } from "../gen/SavedQuery";
 import { api, errorMessage, type ApiError } from "../lib/api";
 import { catalogFromReport, completionConfig } from "../lib/completion";
-import { duration } from "../lib/format";
+import { splitSqlStatements } from "../lib/editor-sql";
+import { duration, oneLine } from "../lib/format";
 import { currentReport, getState, loadSaved, setState, toast, useStore } from "../lib/store";
 import { can, isMariadb, measuresRuns } from "../lib/engines";
 import { keys } from "../lib/keys";
+
+type StatementResult = { result: ResultSet; sql: string };
 
 type Output =
   | { kind: "none" }
   | { kind: "busy"; label: string }
   | { kind: "plan"; plan: Plan }
-  | { kind: "rows"; result: ResultSet; sql: string }
+  | { kind: "rows"; results: StatementResult[] }
   | { kind: "error"; error: ApiError };
 
 type Tab = { id: string; title: string; sql: string; saved: string | null };
@@ -610,38 +613,65 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
   // ── actions ────────────────────────────────────────────────────────────────────────────────────
   const run = async (sql: string, confirmed = false) => {
     if (!sql || sql === PLACEHOLDER.trim()) return;
+    const batch = splitSqlStatements(sql);
+    if (batch.length === 0) {
+      return toast("No runnable SQL statement — uncomment a statement or fill in placeholders first");
+    }
     const tab = tabsRef.current.active;
     const client = await api();
     if (production && !confirmed) {
-      const check = await client.checkStatement(connection.engine, sql);
-      if (!check.reads_only) {
+      const checks = await Promise.all(batch.map((stmt) => client.checkStatement(connection.engine, stmt)));
+      const nonReads = checks.filter((c) => !c.reads_only && !c.problem);
+      if (nonReads.length > 0) {
+        const warning = nonReads.find((c) => c.warning)?.warning ?? null;
+        const check = { ...nonReads[0]!, warning };
         const lint = await client.lintSql(connection.name, sql).catch(() => []);
         return setPending({ kind: "run", sql, check, lint });
       }
     }
-    setOutput(tab, { kind: "busy", label: "Running…" });
+    setOutput(tab, { kind: "busy", label: batch.length > 1 ? `Running 1 of ${batch.length}…` : "Running…" });
+    let currentIdx = 0;
     try {
-      const result = await client.run(connection.name, sql, ROW_LIMIT, confirmed);
-      setOutput(tab, { kind: "rows", result, sql });
+      const results: StatementResult[] = [];
+      for (let i = 0; i < batch.length; i++) {
+        currentIdx = i;
+        const stmt = batch[i]!;
+        if (batch.length > 1 && i > 0) {
+          setOutput(tab, { kind: "busy", label: `Running ${i + 1} of ${batch.length}…` });
+        }
+        const result = await client.run(connection.name, stmt, ROW_LIMIT, confirmed);
+        results.push({ result, sql: stmt });
+      }
+      setOutput(tab, { kind: "rows", results });
       const name = tabsRef.current.tabs.find((t) => t.id === tab)?.saved;
       if (name) void client.savedQueryRan(name).then(() => loadSaved());
     } catch (e) {
       const error = errorMessage(e);
       if (error.code === "confirmation_required") {
-        const [check, lint] = await Promise.all([
-          client.checkStatement(connection.engine, sql),
-          client.lintSql(connection.name, sql).catch(() => []),
-        ]);
+        const checks = await Promise.all(batch.map((stmt) => client.checkStatement(connection.engine, stmt)));
+        const nonReads = checks.filter((c) => !c.reads_only && !c.problem);
+        const warning = nonReads.find((c) => c.warning)?.warning ?? null;
+        const baseCheck = nonReads[0] ?? checks[0]!;
+        const check = { ...baseCheck, warning: warning ?? baseCheck.warning };
+        const lint = await client.lintSql(connection.name, sql).catch(() => []);
         setOutput(tab, { kind: "none" });
         return setPending({ kind: "run", sql, check, lint });
+      }
+      if (batch.length > 1) {
+        error.message = `Statement ${currentIdx + 1} of ${batch.length}: ${error.message}`;
       }
       setOutput(tab, { kind: "error", error });
     }
   };
 
   const explain = async (mode: ExplainMode) => {
-    const sql = target();
-    if (!sql || sql === PLACEHOLDER.trim() || (mode === "analyze" && !measuresRuns(connection.engine))) return;
+    const raw = target();
+    if (!raw || raw === PLACEHOLDER.trim() || (mode === "analyze" && !measuresRuns(connection.engine))) return;
+    const statements = splitSqlStatements(raw);
+    if (statements.length === 0) {
+      return toast("No runnable SQL statement — uncomment a statement or fill in placeholders first");
+    }
+    const sql = statements[statements.length - 1]!;
     const tab = tabsRef.current.active;
     setOutput(tab, { kind: "busy", label: mode === "analyze" ? "Running and measuring…" : "Planning…" });
     try {
@@ -1076,16 +1106,71 @@ function OutputPane({ output, look, onLook, empty }: { output: Output; look: Pla
         </div>
       );
     case "rows": {
-      const r = output.result;
-      const summary = r.columns.length === 0 ? r.messages.join(" ") : `${r.rows.length.toLocaleString()} row${r.rows.length === 1 ? "" : "s"}${r.truncated ? ` (first ${r.rows.length.toLocaleString()}; more exist)` : ""}`;
-      if (r.columns.length === 0) {
+      const { results } = output;
+      if (results.length === 1) {
+        const r = results[0]!.result;
+        const summary =
+          r.columns.length === 0
+            ? r.messages.join(" ")
+            : `${r.rows.length.toLocaleString()} row${r.rows.length === 1 ? "" : "s"}${r.truncated ? ` (first ${r.rows.length.toLocaleString()}; more exist)` : ""}`;
+        if (r.columns.length === 0) {
+          return (
+            <div className="result-message">
+              <b>{r.messages.join(" ") || "Done."}</b> <span className="muted">· {duration(r.elapsed_ms)}</span>
+            </div>
+          );
+        }
+        return <ResultGrid result={r} summary={`${summary} · ${duration(r.elapsed_ms)}`} />;
+      }
+
+      const rowResults = results.filter((item) => item.result.columns.length > 0);
+      const commandResults = results.filter((item) => item.result.columns.length === 0);
+      const commandElapsed = commandResults.reduce((sum, item) => sum + item.result.elapsed_ms, 0);
+      const commandMessages = commandResults.flatMap((item) => item.result.messages).filter(Boolean);
+
+      if (rowResults.length === 0) {
         return (
           <div className="result-message">
-            <b>{r.messages.join(" ") || "Done."}</b> <span className="muted">· {duration(r.elapsed_ms)}</span>
+            <b>
+              {commandMessages.join(" · ") ||
+                `${commandResults.length} statement${commandResults.length === 1 ? "" : "s"} completed.`}
+            </b>{" "}
+            <span className="muted">· {duration(commandElapsed)}</span>
           </div>
         );
       }
-      return <ResultGrid result={r} summary={`${summary} · ${duration(r.elapsed_ms)}`} />;
+
+      if (rowResults.length === 1 && commandResults.length > 0) {
+        const r = rowResults[0]!.result;
+        const rowSummary = `${r.rows.length.toLocaleString()} row${r.rows.length === 1 ? "" : "s"}${r.truncated ? ` (first ${r.rows.length.toLocaleString()}; more exist)` : ""} · ${duration(r.elapsed_ms)}`;
+        const cmdPrefix = `${commandResults.length} statement${commandResults.length === 1 ? "" : "s"} completed (${duration(commandElapsed)})`;
+        return <ResultGrid result={r} summary={`${cmdPrefix} · ${rowSummary}`} />;
+      }
+
+      return (
+        <div className="multi-results" style={{ display: "flex", flexDirection: "column", gap: 12, height: "100%", overflowY: "auto", paddingBottom: 12 }}>
+          {commandResults.length > 0 && (
+            <div className="result-message" style={{ paddingBottom: 0 }}>
+              <b>
+                {commandMessages.join(" · ") ||
+                  `${commandResults.length} statement${commandResults.length === 1 ? "" : "s"} completed`}
+              </b>{" "}
+              <span className="muted">· {duration(commandElapsed)}</span>
+            </div>
+          )}
+          {rowResults.map((item, idx) => {
+            const r = item.result;
+            const rawSnippet = oneLine(item.sql.replace(/--.*$/gm, "").trim());
+            const snippet = rawSnippet.length > 72 ? `${rawSnippet.slice(0, 71)}…` : rawSnippet;
+            const summary = `Result ${idx + 1} · ${r.rows.length.toLocaleString()} row${r.rows.length === 1 ? "" : "s"}${r.truncated ? ` (first ${r.rows.length.toLocaleString()}; more exist)` : ""} · ${duration(r.elapsed_ms)}${snippet ? ` · ${snippet}` : ""}`;
+            return (
+              <div key={idx} className="multi-result-pane" style={{ minHeight: 220, flex: "1 0 auto", display: "flex", flexDirection: "column", borderTop: idx > 0 || commandResults.length > 0 ? "1px solid var(--border)" : undefined }}>
+                <ResultGrid result={r} summary={summary} />
+              </div>
+            );
+          })}
+        </div>
+      );
     }
   }
 }

@@ -4,7 +4,7 @@ members = ["crates/*", "app/src-tauri"]
 default-members = ["crates/*"]
 
 [workspace.package]
-version = "0.4.2"
+version = "0.4.3"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/cristipufu/culprit-sql-studio"

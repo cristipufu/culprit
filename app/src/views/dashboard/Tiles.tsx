@@ -6,6 +6,7 @@ import type { TileItem } from "../../gen/TileItem";
 import type { TileStatus } from "../../gen/TileStatus";
 import { copyAndTell } from "../../lib/clipboard";
 import { STATUS_LABEL } from "../../lib/dashboard";
+import { canOpenFixInEditor } from "../../lib/editor-sql";
 import { percent, when } from "../../lib/format";
 import { keys } from "../../lib/keys";
 import { querySummary } from "../../lib/query-summary";
@@ -322,9 +323,11 @@ export function StatisticsTile({ tile, report }: { tile: Tile; report: Report })
             <button className="btn small" onClick={() => copyAndTell(sql, "Copied")} aria-label="Copy the statement">
               <Copy size={12} /> Copy
             </button>
-            <button className="btn small" onClick={() => setState({ view: "editor", editorSql: sql })} title="Opens in the editor; production asks before it runs">
-              <SquarePen size={12} /> Open in editor
-            </button>
+            {canOpenFixInEditor(sql, report.snapshot.server.engine) && (
+              <button className="btn small" onClick={() => setState({ view: "editor", editorSql: sql })} title="Opens in the editor; production asks before it runs">
+                <SquarePen size={12} /> Open in editor
+              </button>
+            )}
           </div>
         )}
         <div className="dash-actions">

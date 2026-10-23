@@ -419,11 +419,11 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
                 sql: Some(match lp {
                     Some(statement) => format!(
                         "-- Example only: check lock footprint and required atomicity before batching\n\
-                         WHILE 1 = 1\n\
-                         BEGIN\n    \
-                             {statement}\n    \
-                             IF @@ROWCOUNT = 0 BREAK;\n\
-                         END;\n\
+                         -- WHILE 1 = 1\n\
+                         -- BEGIN\n\
+                         --     {statement}\n\
+                         --     IF @@ROWCOUNT = 0 BREAK;\n\
+                         -- END;\n\
                          \n\
                          {session}"
                     ),

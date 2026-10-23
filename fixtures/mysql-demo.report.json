@@ -832,7 +832,7 @@
     "analyzer": {
       "component": "culprit-checks",
       "revision": null,
-      "version": "0.4.2"
+      "version": "0.4.3"
     },
     "baselines": [],
     "collection": null,
@@ -845,7 +845,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.4.2"
+          "version": "0.4.3"
         },
         "query": "04cd7be9c366fadc"
       },
@@ -855,7 +855,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.4.2"
+          "version": "0.4.3"
         },
         "query": "19bd4ff468839ea3"
       },
@@ -865,7 +865,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.4.2"
+          "version": "0.4.3"
         },
         "query": "c7b5ac9bb4bcecfe"
       },
@@ -875,7 +875,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.4.2"
+          "version": "0.4.3"
         },
         "query": "9b30e6ad79d940fe"
       },
@@ -885,7 +885,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.4.2"
+          "version": "0.4.3"
         },
         "query": "17f97e6ec7a22e0a"
       },
@@ -895,7 +895,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.4.2"
+          "version": "0.4.3"
         },
         "query": "b4c0f3861e32013e"
       },
@@ -905,7 +905,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.4.2"
+          "version": "0.4.3"
         },
         "query": "4167fe7f2c20deb7"
       },
@@ -915,7 +915,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.4.2"
+          "version": "0.4.3"
         },
         "query": "7f47c8550af0c644"
       }
@@ -1032,7 +1032,7 @@
     "previous_analyzer": {
       "component": "culprit-checks",
       "revision": null,
-      "version": "0.4.1"
+      "version": "0.4.2"
     }
   },
   "refinement": [

@@ -709,8 +709,10 @@ pub(crate) async fn from_plan_cache(
                 None
             };
             let mut stat = to_query_stat(q, None, plan, Vec::new());
+            let (parameters, sql) = split_parameters(&detail.map(|d| d.string("statement_text")).unwrap_or_default());
             stat.query_hash = Some(q.query_id.clone());
-            stat.text = detail.map(|d| d.string("statement_text")).unwrap_or_default();
+            stat.parameters = parameters;
+            stat.text = sql;
             stat.object_name = detail.and_then(|d| d.str("object_name"));
             stat.stddev_time_ms = None;
             stat.temp_writes = None;

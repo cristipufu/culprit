@@ -2,6 +2,18 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.4.3
+
+### Added
+
+- **Multi-statement execution and multiple result panes in the SQL Editor.** Clicking **Run** (`⌘↵`) on a script or selection containing multiple `;`- or `GO`-separated statements now splits the script into individual statements (respecting single/double/backtick/bracket quotes, PostgreSQL dollar-quoting, and comments) and executes them sequentially in order. When a batch returns multiple row sets, the output pane renders stacked result grids with per-statement row counts, durations, and SQL snippets.
+
+### Fixes
+
+- **Runnable `lock-escalations` Extended Events session script.** Comments out the illustrative `WHILE 1 = 1` batching loop template in `lock-escalations` findings so opening the script in the SQL Editor runs the `CREATE EVENT SESSION` + `ALTER EVENT SESSION` + `SELECT` statements immediately without syntax errors.
+- **Smart `Open in editor` filtering and parameter substitution.** Hides **Open in editor** on parameterized write statements (`DELETE`, `UPDATE`, `INSERT`, `MERGE` with `@par0`, `$1`, `?`), queries with more than 10 unbound placeholders after plan parameter substitution, `my.cnf` INI snippets, standalone `OPTION (...)` query-hint fragments, unfinished `<placeholder>` / `…` templates, and DDL/maintenance statements on read-only SQLite connections. For SQL Server `SELECT` statements whose captured plan records compiled parameter values, **Open in editor** automatically substitutes the compiled values into the query.
+- **SQL Server Plan Cache parameter declarations.** Splits leading `(@P1 int, …)` parameter headers in `sys.dm_exec_sql_text` plan-cache entries into `QueryStat.parameters` and `QueryStat.text` (matching Query Store).
+
 ## 0.4.2
 
 ### Fixes

@@ -6,6 +6,7 @@ import type { Report } from "../gen/Report";
 import { scan, setState } from "../lib/store";
 import { keys } from "../lib/keys";
 import { copyAndTell } from "../lib/clipboard";
+import { canOpenFixInEditor } from "../lib/editor-sql";
 
 /** What each source of query statistics is called, for "Culprit reads … only". */
 const SOURCE: Partial<Record<Capability, string>> = {
@@ -18,7 +19,7 @@ const SOURCE: Partial<Record<Capability, string>> = {
 
 /** The first SQL statement in a fix sentence ("Run CREATE EXTENSION pg_stat_statements; in this database…"). */
 function fixSql(fix: string | null): string | null {
-  const match = fix?.match(/\b(CREATE|GRANT|ALTER|EXEC|SET|UPDATE|CALL)\b[^;]*;/i);
+  const match = fix?.match(/\b(CREATE|GRANT|ALTER|EXEC|SET|UPDATE|CALL|INSTALL) [^;]*;/);
   return match ? match[0] : null;
 }
 
@@ -78,9 +79,11 @@ export function WorkloadUnlock({ report }: { report: Report }) {
           <button className="btn small" onClick={() => copyAndTell(sql, "Copied")} aria-label="Copy the statement">
             <Copy size={12} /> Copy
           </button>
-          <button className="btn small" onClick={() => setState({ view: "editor", editorSql: sql })} aria-label="Open the statement in the editor">
-            <SquarePen size={12} /> Open in editor
-          </button>
+          {canOpenFixInEditor(sql, report.snapshot.server.engine) && (
+            <button className="btn small" onClick={() => setState({ view: "editor", editorSql: sql })} aria-label="Open the statement in the editor">
+              <SquarePen size={12} /> Open in editor
+            </button>
+          )}
         </div>
       )}
       {rest && <p className="muted">{rest}</p>}

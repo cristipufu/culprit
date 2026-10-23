@@ -11,6 +11,7 @@ import type { Plan } from "../gen/Plan";
 import type { QueryStat } from "../gen/QueryStat";
 import type { Report } from "../gen/Report";
 import { api, errorMessage, type ApiError } from "../lib/api";
+import { canOpenQueryInEditor, prepareQueryForEditor } from "../lib/editor-sql";
 import { count, duration, oneLine, percent, when } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { addPlan, compare } from "../lib/plans";
@@ -244,9 +245,16 @@ function QueryDetail({ report, query }: { report: Report; query: QueryStat }) {
           {query.object_name && <span className="tag mono">{query.object_name}</span>}
           {query.plans.length > 1 && <span className="tag medium">{query.plans.length} plans</span>}
           <span style={{ flex: 1 }} />
-          <button className="btn" onClick={() => setState({ view: "editor", editorSql: query.text })}>
-            <SquarePen size={13} /> Open in editor
-          </button>
+          {(() => {
+            const editorSql = prepareQueryForEditor(query, report.snapshot.server.engine);
+            return (
+              canOpenQueryInEditor(query.text, editorSql) && (
+                <button className="btn" onClick={() => setState({ view: "editor", editorSql })}>
+                  <SquarePen size={13} /> Open in editor
+                </button>
+              )
+            );
+          })()}
         </div>
         <div className="qd-tabs" role="tablist" aria-label="Query detail">
           {tabs.map((t) => (

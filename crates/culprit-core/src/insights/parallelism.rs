@@ -84,7 +84,7 @@ pub(super) fn spill(cx: &Cx) -> Vec<Draft> {
                     }
                 );
                 d.fix = "Give this workload more memory for sorts and hashes, per role or per session rather than server-wide, or add an index that returns rows already ordered so the sort disappears.".into();
-                d.fix_sql = Some("-- Try it in your session first:\nSET work_mem = '64MB';\n-- Then for the application's role:\nALTER ROLE app_user SET work_mem = '64MB';".into());
+                d.fix_sql = Some("-- Try it in your session first:\nSET work_mem = '64MB';\n-- Then for the application's role:\n-- ALTER ROLE app_user SET work_mem = '64MB';".into());
                 d.verify =
                     "Explain analyze again: Sort Method is quicksort/top-N (in memory) and Hash Batches is 1.".into();
             }

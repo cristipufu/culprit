@@ -18,6 +18,7 @@ import { aboutThePlan, doesRealWork, estRows, findingNoShareReason, findingStepS
 import { figures, honest } from "../lib/rates";
 import { setState, toast, toggleDismissed, useStore, windowMinutesOf } from "../lib/store";
 import { copyAndTell } from "../lib/clipboard";
+import { canOpenFixInEditor } from "../lib/editor-sql";
 import { can } from "../lib/engines";
 
 const CONFIDENCE_LABEL = { high: "High confidence", medium: "Medium confidence", low: "Low confidence" } as const;
@@ -41,16 +42,17 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
     const brief = await (await api()).brief(report.snapshot.connection, finding.id, windowMinutesOf(report.snapshot.options));
     await copyAndTell(brief, "Brief copied. Paste it into your coding agent");
   };
+  const canOpenFix = canOpenFixInEditor(finding.fix?.sql, report.snapshot.server.engine);
   const openInEditor = () => {
-    const sql = finding.fix?.sql ?? queries[0]?.query.text;
-    if (!sql) return toast("Nothing to open");
+    const sql = finding.fix?.sql;
+    if (!sql || !canOpenFix) return;
     setState({ view: "editor", editorSql: sql });
   };
 
   useHotkeys({
     c: copyFix,
     a: copyBrief,
-    e: openInEditor,
+    ...(canOpenFix ? { e: openInEditor } : {}),
     d: () => toggleDismissed(finding.id),
   });
 
@@ -177,9 +179,11 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
           <button className="btn primary" onClick={copyBrief}>
             <Bot size={14} /> Copy for agent <span className="kbd">A</span>
           </button>
-          <button className="btn" onClick={openInEditor}>
-            <SquarePen size={13} /> Open in editor <span className="kbd">E</span>
-          </button>
+          {canOpenFix && (
+            <button className="btn" onClick={openInEditor}>
+              <SquarePen size={13} /> Open in editor <span className="kbd">E</span>
+            </button>
+          )}
           <VerifyButton running={verify.result?.status === "running"} onRun={verify.run} />
           <FindingShareMenu report={report} finding={finding} />
           <span className="spacer" />

@@ -11,6 +11,7 @@ import { setState, useStore } from "../lib/store";
 import { Sql } from "./Sql";
 import { serverName } from "../lib/engines";
 import { copyAndTell } from "../lib/clipboard";
+import { canOpenFixInEditor } from "../lib/editor-sql";
 
 type DriftState = { status: "idle" } | { status: "loading" } | { status: "ready"; drift: Drift } | { status: "error"; error: ApiError };
 
@@ -205,7 +206,7 @@ function DriftRow({ item, drift, active }: { item: DriftItem; drift: Drift; acti
                 <button className="btn ghost" onClick={copy}>
                   <Copy size={12} /> Copy
                 </button>
-                {item.sql_for === active && (
+                {item.sql_for === active && canOpenFixInEditor(item.sql, drift.a.engine) && (
                   <button className="btn ghost" onClick={() => setState({ view: "editor", editorSql: item.sql })}>
                     <SquarePen size={12} /> Open in editor
                   </button>
