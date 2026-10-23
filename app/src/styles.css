@@ -1805,6 +1805,12 @@ table.grid td.sqlcell {
   flex: 1;
 }
 
+.query-pages {
+  border-top: 1px solid var(--border);
+  border-bottom: 0;
+  flex-shrink: 0;
+}
+
 .search {
   display: flex;
   align-items: center;

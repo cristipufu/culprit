@@ -1,5 +1,5 @@
-import { GitCompareArrows, Search, SquareArrowOutUpRight, SquarePen } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, GitCompareArrows, Search, SquareArrowOutUpRight, SquarePen } from "lucide-react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { LookToggle, PlanSurface, rememberLook, rememberedLook, type PlanLook } from "../components/PlanSurface";
 import { LastActualRun, PlanSourceToggle, type PlanSource } from "../components/ActualRun";
 import { measuresRuns } from "../lib/engines";
@@ -16,9 +16,12 @@ import { count, duration, oneLine, percent, when } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { addPlan, compare } from "../lib/plans";
 import { querySummary } from "../lib/query-summary";
-import { figures, honest, workloadKind, windowPhrase } from "../lib/rates";
+import { figures, honest, workloadKind, windowPhrase, type Figures } from "../lib/rates";
 import { setState, toast, useStore } from "../lib/store";
 import { compareSince } from "./Overview";
+
+const PAGE_SIZE = 100;
+type QueryEntry = { query: QueryStat; figures: Figures; search: string };
 
 type SortKey = "share" | "runs" | "avg" | "max" | "rows" | "reads" | "cpu";
 
@@ -45,14 +48,15 @@ function QueryCell({ q }: { q: QueryStat }) {
 
 /** A column's value for sorting: share, runs and average as the report states them (`figures`: over Culprit's scans
  * where they measured the statement). */
-function value(report: Report, q: QueryStat, key: SortKey): number {
+function value(entry: QueryEntry, key: SortKey): number {
+  const q = entry.query;
   switch (key) {
     case "share":
-      return figures(report, q).share;
+      return entry.figures.share;
     case "runs":
-      return figures(report, q).runs;
+      return entry.figures.runs;
     case "avg":
-      return figures(report, q).mean;
+      return entry.figures.mean;
     case "max":
       return q.max_time_ms ?? 0;
     case "rows":
@@ -72,27 +76,36 @@ export function Queries({ report }: { report: Report }) {
   const searchRef = useRef<HTMLInputElement>(null);
   const tableRef = useRef<HTMLDivElement>(null);
 
+  const deferredFilter = useDeferredValue(filter);
+  const entries = useMemo<QueryEntry[]>(() => (workload?.queries ?? []).map((query) => ({
+    query,
+    figures: figures(report, query),
+    search: `${query.text} ${query.id} ${query.object_name ?? ""}`.toLowerCase(),
+  })), [report, workload]);
   const rows = useMemo(() => {
-    if (!workload) return [];
-    const q = filter.trim().toLowerCase();
-    return workload.queries
-      .filter((x) => !q || x.text.toLowerCase().includes(q) || x.id.includes(q) || (x.object_name ?? "").toLowerCase().includes(q))
-      .sort((a, b) => value(report, b, sort) - value(report, a, sort));
-  }, [report, workload, sort, filter]);
+    const q = deferredFilter.trim().toLowerCase();
+    return entries.filter((entry) => !q || entry.search.includes(q))
+      .sort((a, b) => value(b, sort) - value(a, sort)).map((entry) => entry.query);
+  }, [entries, sort, deferredFilter]);
 
-  const current = rows.find((q) => q.id === selected) ?? rows[0] ?? null;
+  const currentIndex = Math.max(0, rows.findIndex((q) => q.id === selected));
+  const current = rows[currentIndex] ?? null;
+  const pageStart = Math.floor(currentIndex / PAGE_SIZE) * PAGE_SIZE;
+  const pageRows = rows.slice(pageStart, pageStart + PAGE_SIZE);
   const regressed = useMemo(() => new Set(report.findings.filter((f) => f.check === "regression").flatMap((f) => f.queries.map((r) => r.id))), [report.findings]);
 
-  const move = (delta: number) => {
-    const index = Math.max(0, rows.findIndex((q) => q.id === current?.id));
-    const next = rows[Math.min(rows.length - 1, Math.max(0, index + delta))];
+  const select = (index: number) => {
+    const next = rows[Math.min(rows.length - 1, Math.max(0, index))];
     if (next) setState({ query: next.id });
   };
-  useHotkeys({ j: () => move(1), k: () => move(-1), ArrowDown: () => move(1), ArrowUp: () => move(-1), "/": () => searchRef.current?.focus() });
+  const move = (delta: number) => select(currentIndex + delta);
+  useHotkeys({ j: () => move(1), k: () => move(-1), ArrowDown: () => move(1), ArrowUp: () => move(-1),
+    PageDown: () => move(PAGE_SIZE), PageUp: () => move(-PAGE_SIZE), Home: () => select(0), End: () => select(rows.length - 1),
+    "/": () => searchRef.current?.focus() });
 
   useEffect(() => {
     tableRef.current?.querySelector("tr.selected")?.scrollIntoView({ block: "nearest" });
-  }, [current?.id]);
+  }, [current?.id, pageStart, sort]);
 
   if (!workload) {
     return (
@@ -144,7 +157,7 @@ export function Queries({ report }: { report: Report }) {
               </tr>
             </thead>
             <tbody>
-              {rows.map((q) => {
+              {pageRows.map((q) => {
                 // As the report states it: over Culprit's scans where they measured it.
                 const f = figures(report, q);
                 const share = f.share;
@@ -184,6 +197,14 @@ export function Queries({ report }: { report: Report }) {
             </tbody>
           </table>
         </div>
+        {rows.length > PAGE_SIZE && (
+          <nav className="toolbar query-pages" aria-label="Query pages">
+            <span className="muted" aria-live="polite">{(pageStart + 1).toLocaleString()}–{Math.min(pageStart + PAGE_SIZE, rows.length).toLocaleString()} of {rows.length.toLocaleString()}</span>
+            <span className="spacer" />
+            <button className="btn" disabled={pageStart === 0} onClick={() => select(pageStart - PAGE_SIZE)} aria-label="Previous query page"><ChevronLeft size={13} /> Previous</button>
+            <button className="btn" disabled={pageStart + PAGE_SIZE >= rows.length} onClick={() => select(pageStart + PAGE_SIZE)} aria-label="Next query page">Next <ChevronRight size={13} /></button>
+          </nav>
+        )}
       </div>
       <div className="pane">{current ? <QueryDetail key={`${report.snapshot.connection}:${report.snapshot.id}:${current.id}`} report={report} query={current} /> : <div className="empty">No queries match</div>}</div>
     </div>

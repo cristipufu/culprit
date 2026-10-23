@@ -83,6 +83,28 @@ export type Figures = {
   activity: StatementActivity | null;
 };
 
+type Summary = Report["summary"];
+type FigureIndex = {
+  scansSource: Summary["over_scans"];
+  saidSource: Summary["runs_said"];
+  scans: Map<string, Summary["over_scans"][number]>;
+  said: Map<string, string>;
+};
+const figureIndexes = new WeakMap<Summary, FigureIndex>();
+
+function figureIndex(summary: Summary): FigureIndex {
+  const cached = figureIndexes.get(summary);
+  if (cached && cached.scansSource === summary.over_scans && cached.saidSource === summary.runs_said) return cached;
+  const scans = new Map<string, Summary["over_scans"][number]>();
+  for (const scan of summary.over_scans ?? []) {
+    // Preserve the first matching entry, as the earlier array lookup did.
+    if (!scans.has(scan.query)) scans.set(scan.query, scan);
+  }
+  const index = { scansSource: summary.over_scans, saidSource: summary.runs_said, scans, said: runsSaid(summary) };
+  figureIndexes.set(summary, index);
+  return index;
+}
+
 /** What `report` states of statement `q` (culprit-core's `Workload::cost_of`): on a source of running totals, what
  * Culprit's own scans measured where they cover a day or more (`summary.over_scans`), its totals over the window
  * otherwise; runs a rate a day would misstate (a burst, a few runs) as their count and how they came
@@ -90,8 +112,9 @@ export type Figures = {
 export function figures(report: Report, q: QueryStat): Figures {
   const w = report.snapshot.workload!;
   const rates = honest(w);
-  const scans = (report.summary.over_scans ?? []).find((c) => c.query === q.id);
-  const said = runsSaid(report.summary).get(q.id) ?? null;
+  const index = figureIndex(report.summary);
+  const scans = index.scans.get(q.id);
+  const said = index.said.get(q.id) ?? null;
   const share = scans?.share ?? (w.total_time_ms > 0 ? q.total_time_ms / w.total_time_ms : 0);
   const mean = scans?.mean_ms ?? q.mean_time_ms;
   const over = scans?.over ?? null;
