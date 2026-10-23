@@ -5,7 +5,13 @@ use super::*;
 
 /// A `CREATE INDEX` to copy, in the engine's dialect. A plan doesn't say the server's edition, so SQL Server's online
 /// build is suggested, not assumed. Culprit never runs it.
-pub(super) fn index_sql(engine: Engine, table: &str, keys: &[String], include: &[String]) -> Option<String> {
+pub(super) fn index_sql(
+    engine: Engine,
+    table: &str,
+    keys: &[String],
+    include: &[String],
+    kind: Option<&str>,
+) -> Option<String> {
     if keys.is_empty() {
         return None;
     }
@@ -22,7 +28,7 @@ pub(super) fn index_sql(engine: Engine, table: &str, keys: &[String], include: &
         .collect();
     let name = if engine == Engine::Mssql { name } else { name.to_ascii_lowercase() };
     let target = qualified(engine, table);
-    Some(engine.dialect().create_index(&crate::dialect::NewIndex {
+    Some(engine.spec().table_dialect(kind).create_index(&crate::dialect::NewIndex {
         target: &target,
         unique: false,
         name: &name,
@@ -165,7 +171,7 @@ pub(super) fn missing_index_hint(cx: &Cx) -> Vec<Draft> {
             } else {
                 format!("Create the index on {} and include {}.", format::list(&keys), format::list(&include))
             };
-            d.fix_sql = index_sql(Engine::Mssql, &h.table, &keys, &include);
+            d.fix_sql = index_sql(Engine::Mssql, &h.table, &keys, &include, None);
             d.verify = format!("Explain again: the suggestion is gone and the read of {} becomes a seek.", table_leaf(&h.table));
             d
         })
@@ -181,7 +187,7 @@ pub(super) fn scan_filter(cx: &Cx) -> Vec<Draft> {
     let hinted: Vec<String> = cx.plan.index_hints.iter().map(|h| table_leaf(&h.table).to_ascii_lowercase()).collect();
     let mut out = Vec::new();
     for n in cx.nodes.iter().filter(|n| index_could_pay(cx, n) || seek_filter_could_pay(cx, n)) {
-        let Some(table) = n.object.clone() else { continue };
+        let Some(table) = actionable_object(n) else { continue };
         let Some(filter) = scan_filter_text(cx, n) else { continue };
         // SQL Server's own suggestion, a conversion, a function or a leading wildcard explain the scan better, and
         // MySQL's ignored index says why there's no seek: their rules say so.
@@ -283,14 +289,14 @@ pub(super) fn scan_filter(cx: &Cx) -> Vec<Draft> {
                     "No index on {leaf} starts with {starts_with}: one on {} lets the database go straight to the matching rows.{order}",
                     format::list(&cols)
                 );
-                d.fix_sql = index_sql(cx.engine(), &table, &cols, &[]);
+                d.fix_sql = index_sql(cx.engine(), &table, &cols, &[], n.facts().table_kind.as_deref());
             }
             None => {
                 d.fix = format!(
                     "An index on {} lets the database go straight to the matching rows; if one already exists, the optimizer didn't use it, so refresh the table's statistics first.{order}",
                     format::list(&cols)
                 );
-                d.fix_sql = index_sql(cx.engine(), &table, &cols, &[]);
+                d.fix_sql = index_sql(cx.engine(), &table, &cols, &[], n.facts().table_kind.as_deref());
             }
         }
         d.verify = format!("Explain again: {} reads about as many rows as it keeps.", table_leaf(&table));
@@ -371,7 +377,7 @@ pub(super) fn eager_spool(cx: &Cx) -> Vec<Draft> {
         } else {
             "Create that index permanently, so the work happens once instead of on every run.".into()
         };
-        d.fix_sql = index_sql(Engine::Mssql, &table, &keys, &include);
+        d.fix_sql = index_sql(Engine::Mssql, &table, &keys, &include, None);
         d.verify = "Explain again: the Index Spool is gone and the lookup seeks the new index.".into();
         out.push(d);
     }
@@ -394,7 +400,7 @@ pub(super) fn automatic_index(cx: &Cx) -> Vec<Draft> {
             if keys.is_empty() { String::new() } else { format!(" on {}", format::list(&keys)) }
         );
         d.fix = "Create that index once, so the work happens one time instead of on every run.".into();
-        d.fix_sql = index_sql(Engine::Sqlite, &table, &keys, &[]);
+        d.fix_sql = index_sql(Engine::Sqlite, &table, &keys, &[], None);
         d.verify = "Explain again: no AUTOMATIC INDEX, and a SEARCH using the new index.".into();
         out.push(d);
     }
@@ -488,7 +494,7 @@ pub(super) fn join_buffer(cx: &Cx) -> Vec<Draft> {
                     format::count(rows_read(n))
                 );
                 d.fix = format!("Index {leaf} on {join_cols} so MySQL can look rows up directly.");
-                d.fix_sql = index_sql(Engine::Mysql, &table, &cols, &[]);
+                d.fix_sql = index_sql(Engine::Mysql, &table, &cols, &[], None);
             }
         }
         d.verify =

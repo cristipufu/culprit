@@ -248,7 +248,7 @@ export async function demoApi(): Promise<Api> {
       ? r.snapshot.waits
       : (report?.categories ?? []).map((c) => ({ category: c.key, wait_type: c.top_wait, wait_ms: c.wait_ms, tasks: null }));
     // Every scan records a day of deadlocks; the fixtures predate that, so the captured sample stands in.
-    const deadlocks = r.snapshot.deadlocks ?? recordedDeadlocks?.[r.snapshot.server.engine] ?? null;
+    const deadlocks = r.snapshot.deadlocks ?? recordedDeadlocks?.[name] ?? recordedDeadlocks?.[r.snapshot.server.engine] ?? null;
     return { ...r, snapshot: { ...r.snapshot, waits: recorded, pressure: r.snapshot.pressure ?? waits.pressure[name] ?? null, resources, deadlocks } };
   }).map((r) => (r && signals ? withSignals(r, signals[r.snapshot.connection]) : r));
   // `?first-run` in the dev demo starts with no saved connections, to see the first-run screen.
@@ -304,7 +304,8 @@ export async function demoApi(): Promise<Api> {
   const liveView = async (name: string): Promise<DashboardLive> => {
     const connection = connections.find((x) => x.name === name);
     if (connection && !can(connection.engine, "sessions")) return Promise.reject(refusal(connection.engine, "sessions"));
-    const captured = (await liveSample())?.[connection?.engine ?? "postgres"];
+    const samples = await liveSample();
+    const captured = samples?.[reportName(name)] ?? samples?.[connection?.engine ?? "postgres"];
     const ended = endedSessions.get(name) ?? new Set<string>();
     const key = JSON.stringify((captured?.sessions ?? []).filter((s) => !ended.has(s.id)).map((s) => s.id).sort());
     const view = (await dashboardLiveSample())[reportName(name)]?.[key];
@@ -466,7 +467,8 @@ export async function demoApi(): Promise<Api> {
       if (!can(engine, "sessions")) return Promise.reject(refusal(engine, "sessions"));
       const frames = (await actualSample())?.progress[engine] ?? [];
       const now = new Date().toISOString();
-      const live = (await liveSample())?.[engine]?.sessions.find((s) => s.id === session);
+      const samples = await liveSample();
+      const live = (samples?.[reportName(name)] ?? samples?.[engine])?.sessions.find((s) => s.id === session);
       // The captured progress frames replay for the session running a statement without waiting on another.
       if (live?.state !== "idle" && !live?.blocked_by && frames.length) {
         const frame = frames[Math.floor(Date.now() / 1500) % frames.length]!;
@@ -635,7 +637,8 @@ export async function demoApi(): Promise<Api> {
     deadlocks: async (name, sinceHours) => {
       const c = connections.find((x) => x.name === name);
       if (c && !can(c.engine, "deadlocks")) return Promise.reject(refusal(c.engine, "deadlocks"));
-      const sample = (await deadlockSample())?.[c?.engine ?? "postgres"];
+      const samples = await deadlockSample();
+      const sample = samples?.[reportName(name)] ?? samples?.[c?.engine ?? "postgres"];
       return sample ? { ...sample, since_hours: sinceHours } : { deadlocks: [], source: "demo", since_hours: sinceHours, counted: null, counted_since: null, note: null };
     },
     parseDeadlock: () =>

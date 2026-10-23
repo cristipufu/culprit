@@ -409,7 +409,16 @@ fn create_sql(target: &Snapshot, index: &IndexStat) -> Option<String> {
     if index.is_primary_key || index.is_clustered || index.columns.is_empty() {
         return None;
     }
-    let dialect = target.server.engine.dialect();
+    let table = target.table(&index.schema, &index.table);
+    let kind = table.and_then(|t| t.kind.as_deref());
+    if index.is_unique && matches!(kind, Some("hypertable" | "timescale-unresolved")) {
+        let hypertable = table?.storage.as_ref()?.hypertable.as_ref()?;
+        let keys = index.key_names();
+        if hypertable.dimensions.is_empty() || !hypertable.dimensions.iter().all(|d| keys.contains(&d.as_str())) {
+            return None;
+        }
+    }
+    let dialect = target.server.engine.spec().table_dialect(kind);
     let online = if supports_online_index(target) { culprit_core::Online::Yes } else { culprit_core::Online::No };
     Some(dialect.create_index(&culprit_core::NewIndex {
         target: &dialect.qualified(&[&index.schema, &index.table]),
@@ -743,6 +752,34 @@ fn summarize(items: &[DriftItem]) -> String {
 mod tests {
     use super::*;
     use culprit_core::Engine;
+
+    #[test]
+    fn unique_hypertable_index_requires_every_target_dimension() {
+        let mut snapshot: Snapshot =
+            serde_json::from_str(include_str!("../../../../fixtures/postgres-demo.json")).unwrap();
+        let mut index = snapshot.indexes[0].clone();
+        let table = snapshot.tables.iter_mut().find(|t| t.schema == index.schema && t.name == index.table).unwrap();
+        table.kind = Some("hypertable".into());
+        table.storage = Some(culprit_core::TableStorage {
+            hypertable: Some(culprit_core::signals::HypertableStorage {
+                dimensions: vec!["observed_at".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        index.is_primary_key = false;
+        index.is_clustered = false;
+        index.is_unique = true;
+        index.columns = vec!["device_id".into()];
+        assert!(create_sql(&snapshot, &index).is_none());
+        index.columns.push("observed_at DESC".into());
+        let sql = create_sql(&snapshot, &index).unwrap();
+        assert!(
+            sql.starts_with("CREATE UNIQUE INDEX")
+                && !sql.contains("CONCURRENTLY")
+                && !sql.contains("transaction_per_chunk")
+        );
+    }
 
     #[test]
     fn integer_display_widths_are_not_drift() {

@@ -135,9 +135,9 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                         quote(engine, &i.name),
                         qualified(engine, &i.schema, &i.table)
                     ),
-                    Engine::Postgres => drop_index_sql(engine, &i.schema, &i.table, &i.name),
-                    Engine::Sqlite => drop_index_sql(engine, &i.schema, &i.table, &i.name),
-                    Engine::Mysql => crate::index_health::hide_index_sql(&snapshot.server, i),
+                    Engine::Postgres => drop_index_for_snapshot(snapshot, &i.schema, &i.table, &i.name),
+                    Engine::Sqlite => drop_index_for_snapshot(snapshot, &i.schema, &i.table, &i.name),
+                    Engine::Mysql => crate::index_health::hide_index_sql(snapshot, i),
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -242,7 +242,7 @@ fn invalid_postgres_indexes(snapshot: &Snapshot, redundant: &[(&str, &str, &str)
             if let Some(w) = writes {
                 f.metrics.push(Metric::new("Writes to the table", w, Unit::Count));
             }
-            let drop_sql = drop_index_sql(Engine::Postgres, &i.schema, &i.table, &i.name);
+            let drop_sql = drop_index_for_snapshot(snapshot, &i.schema, &i.table, &i.name);
             f.fix = Some(Fix {
                 summary: format!(
                     "Drop the failed index concurrently so writes to {table_name} stop maintaining it, or rebuild it \

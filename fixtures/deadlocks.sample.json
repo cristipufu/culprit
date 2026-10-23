@@ -323,5 +323,13 @@
   "note": "InnoDB keeps only its most recent deadlock. Turn on innodb_print_all_deadlocks to write every one to the error log.",
   "since_hours": 6.0,
   "source": "InnoDB status"
+ },
+ "timescale-demo": {
+  "deadlocks": [],
+  "source": "pg_stat_database",
+  "since_hours": 24.0,
+  "counted": 0.0,
+  "counted_since": null,
+  "note": "PostgreSQL counted 0 deadlocks in this database. It writes the details (who waited for whom, and the statements) only to the server log, which SQL can't read: paste those log lines here to have them explained. Turning on log_lock_waits also logs any lock wait longer than deadlock_timeout."
  }
 }

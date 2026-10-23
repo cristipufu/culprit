@@ -3662,5 +3662,494 @@
         "title": "Query statistics"
       }
     ]
+  },
+  "timescale-demo": {
+    "attention": [
+      "statistics"
+    ],
+    "connection": "timescale-demo",
+    "coverage": "pg_stat_statements, the 1 minute since statistics were reset",
+    "database": "culprit_timescale",
+    "engine": "postgres",
+    "environment": "local",
+    "headline": "pg_stat_statements covers only the 1 minute since statistics were reset, so the numbers are thin until it has seen more.",
+    "product": "TimescaleDB 2.31.0 (PostgreSQL 17.11)",
+    "report_id": "20261023T213241Z",
+    "taken_at": "2026-10-23T21:32:41Z",
+    "tiles": [
+      {
+        "detail": "pg_stat_statements keeps running totals only, so the trend comes from Culprit's own scans; it appears after the next scan.",
+        "fix_sql": null,
+        "items": [],
+        "key": "db-time",
+        "metrics": [
+          {
+            "key": "total",
+            "label": "Database time",
+            "text": "777 ms",
+            "value": 777.4054329999998
+          },
+          {
+            "key": "runs",
+            "label": "Runs",
+            "text": "300",
+            "value": 300.0
+          },
+          {
+            "key": "window-hours",
+            "label": "Covers",
+            "text": "1 minute",
+            "value": 0.007630272222222222
+          }
+        ],
+        "next": "culprit changes timescale-demo",
+        "status": "info",
+        "takeaway": "777 ms of database time over the 1 minute since statistics were reset.",
+        "title": "Database time"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": "heavy-query:-6927356924371546951",
+            "id": "heavy-query:-6927356924371546951",
+            "kind": "finding",
+            "label": "A read from sensor_readings takes 767 ms of database time over the 1 minute since statistics were reset (99%)",
+            "query_id": null,
+            "share": 0.9867093326578282,
+            "status": "info",
+            "value": "767 ms of database time over the 1 minute since statistics were reset (99%)"
+          },
+          {
+            "at": null,
+            "finding_id": "config:track_io_timing",
+            "id": "config:track_io_timing",
+            "kind": "finding",
+            "label": "I/O timing isn't tracked",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "Setting"
+          }
+        ],
+        "key": "findings",
+        "metrics": [
+          {
+            "key": "high",
+            "label": "High",
+            "text": "0",
+            "value": 0.0
+          },
+          {
+            "key": "medium",
+            "label": "Medium",
+            "text": "0",
+            "value": 0.0
+          },
+          {
+            "key": "low",
+            "label": "Low",
+            "text": "2",
+            "value": 2.0
+          }
+        ],
+        "next": "culprit findings timescale-demo",
+        "status": "info",
+        "takeaway": "2 opportunities; the top ones touch 767 ms of database time over the 1 minute since statistics were reset (99%).",
+        "title": "Findings"
+      },
+      {
+        "detail": "3 queries tracked over the 1 minute since statistics were reset.",
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "-6927356924371546951",
+            "kind": "query",
+            "label": "a read from sensor_readings",
+            "query_id": "-6927356924371546951",
+            "share": 0.9867093326578282,
+            "status": null,
+            "value": "99%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "3152047327284928468",
+            "kind": "query",
+            "label": "a read from sensor_readings",
+            "query_id": "3152047327284928468",
+            "share": 0.012563979598532086,
+            "status": null,
+            "value": "1%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "-2225272007542897168",
+            "kind": "query",
+            "label": "a read from devices",
+            "query_id": "-2225272007542897168",
+            "share": 0.0007266877436396819,
+            "status": null,
+            "value": "<1%"
+          }
+        ],
+        "key": "top-queries",
+        "metrics": [
+          {
+            "key": "top-share",
+            "label": "Top query",
+            "text": "99%",
+            "value": 0.9867093326578282
+          },
+          {
+            "key": "top5-share",
+            "label": "Top five",
+            "text": "100%",
+            "value": 1.0
+          },
+          {
+            "key": "queries",
+            "label": "Queries",
+            "text": "3",
+            "value": 3.0
+          }
+        ],
+        "next": "culprit top timescale-demo",
+        "status": "info",
+        "takeaway": "One query is 99% of database time: a read from sensor_readings.",
+        "title": "Top queries"
+      },
+      {
+        "detail": "Turn on track_io_timing to measure disk time per statement, or sample what it waits on right now. Set track_io_timing to on and reload the configuration (settings marked as needing a restart take effect after one).",
+        "fix_sql": "ALTER SYSTEM SET track_io_timing = 'on';\nSELECT pg_reload_conf();",
+        "items": [],
+        "key": "waits",
+        "metrics": [],
+        "next": "culprit waits timescale-demo",
+        "status": "unavailable",
+        "takeaway": "PostgreSQL keeps no history of what sessions wait on.",
+        "title": "Where time goes"
+      },
+      {
+        "detail": "The app reads them every few seconds; `culprit live` reads them once.",
+        "fix_sql": null,
+        "items": [],
+        "key": "now",
+        "metrics": [],
+        "next": "culprit live timescale-demo",
+        "status": "info",
+        "takeaway": "Sessions weren't read for this dashboard.",
+        "title": "Right now"
+      },
+      {
+        "detail": "Each signal states the period it measures.",
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "cache-hit",
+            "kind": "signal",
+            "label": "Reads served from shared_buffers",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "99.95%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "temp-bytes",
+            "kind": "signal",
+            "label": "Temporary files written since reset",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "0 B"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "commits",
+            "kind": "signal",
+            "label": "Commits",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "0.8/s"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "rollbacks",
+            "kind": "signal",
+            "label": "Transactions rolled back",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "0.9%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "deadlocks",
+            "kind": "signal",
+            "label": "Deadlocks",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "0"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "checkpoints",
+            "kind": "signal",
+            "label": "Checkpoints (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "7"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "checkpoints-requested",
+            "kind": "signal",
+            "label": "Checkpoints forced early (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "14.29%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "wal-buffers-full",
+            "kind": "signal",
+            "label": "WAL buffer full writes",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "2.5K"
+          }
+        ],
+        "key": "health",
+        "metrics": [
+          {
+            "key": "bad",
+            "label": "Bad",
+            "text": "0",
+            "value": 0.0
+          },
+          {
+            "key": "watch",
+            "label": "Watch",
+            "text": "0",
+            "value": 0.0
+          },
+          {
+            "key": "healthy",
+            "label": "Healthy",
+            "text": "0",
+            "value": 0.0
+          }
+        ],
+        "next": "culprit waits timescale-demo",
+        "status": "info",
+        "takeaway": "11 signals recorded; none has a threshold to grade.",
+        "title": "Health"
+      },
+      {
+        "detail": "Scan again to read the last day of deadlocks.",
+        "fix_sql": null,
+        "items": [],
+        "key": "deadlocks",
+        "metrics": [],
+        "next": "culprit deadlocks timescale-demo",
+        "status": "unavailable",
+        "takeaway": "This scan didn't read deadlocks.",
+        "title": "Deadlocks"
+      },
+      {
+        "detail": "PostgreSQL doesn't record missing-index requests. Candidates come from captured plans that read whole tables, foreign keys, and the table scan counters.",
+        "fix_sql": null,
+        "items": [],
+        "key": "indexes",
+        "metrics": [
+          {
+            "key": "add",
+            "label": "To add",
+            "text": "0",
+            "value": 0.0
+          },
+          {
+            "key": "cleanup",
+            "label": "To clean up",
+            "text": "0",
+            "value": 0.0
+          },
+          {
+            "key": "reclaim",
+            "label": "Space back",
+            "text": "0 B",
+            "value": -0.0
+          },
+          {
+            "key": "tables",
+            "label": "Tables to look at",
+            "text": "0",
+            "value": 0.0
+          }
+        ],
+        "next": "culprit indexes timescale-demo",
+        "status": "good",
+        "takeaway": "No index changes stand out.",
+        "title": "Indexes"
+      },
+      {
+        "detail": "3 current application queries have plans; 3 application queries have plans in all. 0 historical or once-only queries are excluded from the current assessment. This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values.",
+        "fix_sql": null,
+        "items": [],
+        "key": "plans",
+        "metrics": [
+          {
+            "key": "captured",
+            "label": "Current plans",
+            "text": "3",
+            "value": 3.0
+          },
+          {
+            "key": "flagged",
+            "label": "With problems",
+            "text": "0",
+            "value": 0.0
+          }
+        ],
+        "next": null,
+        "status": "good",
+        "takeaway": "None of the 3 current query plans shows a known problem.",
+        "title": "Plans"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "storage",
+        "metrics": [],
+        "next": "culprit waits timescale-demo",
+        "status": "unavailable",
+        "takeaway": "PostgreSQL times reads and writes only with track_io_timing on.",
+        "title": "Storage"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "connections",
+            "kind": "signal",
+            "label": "Connections in use (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "0%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "session-length",
+            "kind": "signal",
+            "label": "Average session length",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "260 ms"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "sessions-abandoned",
+            "kind": "signal",
+            "label": "Sessions the client abandoned",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "0%"
+          }
+        ],
+        "key": "connections",
+        "metrics": [],
+        "next": "culprit waits timescale-demo",
+        "status": "info",
+        "takeaway": "This scan has no count of new connections; the ones in use are below.",
+        "title": "Connections"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "replication",
+        "metrics": [],
+        "next": "culprit waits timescale-demo",
+        "status": "good",
+        "takeaway": "No replicas or replication slots: nothing can fall behind or hold WAL back.",
+        "title": "Replication"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "failures",
+        "metrics": [],
+        "next": "culprit findings timescale-demo",
+        "status": "unavailable",
+        "takeaway": "PostgreSQL doesn't count failed runs per statement; its log does (log_min_error_statement).",
+        "title": "Failing queries"
+      },
+      {
+        "detail": "1 check is locked: Repeated statements within logged requests needs Application query log.",
+        "fix_sql": null,
+        "items": [],
+        "key": "statistics",
+        "metrics": [
+          {
+            "key": "queries",
+            "label": "Queries",
+            "text": "3",
+            "value": 3.0
+          },
+          {
+            "key": "plans",
+            "label": "All queries with plans",
+            "text": "3",
+            "value": 3.0
+          },
+          {
+            "key": "window-hours",
+            "label": "Covers",
+            "text": "1 minute",
+            "value": 0.007630272222222222
+          },
+          {
+            "key": "locked",
+            "label": "Locked checks",
+            "text": "1",
+            "value": 1.0
+          }
+        ],
+        "next": "culprit doctor timescale-demo",
+        "status": "watch",
+        "takeaway": "pg_stat_statements covers only the 1 minute since statistics were reset, so the numbers are thin until it has seen more.",
+        "title": "Query statistics"
+      }
+    ]
   }
 }

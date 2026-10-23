@@ -16,4 +16,8 @@ const sql = ddl("sqlite", ordinary, [], indexes, []);
 check(sql.includes(`${ordinary.definition};`), "Original rowid and uniqueness constraints must survive");
 check(sql.includes(`${indexes[1]!.definition};`), "Original table DDL must retain separately defined indexes");
 check(!sql.includes("sqlite_autoindex"), "Constraint indexes must not become invalid standalone CREATE INDEX statements");
+for (const kind of ["hypertable", "timescale-unresolved"]) {
+  const managed = ddl("postgres", { ...ordinary, kind }, [], indexes, []);
+  check(!managed.includes("CREATE TABLE") && managed.includes("TimescaleDB"), "Managed hypertables require a native schema export");
+}
 console.log("Schema DDL regressions passed");

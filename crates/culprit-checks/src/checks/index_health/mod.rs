@@ -26,10 +26,11 @@ pub(crate) const CHECKS: &[&dyn Check] = &[&OverlappingIndexCheck, &OverIndexedC
 
 /// Reversible first step: SQL Server disables, MySQL makes invisible, MariaDB ignores (10.6+), Postgres can only drop
 /// (keep the definition). An index that is already disabled, hidden or invalid is ready to drop.
-pub(crate) fn hide_index_sql(server: &ServerInfo, i: &IndexStat) -> String {
+pub(crate) fn hide_index_sql(snapshot: &Snapshot, i: &IndexStat) -> String {
+    let server = &snapshot.server;
     let engine = server.engine;
     if i.is_disabled {
-        return drop_index_sql(engine, &i.schema, &i.table, &i.name);
+        return drop_index_for_snapshot(snapshot, &i.schema, &i.table, &i.name);
     }
     if server.is_mariadb() {
         return match mariadb_can_ignore(server) {
@@ -45,7 +46,7 @@ pub(crate) fn hide_index_sql(server: &ServerInfo, i: &IndexStat) -> String {
         Engine::Mssql => {
             format!("ALTER INDEX {} ON {} DISABLE;", quote(engine, &i.name), qualified(engine, &i.schema, &i.table))
         }
-        Engine::Postgres => drop_index_sql(engine, &i.schema, &i.table, &i.name),
+        Engine::Postgres => drop_index_for_snapshot(snapshot, &i.schema, &i.table, &i.name),
         Engine::Sqlite => drop_index_sql(engine, &i.schema, &i.table, &i.name),
         // Invisible indexes arrived in MySQL 8.0; 5.7 can only drop (keep the definition).
         Engine::Mysql if !culprit_core::version_at_least(&server.version, [8, 0, 0]) => {

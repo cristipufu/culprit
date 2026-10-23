@@ -18,7 +18,6 @@ pub fn duplicate_index_info() -> CheckInfo {
 check!(DuplicateIndexCheck: duplicate_index_info, duplicate_index, &[Evidence::IndexCatalog]);
 
 pub fn duplicate_index(snapshot: &Snapshot) -> Vec<Finding> {
-    let engine = snapshot.server.engine;
     let mut out = Vec::new();
     for (a, b) in redundant_indexes(snapshot) {
         let exact = same_keys(a, b);
@@ -63,7 +62,7 @@ pub fn duplicate_index(snapshot: &Snapshot) -> Vec<Finding> {
         }
         f.fix = Some(Fix {
             summary: format!("Drop {} and keep {}.", a.name, b.name),
-            sql: Some(drop_index_sql(engine, &a.schema, &a.table, &a.name)),
+            sql: Some(drop_index_for_snapshot(snapshot, &a.schema, &a.table, &a.name)),
             cost: Some(format!("Frees {}.", format::bytes(size))),
         });
         f.verify = vec![

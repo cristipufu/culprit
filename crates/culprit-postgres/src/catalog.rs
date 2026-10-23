@@ -105,6 +105,16 @@ pub(crate) async fn indexes(client: &Client, probe: &Probe) -> Result<Vec<IndexS
     } else {
         "x.indisvalid AND x.indisready"
     };
+    let usable = if probe.timescale_version.is_some() && probe.version_num >= 120_000 {
+        format!(
+            "({usable}) OR EXISTS (SELECT 1 FROM pg_stat_progress_create_index p
+           JOIN pg_class chunk ON chunk.oid = p.relid JOIN pg_namespace cn ON cn.oid = chunk.relnamespace
+           JOIN timescaledb_information.chunks tc ON tc.chunk_schema = cn.nspname AND tc.chunk_name = chunk.relname
+          WHERE tc.hypertable_schema = n.nspname AND tc.hypertable_name = t.relname)"
+        )
+    } else {
+        usable.to_string()
+    };
     let sql = format!(
         "SELECT n.nspname AS schema_name, t.relname AS table_name, i.relname AS index_name, am.amname AS kind,
                 x.indisunique, x.indisprimary, x.indisready, {usable} AS usable,

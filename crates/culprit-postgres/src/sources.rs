@@ -61,12 +61,28 @@ pub const SESSIONS: Source = Source { name: source_id::SESSIONS, reads: "session
 /// Replicas, this server's own lag as a standby, and replication slots (10+).
 pub const REPLICATION: Source = Source { name: source_id::REPLICATION, reads: "replication", delivers: &[] };
 
+pub const HYPERTABLES: Source = Source {
+    name: source_id::TIMESCALE_HYPERTABLES,
+    reads: "TimescaleDB hypertables, dimensions and aggregate storage sizes",
+    delivers: &[Capability::TableStats, Capability::Statistics, Capability::IndexUsage],
+};
+pub const CHUNKS: Source = Source {
+    name: source_id::TIMESCALE_CHUNKS,
+    reads: "TimescaleDB managed chunks and compressed storage sizes",
+    delivers: &[],
+};
+pub const HYPERTABLE_INDEXES: Source =
+    Source { name: source_id::TIMESCALE_INDEXES, reads: "TimescaleDB logical hypertable index sizes", delivers: &[] };
+
 /// Sources sharing the auxiliary connection. A session failure accounts for all of them.
 pub const MISC: &[Source] =
     &[SETTINGS, DATABASE_STATS, CHECKPOINTS, OPEN_TRANSACTIONS, CLEANUP_SLOTS, CLEANUP_PREPARED];
 
 /// Every source above, for listings (`culprit sources`).
 pub const ALL: &[Source] = &[
+    HYPERTABLES,
+    CHUNKS,
+    HYPERTABLE_INDEXES,
     MULTIXACTS,
     ARCHIVER,
     SUBSCRIPTION_ERRORS,

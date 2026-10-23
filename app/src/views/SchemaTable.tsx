@@ -172,6 +172,7 @@ function Header({ report, table, findings }: { report: Report; table: TableStat;
           {table.name}
         </h2>
         {table.kind === "virtual" && <span className="tag">Virtual table</span>}
+        {table.kind === "hypertable" && <span className="tag">Hypertable</span>}
         <button className="btn ghost icon" title="Copy the qualified name" onClick={() => copy(tableKey(table), "the table name")}>
           <Copy size={13} />
         </button>
@@ -183,6 +184,7 @@ function Header({ report, table, findings }: { report: Report; table: TableStat;
       </div>
       <div className="td-facts">
         <Fact label="Rows" value={count(table.rows)} />
+        {table.storage?.hypertable && <Fact label="Chunks" value={count(table.storage.hypertable.chunks)} detail={table.storage.hypertable.compressed_chunks == null ? undefined : `${count(table.storage.hypertable.compressed_chunks)} in columnstore`} />}
         <Fact
           label="Size"
           value={bytes(table.total_bytes ?? (data + index || null))}
@@ -230,6 +232,7 @@ function Header({ report, table, findings }: { report: Report; table: TableStat;
         )}
         <TableSignalFacts report={report} table={table} />
       </div>
+      <HypertableChunks key={tableKey(table)} table={table} />
       {findings.length > 0 && (
         <div className="td-findings">
           {shown.map((f, n) => (
@@ -249,6 +252,34 @@ function Header({ report, table, findings }: { report: Report; table: TableStat;
         </div>
       )}
     </header>
+  );
+}
+
+function HypertableChunks({ table }: { table: TableStat }) {
+  const [shown, setShown] = useState(20);
+  const hypertable = table.storage?.hypertable;
+  if (!hypertable) return null;
+  const chunks = hypertable.chunk_details;
+  return (
+    <details className="td-chunks">
+      <summary>Managed chunks{hypertable.dimensions.length > 0 ? ` · ${hypertable.dimensions.join(", ")}` : ""}</summary>
+      {chunks == null ? <p className="muted">Chunk details could not be read. Hypertable totals still include its managed storage.</p> : (
+        <>
+          <div className="td-chunk-list">
+            <table>
+              <thead><tr><th>Chunk</th><th>Rows</th><th>Size</th><th>Storage</th></tr></thead>
+              <tbody>{chunks.slice(0, shown).map((chunk) => <tr key={`${chunk.schema}.${chunk.name}`}>
+                <td title={`${chunk.schema}.${chunk.name}`}>{chunk.name}</td>
+                <td>{count(chunk.rows)}</td><td>{bytes(chunk.total_bytes)}</td>
+                <td>{chunk.compressed ? "Columnstore" : "Rowstore"}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+          {shown < chunks.length && <button className="btn small" onClick={() => setShown((n) => n + 20)}>Show 20 more ({chunks.length - shown} remaining)</button>}
+          <p className="muted">Sizes include compressed storage. Chunks are managed by TimescaleDB; index advice targets the hypertable.</p>
+        </>
+      )}
+    </details>
   );
 }
 

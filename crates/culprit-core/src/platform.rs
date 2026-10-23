@@ -29,12 +29,14 @@ pub enum Platform {
     GoogleAlloyDb,
     Neon,
     Supabase,
+    /// Tiger Cloud, formerly Timescale Cloud. The TimescaleDB extension also runs on self-managed PostgreSQL.
+    TigerData,
     /// MariaDB Cloud (formerly SkySQL).
     MariaDbCloud,
 }
 
 /// Every platform, for tests and listings.
-pub const PLATFORMS: [Platform; 10] = [
+pub const PLATFORMS: [Platform; 11] = [
     Platform::AmazonRds,
     Platform::AmazonAurora,
     Platform::AzureSqlDatabase,
@@ -44,6 +46,7 @@ pub const PLATFORMS: [Platform; 10] = [
     Platform::GoogleAlloyDb,
     Platform::Neon,
     Platform::Supabase,
+    Platform::TigerData,
     Platform::MariaDbCloud,
 ];
 
@@ -64,6 +67,7 @@ impl Platform {
             Platform::GoogleAlloyDb => "Google AlloyDB",
             Platform::Neon => "Neon",
             Platform::Supabase => "Supabase",
+            Platform::TigerData => "Tiger Data",
             Platform::MariaDbCloud => "MariaDB Cloud",
         }
     }
@@ -80,6 +84,7 @@ impl Platform {
             "Google AlloyDB" => Platform::GoogleAlloyDb,
             "Neon" => Platform::Neon,
             "Supabase" => Platform::Supabase,
+            "Tiger Data" | "Tiger Cloud" | "Timescale Cloud" => Platform::TigerData,
             "MariaDB Cloud" => Platform::MariaDbCloud,
             _ => return None,
         })
@@ -103,6 +108,9 @@ impl Platform {
                 "Neon's settings for the compute (most server settings are Neon's; per-database ones take ALTER DATABASE … SET)"
             }
             Platform::Supabase => "Supabase's database settings (dashboard or `supabase postgres-config update`)",
+            Platform::TigerData => {
+                "the service configuration in Tiger Cloud (service-managed parameters require Tiger Data support)"
+            }
             Platform::MariaDbCloud => "the service's configuration in the MariaDB Cloud portal",
             Platform::AzureSqlDatabase | Platform::AzureSqlManagedInstance => return None,
         })
@@ -125,6 +133,9 @@ impl Platform {
             }
             Platform::GoogleAlloyDb => format!(
                 "Run CREATE EXTENSION {library}; in this database. If its view then asks for shared_preload_libraries, add {library} with the instance's database flags."
+            ),
+            Platform::TigerData => format!(
+                "Ask the service administrator to enable {library} for this Tiger Cloud service, then create its extension in this database. Service-managed preload settings require Tiger Data support."
             ),
             Platform::AzureSqlDatabase | Platform::AzureSqlManagedInstance | Platform::MariaDbCloud => return None,
         })

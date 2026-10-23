@@ -202,6 +202,7 @@ pub async fn snapshot(
         None,
     ));
     crate::signals::collect(&primary, &probe, &mut snapshot).await;
+    crate::timescale::collect(&primary, &probe, &mut snapshot).await;
     snapshot.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
     Ok(snapshot)
 }

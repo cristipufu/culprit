@@ -1,4 +1,47 @@
 #[test]
+fn timescale_chunk_advice_targets_the_hypertable_with_native_ddl() {
+    let mut snapshot: Snapshot = serde_json::from_str(include_str!("../../../../fixtures/postgres-demo.json")).unwrap();
+    let table = &mut snapshot.tables[0];
+    let owner = table.qualified();
+    table.kind = Some("hypertable".into());
+    table.storage = Some(crate::TableStorage {
+        hypertable: Some(crate::signals::HypertableStorage {
+            chunk_details: Some(vec![crate::signals::HypertableChunk {
+                schema: "_timescaledb_internal".into(),
+                name: "_hyper_1_1_chunk".into(),
+                rows: Some(100000.0),
+                total_bytes: None,
+                compressed: false,
+            }]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let mut scan = node(1, "Seq Scan", NodeKind::Scan);
+    scan.object = Some("_timescaledb_internal._hyper_1_1_chunk".into());
+    scan.predicate = Some("device_id = 42".into());
+    scan.est_rows = 100.0;
+    scan.act_rows = Some(100.0);
+    scan.act_executions = Some(1.0);
+    scan.rows_read = Some(100000.0);
+    scan.self_cost = 100.0;
+    let mut p = plan(Engine::Postgres, scan);
+    p.kind = PlanKind::Actual;
+    mark_plan(&mut p, &snapshot);
+    assert_eq!(p.root.facts().partition_parent.as_deref(), Some(owner.as_str()));
+    assert_eq!(p.root.facts().table_kind.as_deref(), Some("timescale-chunk"));
+    let found = insights(&p);
+    let advice = found.iter().find(|i| i.rule == "scan-filter").expect("selective chunk scan is actionable");
+    let sql = advice.fix_sql.as_ref().expect("known chunk owner can be indexed");
+    assert!(sql.contains("transaction_per_chunk") && !sql.contains("CONCURRENTLY"), "{sql}");
+    assert!(!sql.contains("_timescaledb_internal"), "{sql}");
+    assert!(advice.title.contains(&owner), "{}", advice.title);
+    snapshot.tables[0].storage.as_mut().unwrap().hypertable.as_mut().unwrap().chunk_details = None;
+    mark_plan(&mut p, &snapshot);
+    assert!(!insights(&p).iter().any(|i| i.fix_sql.is_some()), "an unknown managed chunk must not receive DDL");
+}
+
+#[test]
 fn pagination_observations_require_literal_offsets_and_preserve_page_semantics() {
     let mut p = plan(Engine::Postgres, node(1, "Limit", NodeKind::Other));
     p.statement = Some("SELECT * FROM items ORDER BY id LIMIT 20 OFFSET 10000".into());
@@ -1600,9 +1643,9 @@ fn a_sort_fed_by_a_guess_states_no_size() {
 #[test]
 fn a_suggested_index_is_named_as_the_findings_name_it() {
     let keys = vec!["order_id".to_string()];
-    let mssql = index_sql(Engine::Mssql, "[db].[shop].[order_items]", &keys, &[]).unwrap();
+    let mssql = index_sql(Engine::Mssql, "[db].[shop].[order_items]", &keys, &[], None).unwrap();
     assert!(mssql.starts_with("CREATE NONCLUSTERED INDEX [IX_order_items_order_id]"), "{mssql}");
-    let postgres = index_sql(Engine::Postgres, "public.order_items", &keys, &[]).unwrap();
+    let postgres = index_sql(Engine::Postgres, "public.order_items", &keys, &[], None).unwrap();
     assert!(postgres.contains(" ix_order_items_order_id"), "{postgres}");
 }
 

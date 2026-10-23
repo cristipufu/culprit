@@ -12,6 +12,8 @@ const PG_STAT_STATEMENTS_FIX: &str = "Add pg_stat_statements to shared_preload_l
 pub struct Probe {
     pub version_num: u32,
     pub version: String,
+    pub timescale_version: Option<String>,
+    pub timescale_schema: Option<String>,
     pub database: String,
     pub size_bytes: Option<f64>,
     pub started_at: Option<String>,
@@ -43,7 +45,10 @@ pub enum StatementsAccess {
 impl Probe {
     pub fn product(&self) -> String {
         let short = self.version.split_whitespace().next().unwrap_or(&self.version);
-        format!("PostgreSQL {short}")
+        match &self.timescale_version {
+            Some(version) => format!("TimescaleDB {version} (PostgreSQL {short})"),
+            None => format!("PostgreSQL {short}"),
+        }
     }
 
     pub fn generic_plans(&self) -> bool {
@@ -158,6 +163,9 @@ pub async fn probe(client: &Client, spec_host: &str) -> Result<Probe> {
     let sql = format!(
         "SELECT current_setting('server_version_num') AS version_num,
                 current_setting('server_version') AS version,
+                (SELECT extversion FROM pg_extension WHERE extname = 'timescaledb') AS timescale_version,
+                (SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+                  WHERE e.extname = 'timescaledb') AS timescale_schema,
                 current_database() AS database,
                 pg_database_size(current_database()) AS size_bytes,
                 {started} AS started_at,
@@ -187,6 +195,8 @@ pub async fn probe(client: &Client, spec_host: &str) -> Result<Probe> {
     let mut probe = Probe {
         version_num,
         version: row.string("version"),
+        timescale_version: row.text("timescale_version"),
+        timescale_schema: row.text("timescale_schema"),
         database: row.string("database"),
         size_bytes: row.number("size_bytes"),
         started_at: row.text("started_at"),
@@ -243,6 +253,8 @@ fn detect_platform(settings: &str, aurora: bool, host: &str) -> Option<Platform>
         Platform::GoogleCloudSql
     } else if has("neon") || host.ends_with(".neon.tech") {
         Platform::Neon
+    } else if host.ends_with(".tsdb.cloud.timescale.com") || host.ends_with(".tsdb.forge.timescale.com") {
+        Platform::TigerData
     } else if host.contains("supabase.co") || host.contains("supabase.com") {
         Platform::Supabase
     } else {
@@ -256,6 +268,8 @@ mod tests {
 
     #[test]
     fn cloud_detection() {
+        assert_eq!(detect_platform("", false, "example.tsdb.cloud.timescale.com"), Some(Platform::TigerData));
+        assert_eq!(detect_platform("timescaledb", false, "localhost"), None);
         assert_eq!(detect_platform("rds", false, "x"), Some(Platform::AmazonRds));
         assert_eq!(detect_platform("", true, "x"), Some(Platform::AmazonAurora));
         assert_eq!(detect_platform("", false, "a.postgres.database.azure.com"), Some(Platform::AzureDatabase));

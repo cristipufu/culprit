@@ -676,7 +676,30 @@ pub struct ColumnHistogram {
     pub buckets: Option<f64>,
 }
 
-/// How updates land on a table's pages and how much of it is empty space (PostgreSQL).
+/// TimescaleDB's logical hypertable and the managed chunks holding its rows. Counts and dimensions come from its
+/// information views; sizes on the owning TableStat include its chunks, including compressed storage.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[ts(export)]
+pub struct HypertableStorage {
+    pub chunks: Option<u32>,
+    pub compressed_chunks: Option<u32>,
+    pub dimensions: Vec<String>,
+    pub compression_enabled: bool,
+    // Managed physical objects, kept apart from application tables so row/storage totals are never double-counted.
+    pub chunk_details: Option<Vec<HypertableChunk>>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[ts(export)]
+pub struct HypertableChunk {
+    pub schema: String,
+    pub name: String,
+    pub rows: Option<f64>,
+    pub total_bytes: Option<f64>,
+    pub compressed: bool,
+}
+
+/// Physical table storage, including PostgreSQL page counters and TimescaleDB's managed hypertable metadata.
 #[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
 #[ts(export)]
 pub struct TableStorage {
@@ -701,6 +724,9 @@ pub struct TableStorage {
     /// overrides the server's autovacuum settings for it. Empty when it has none, or the scan predates them.
     #[serde(default)]
     pub options: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub hypertable: Option<HypertableStorage>,
 }
 
 impl TableStorage {

@@ -16,6 +16,7 @@ mod provenance;
 mod services;
 mod share;
 mod table_growth;
+mod timescale;
 
 #[test]
 fn every_test_file_is_listed() {

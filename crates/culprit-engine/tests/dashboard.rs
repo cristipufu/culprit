@@ -40,9 +40,9 @@ impl Provider for Reader {
 }
 
 fn recorded() -> LiveState {
-    let mut all: std::collections::BTreeMap<Engine, LiveState> =
+    let mut all: std::collections::BTreeMap<String, LiveState> =
         serde_json::from_str(include_str!("../../../fixtures/live.sample.json")).unwrap();
-    all.remove(&Engine::Postgres).unwrap()
+    all.remove("postgres").unwrap()
 }
 
 fn dashboard() -> Dashboard {

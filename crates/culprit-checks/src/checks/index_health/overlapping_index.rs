@@ -130,7 +130,7 @@ pub fn overlapping_index(snapshot: &Snapshot) -> Vec<Finding> {
                      hide {} first and drop it after a business cycle.",
                     a.name, b.name, a.name
                 ),
-                sql: Some(hide_index_sql(&snapshot.server, a)),
+                sql: Some(hide_index_sql(snapshot, a)),
                 cost: Some(format!("Frees {} and one index's worth of work on every write.", format::bytes(size))),
             });
             f.verify = vec![format!(

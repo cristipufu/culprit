@@ -95,6 +95,14 @@ impl EngineSpec for Postgres {
         &Postgres
     }
 
+    fn table_dialect(&self, kind: Option<&str>) -> &'static dyn Dialect {
+        match kind {
+            Some("hypertable" | "timescale-chunk") => &super::timescale::Timescale { per_chunk: true },
+            Some("timescale-unresolved") => &super::timescale::Timescale { per_chunk: false },
+            _ => self.dialect(),
+        }
+    }
+
     fn change_setting(&self, _server: &ServerInfo, name: &str, value: &str) -> SettingChange {
         SettingChange {
             how: format!(

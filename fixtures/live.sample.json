@@ -375,5 +375,14 @@
     "wait_type": null
    }
   ]
+ },
+ "timescale-demo": {
+  "notes": [],
+  "taken_at": "2026-10-23T21:37:28Z",
+  "sessions": [],
+  "waits": [],
+  "session_actions": [],
+  "session_actions_note": null,
+  "blocking": null
  }
 }

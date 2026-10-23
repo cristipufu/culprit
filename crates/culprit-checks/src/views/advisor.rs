@@ -569,7 +569,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                     if exact { "it has the same keys as" } else { "its keys are the start of" },
                     b.name
                 ),
-                sql: Some(hide_index_sql(&s.server, a)),
+                sql: Some(hide_index_sql(s, a)),
                 caveats: Vec::new(),
                 finding_id: link(format!("duplicate-index:{table_name}.{}", a.name)),
             });
@@ -591,7 +591,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
             } else {
                 format!("Its keys are the start of {}'s, so any seek it serves {} serves too.", b.name, b.name)
             },
-            sql: Some(drop_index_sql(engine, &a.schema, &a.table, &a.name)),
+            sql: Some(drop_index_for_snapshot(s, &a.schema, &a.table, &a.name)),
             caveats: if exact {
                 Vec::new()
             } else {
@@ -621,7 +621,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                 a.key_names()[0],
                 b.name
             ),
-            sql: Some(hide_index_sql(&s.server, a)),
+            sql: Some(hide_index_sql(s, a)),
             caveats: vec![format!("Check the plans of the queries that read {} before hiding it.", a.name)],
             finding_id: link(format!("overlapping-index:{table_name}.{}", a.name)),
         });
@@ -658,7 +658,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                     .unwrap_or_default(),
                 table_name
             ),
-            sql: Some(hide_index_sql(&s.server, i)),
+            sql: Some(hide_index_sql(s, i)),
             caveats: fk
                 .map(|fk| {
                     vec![format!("It supports the foreign key {}; deletes on the parent scan without it.", fk.name)]
@@ -698,7 +698,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                         String::new()
                     }
                 ),
-                sql: Some(drop_index_sql(Engine::Postgres, &i.schema, &i.table, &i.name)),
+                sql: Some(drop_index_for_snapshot(s, &i.schema, &i.table, &i.name)),
                 caveats: Vec::new(),
                 finding_id: link(format!("unused-index:invalid:{table_name}.{}", i.name)),
             });

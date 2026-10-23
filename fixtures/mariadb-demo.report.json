@@ -647,7 +647,7 @@
     "analyzer": {
       "component": "culprit-checks",
       "revision": null,
-      "version": "0.4.3"
+      "version": "0.4.4"
     },
     "baselines": [],
     "collection": null,
@@ -660,7 +660,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.4.3"
+          "version": "0.4.4"
         },
         "query": "375c64398248650e"
       },
@@ -670,7 +670,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.4.3"
+          "version": "0.4.4"
         },
         "query": "decf59629e790076"
       },
@@ -680,7 +680,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.4.3"
+          "version": "0.4.4"
         },
         "query": "258e3c9b580f1ecc"
       },
@@ -690,7 +690,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.4.3"
+          "version": "0.4.4"
         },
         "query": "46db559fdff712fd"
       },
@@ -700,7 +700,7 @@
         "parser": {
           "component": "culprit-mysql",
           "revision": null,
-          "version": "0.4.3"
+          "version": "0.4.4"
         },
         "query": "d1f45c9664edccf9"
       }
@@ -817,7 +817,7 @@
     "previous_analyzer": {
       "component": "culprit-checks",
       "revision": null,
-      "version": "0.4.2"
+      "version": "0.4.3"
     }
   },
   "refinement": [

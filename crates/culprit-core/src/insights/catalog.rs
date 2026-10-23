@@ -111,6 +111,7 @@ pub fn mark_snapshot(snapshot: &mut Snapshot) {
     let tables = scanned_table_indexes(snapshot);
     let columns = &snapshot.columns;
     let partitions = partition_parents(&snapshot.tables);
+    let kinds = table_kinds(&snapshot.tables);
     if let Some(workload) = snapshot.workload.as_mut() {
         let end = workload.window_end.as_deref().and_then(format::epoch_seconds);
         for q in workload.queries.iter_mut() {
@@ -124,6 +125,7 @@ pub fn mark_snapshot(snapshot: &mut Snapshot) {
             mark_query(plan, &q.text);
             mark_changed_columns(plan, columns);
             mark_partitions(&mut plan.root, &partitions);
+            mark_table_kinds(&mut plan.root, &kinds);
             mark_table_indexes(&mut plan.root, &tables, quiet);
             if plan.engine == Engine::Mssql {
                 mark_parallel_settings(plan, &parallel);
@@ -141,6 +143,7 @@ pub fn mark_plan(plan: &mut Plan, snapshot: &Snapshot) {
     }
     mark_changed_columns(plan, &snapshot.columns);
     mark_partitions(&mut plan.root, &partition_parents(&snapshot.tables));
+    mark_table_kinds(&mut plan.root, &table_kinds(&snapshot.tables));
     mark_table_indexes(&mut plan.root, &scanned_table_indexes(snapshot), false);
     if plan.engine == Engine::Mssql {
         mark_parallel_settings(plan, &parallel_settings(snapshot));
@@ -155,8 +158,56 @@ fn partition_parents(tables: &[crate::TableStat]) -> HashMap<String, Option<Stri
         // An unquoted display name can be ambiguous when an identifier itself contains a dot.
         // Do not attribute such an operator to either of two different catalog objects.
         parents.entry(t.qualified()).and_modify(|parent| *parent = None).or_insert_with(|| t.partition_of.clone());
+        for chunk in t
+            .storage
+            .as_ref()
+            .and_then(|s| s.hypertable.as_ref())
+            .and_then(|h| h.chunk_details.as_ref())
+            .into_iter()
+            .flatten()
+        {
+            parents
+                .entry(format!("{}.{}", chunk.schema, chunk.name))
+                .and_modify(|parent| *parent = None)
+                .or_insert_with(|| Some(t.qualified()));
+        }
     }
     parents
+}
+
+fn table_kinds(tables: &[crate::TableStat]) -> HashMap<String, Option<String>> {
+    let mut kinds = HashMap::new();
+    for table in tables {
+        kinds.entry(table.qualified()).and_modify(|kind| *kind = None).or_insert_with(|| table.kind.clone());
+        for chunk in table
+            .storage
+            .as_ref()
+            .and_then(|s| s.hypertable.as_ref())
+            .and_then(|h| h.chunk_details.as_ref())
+            .into_iter()
+            .flatten()
+        {
+            kinds
+                .entry(format!("{}.{}", chunk.schema, chunk.name))
+                .and_modify(|kind| *kind = None)
+                .or_insert_with(|| Some("timescale-chunk".into()));
+        }
+    }
+    kinds
+}
+
+fn mark_table_kinds(node: &mut PlanNode, kinds: &HashMap<String, Option<String>>) {
+    let unresolved = node.facts().table_kind.as_deref() == Some("timescale-unresolved");
+    node.facts_mut().table_kind = node
+        .object
+        .as_ref()
+        .and_then(|name| kinds.get(name))
+        .cloned()
+        .flatten()
+        .or_else(|| unresolved.then(|| "timescale-unresolved".into()));
+    for child in &mut node.children {
+        mark_table_kinds(child, kinds);
+    }
 }
 
 fn mark_partitions(node: &mut PlanNode, parents: &HashMap<String, Option<String>>) {
@@ -269,7 +320,12 @@ pub(super) fn mark_table_indexes(n: &mut PlanNode, tables: &[CatalogTable], stop
     n.facts_mut().table_missing = None;
     n.props.remove(TABLE_INDEXES);
     n.props.remove(TABLE_GONE);
-    if let Some(object) = n.object.clone().filter(|o| !o.starts_with(['@', '#']) && !tables.is_empty()) {
+    let object = if n.facts().table_kind.as_deref() == Some("timescale-chunk") {
+        n.facts().partition_parent.clone()
+    } else {
+        n.object.clone()
+    };
+    if let Some(object) = object.filter(|o| !o.starts_with(['@', '#']) && !tables.is_empty()) {
         let mut candidates = tables.iter().filter(|t| catalog_table_matches(&object, &t.schema, &t.name));
         let first = candidates.next();
         if let (Some(table), None) = (first, candidates.next()) {

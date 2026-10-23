@@ -3,4 +3,4 @@
 /**
  * A managed service a database runs on. A server you run yourself has none.
  */
-export type Platform = "amazon-rds" | "amazon-aurora" | "azure-sql-database" | "azure-sql-managed-instance" | "azure-database" | "google-cloud-sql" | "google-alloy-db" | "neon" | "supabase" | "maria-db-cloud";
+export type Platform = "amazon-rds" | "amazon-aurora" | "azure-sql-database" | "azure-sql-managed-instance" | "azure-database" | "google-cloud-sql" | "google-alloy-db" | "neon" | "supabase" | "tiger-data" | "maria-db-cloud";

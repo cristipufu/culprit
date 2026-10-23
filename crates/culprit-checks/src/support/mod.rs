@@ -338,7 +338,8 @@ fn index_sql(
     filter: Option<&str>,
 ) -> String {
     let engine = snapshot.server.engine;
-    let dialect = engine.dialect();
+    let kind = snapshot.table(schema, table).and_then(|t| t.kind.as_deref());
+    let dialect = engine.spec().table_dialect(kind);
     let name = index_name(table, keys);
     let name = if engine == Engine::Mssql { name } else { name.to_ascii_lowercase() };
     let online = if supports_online_index(snapshot) { culprit_core::Online::Yes } else { culprit_core::Online::No };
@@ -355,6 +356,11 @@ fn index_sql(
 
 pub fn drop_index_sql(engine: Engine, schema: &str, table: &str, index: &str) -> String {
     engine.dialect().drop_index(schema, table, index)
+}
+
+pub fn drop_index_for_snapshot(snapshot: &Snapshot, schema: &str, table: &str, index: &str) -> String {
+    let kind = snapshot.table(schema, table).and_then(|t| t.kind.as_deref());
+    snapshot.server.engine.spec().table_dialect(kind).drop_index(schema, table, index)
 }
 
 /// Days the cumulative counters (index usage, table stats) have been accumulating. One source for every window that

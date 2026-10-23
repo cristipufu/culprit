@@ -121,6 +121,10 @@ pub struct PlanNodeFacts {
     pub partition_pruning: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partition_parent: Option<String>,
+    // The catalog's native table kind. Managed storage can require different DDL from ordinary engine tables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub table_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_method: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -372,6 +376,7 @@ impl PlanNodeFacts {
     pub fn from_legacy_properties(props: &Properties) -> Self {
         let number = |key: &str| props.get(key).and_then(|value| value.trim().parse::<f64>().ok());
         Self {
+            table_kind: None,
             estimated_row_bytes: number("AvgRowSize").or_else(|| number("Plan Width")).and_then(nonnegative),
             rows_produced_per_join: number("rows_produced_per_join").and_then(nonnegative),
             output_columns: props.get("OutputList").map(|v| {

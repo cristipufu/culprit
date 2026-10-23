@@ -2,7 +2,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use culprit_core::{BlockNode, DashboardLive, Engine, LiveState, LockWait};
+use culprit_core::{BlockNode, DashboardLive, LiveState, LockWait};
 
 fn locks(node: &BlockNode, out: &mut Vec<LockWait>) {
     out.extend(node.lock.iter().cloned());
@@ -13,7 +13,7 @@ fn locks(node: &BlockNode, out: &mut Vec<LockWait>) {
 
 fn main() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let recorded: BTreeMap<Engine, LiveState> =
+    let recorded: BTreeMap<String, LiveState> =
         serde_json::from_slice(&std::fs::read(root.join("fixtures/live.sample.json")).unwrap()).unwrap();
     let mut output: BTreeMap<String, BTreeMap<String, DashboardLive>> = BTreeMap::new();
     for entry in std::fs::read_dir(root.join("fixtures")).unwrap() {
@@ -23,7 +23,10 @@ fn main() {
         }
         let report = culprit_engine::reading::open(&path).unwrap();
         let engine = report.snapshot.server.engine;
-        let Some(captured) = recorded.get(&engine) else { continue };
+        let Some(captured) = recorded.get(&report.snapshot.connection).or_else(|| recorded.get(&engine.to_string()))
+        else {
+            continue;
+        };
         // This is a small, deliberately planted demo (currently three sessions per engine).
         assert!(captured.sessions.len() <= 8, "keep the demo's session combinations bounded");
         let mut captured_locks = Vec::new();

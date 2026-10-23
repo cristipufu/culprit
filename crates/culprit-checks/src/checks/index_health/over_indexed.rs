@@ -153,7 +153,7 @@ pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
                 "Hide the indexes nothing reads first (reversible), then drop them after a business cycle.".into()
             },
             sql: (!idle.is_empty())
-                .then(|| idle.iter().map(|i| hide_index_sql(&snapshot.server, i)).collect::<Vec<_>>().join("\n")),
+                .then(|| idle.iter().map(|i| hide_index_sql(snapshot, i)).collect::<Vec<_>>().join("\n")),
             cost: None,
         });
         f.verify =

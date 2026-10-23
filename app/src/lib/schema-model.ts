@@ -132,6 +132,9 @@ export function previewSql(engine: Engine, table: TableStat, limit: number): str
 /** Approximate DDL rebuilt from catalog metadata (columns, primary key, indexes, foreign keys). */
 export function ddl(engine: Engine, table: TableStat, columns: ColumnInfo[], indexes: IndexStat[], outgoing: Relation[]): string {
   const original = table.definition ? `${table.definition.trimEnd().replace(/;$/, "")};` : null;
+  if (table.kind === "hypertable" || table.kind === "timescale-unresolved") {
+    return "-- TimescaleDB manages this table's partitioning, chunks, compression and policies.\n-- The collected column/index metadata is not a complete recreation script.\n-- Export its schema with the TimescaleDB tools before recreating it.";
+  }
   if (table.kind === "virtual") return original ?? "-- The virtual table's original definition was not collected. Read it from the database before recreating it.";
   const q = (n: string) => quoteIdent(engine, n);
   const name = `${q(table.schema)}.${q(table.name)}`;

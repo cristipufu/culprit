@@ -8,6 +8,7 @@ mod mssql;
 mod mysql;
 mod postgres;
 mod sqlite;
+mod timescale;
 
 use std::collections::BTreeMap;
 
@@ -46,6 +47,11 @@ pub trait EngineSpec: Send + Sync {
 
     /// How it spells the SQL Culprit suggests.
     fn dialect(&self) -> &'static dyn Dialect;
+
+    /// A storage-managed table may constrain DDL even when it speaks the server's usual SQL dialect.
+    fn table_dialect(&self, _kind: Option<&str>) -> &'static dyn Dialect {
+        self.dialect()
+    }
 
     /// How to set `name` to `value` on a server Culprit reaches with SQL.
     fn change_setting(&self, server: &ServerInfo, name: &str, value: &str) -> SettingChange;

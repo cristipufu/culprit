@@ -337,11 +337,11 @@ fn on_system_objects(cx: &Cx, d: &Draft) -> bool {
     if !matches!(d.area, InsightArea::Index | InsightArea::Query | InsightArea::Statistics) {
         return false;
     }
-    let mut objects: Vec<&str> = Vec::new();
+    let mut objects: Vec<String> = Vec::new();
     // A warning on the plan itself may highlight no operator (for example a compilation-time conversion warning).
     // Its scope is the whole plan, just like a warning attached to the root, not an absence of catalog evidence.
     if d.nodes.is_empty() {
-        objects.extend(cx.nodes.iter().filter_map(|n| n.object.as_deref()));
+        objects.extend(cx.nodes.iter().filter_map(|n| actionable_object(n)));
     }
     for n in d.nodes.iter().filter_map(|id| cx.node(*id)) {
         let mut involved = Vec::new();
@@ -350,10 +350,10 @@ fn on_system_objects(cx: &Cx, d: &Draft) -> bool {
         } else {
             involved.push(n);
         }
-        objects.extend(involved.into_iter().filter_map(|i| i.object.as_deref()));
+        objects.extend(involved.into_iter().filter_map(actionable_object));
     }
     let catalog_plan = reads_only_the_catalog(cx.plan);
-    !objects.is_empty() && objects.into_iter().all(|o| is_system_object(o) || (catalog_plan && !o.contains('.')))
+    !objects.is_empty() && objects.into_iter().all(|o| is_system_object(&o) || (catalog_plan && !o.contains('.')))
 }
 
 /// Whether a SQL Server plan names a schema only for the engine's own objects. Its internal table-valued functions
@@ -394,6 +394,7 @@ pub fn is_system_object(object: &str) -> bool {
     let parts: Vec<String> = object.split('.').map(|p| clean_identifier(p).to_ascii_lowercase()).collect();
     let schema = parts.len().checked_sub(2).and_then(|at| parts.get(at)).map(String::as_str);
     matches!(schema, Some("sys" | "information_schema" | "pg_catalog" | "pg_toast" | "performance_schema" | "mysql"))
+        || schema.is_some_and(|s| s.starts_with("_timescaledb_") || s == "timescaledb_information")
         || parts.first().is_some_and(|db| db == "mssqlsystemresource")
         || parts.last().is_some_and(|table| table.starts_with("sqlite_"))
 }
@@ -758,7 +759,16 @@ fn rows_read(n: &PlanNode) -> f64 {
 
 /// `shop.orders` → "shop.orders"; falls back to the operator name.
 fn what(n: &PlanNode) -> String {
-    n.object.clone().unwrap_or_else(|| n.op.clone())
+    actionable_object(n).unwrap_or_else(|| n.op.clone())
+}
+
+fn actionable_object(n: &PlanNode) -> Option<String> {
+    if n.facts().table_kind.as_deref() == Some("timescale-chunk")
+        && let Some(parent) = &n.facts().partition_parent
+    {
+        return Some(parent.clone());
+    }
+    n.object.clone()
 }
 
 /// The table (or the operator) a subtree reads first, for naming the outer and inner side of a join.

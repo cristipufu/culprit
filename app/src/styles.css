@@ -4533,6 +4533,13 @@ body.resizing {
   margin-top: 10px;
 }
 
+.td-chunks { margin-top: 10px; font-size: 12px; }
+.td-chunks summary { cursor: pointer; color: var(--text-3); }
+.td-chunks p { margin: 8px 0 0; }
+.td-chunk-list { max-height: 240px; overflow: auto; margin-top: 8px; }
+.td-chunk-list table { width: 100%; border-collapse: collapse; text-align: left; }
+.td-chunk-list th, .td-chunk-list td { padding: 5px 8px; white-space: nowrap; }
+
 .td-facts .fact {
   min-width: 0;
   max-width: 100%;

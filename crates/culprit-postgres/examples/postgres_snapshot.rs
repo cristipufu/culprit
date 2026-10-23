@@ -37,13 +37,15 @@ async fn main() {
     let provider = PostgresProvider::new(&spec).unwrap_or_else(|e| panic!("{e}"));
     let args: Vec<String> = std::env::args().skip(1).collect();
     let sql = args.get(1).cloned().unwrap_or_default();
+    let connection = std::env::var("CULPRIT_CONNECTION").unwrap_or_else(|_| "postgres-demo".into());
     let output = match args.first().map(String::as_str) {
         None | Some("snapshot") => provider
-            .snapshot("postgres-demo", &SnapshotOptions::default())
+            .snapshot(&connection, &SnapshotOptions::default())
             .await
             .map(|v| serde_json::to_string_pretty(&v).unwrap()),
         Some("probe") => provider.probe().await.map(|v| serde_json::to_string_pretty(&v).unwrap()),
         Some("live") => provider.live().await.map(|v| serde_json::to_string_pretty(&v).unwrap()),
+        Some("deadlocks") => provider.deadlocks(24.0).await.map(|v| serde_json::to_string_pretty(&v).unwrap()),
         Some("explain") => {
             provider.explain(&sql, ExplainMode::Estimated).await.map(|v| serde_json::to_string_pretty(&v).unwrap())
         }

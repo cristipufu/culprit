@@ -1,0 +1,109 @@
+reading: TimescaleDB 2.31.0 (PostgreSQL 17.11) · database culprit_timescale · scanned 2026-10-23T21:32:41Z
+headline: 2 opportunities. The top ones touch 767 ms of database time over the 1 minute since statistics were reset (99%).
+top share: 99%
+findings: 2
+
+=== finding heavy-query:-6927356924371546951
+Optional improvement · low severity · high confidence · queries
+title: A read from sensor_readings takes 767 ms of database time over the 1 minute since statistics were reset (99%)
+summary: 767 ms of database time over the 1 minute since statistics were reset (99%). It ran 100 times in 1 minute at 7.7 ms on average: 99% of all database time in the 1 minute since statistics were reset. The step its plan costs highest is an index scan of _timescaledb_internal._hyper_1_13_chunk.
+impact: 767 ms of database time over the 1 minute since statistics were reset (99%) · 98.7% of database time
+metrics:
+  - Share of DB time: 99%
+  - Average duration: 7.7 ms
+  - Pages read per run: 1.4K
+  - Rows returned per run: 100
+fix: Find this statement in the application and check whether it aggregates more rows than it needs.
+verify:
+  1. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+queries:
+  - -6927356924371546951: 99% of database time · plan step 34
+brief:
+    # A read from sensor_readings takes 767 ms of database time over the 1 minute since statistics were reset (99%)
+
+    Database: **timescale-demo** (TimescaleDB 2.31.0 (PostgreSQL 17.11), database `culprit_timescale`, local environment). Finding `heavy-query:-6927356924371546951`: Optional improvement, low impact, high confidence. Scanned 2026-10-23T21:32:41Z.
+
+    ## What's happening
+
+    767 ms of database time over the 1 minute since statistics were reset (99%). It ran 100 times in 1 minute at 7.7 ms on average: 99% of all database time in the 1 minute since statistics were reset. The step its plan costs highest is an index scan of _timescaledb_internal._hyper_1_13_chunk.
+
+    ## Evidence
+
+    - Share of DB time: 99%
+    - Average duration: 7.7 ms
+    - Pages read per run: 1.4K
+    - Rows returned per run: 100
+
+    ## Queries involved
+
+    Query `-6927356924371546951` — 99% of DB time, 100 runs over the 1 minute since statistics were reset, 7.7 ms average:
+
+    ```sql
+    SELECT device_id, avg(temperature) FROM public.sensor_readings WHERE observed_at >= timestamptz $1 GROUP BY device_id
+    ```
+
+    Plan: the step this finding is about is `Index Scan` on `_timescaledb_internal._hyper_1_13_chunk`. The rows it works on rest on the planner's default guess for a parameter, not on the table's statistics, so no share is given.
+
+    ## Suggested fix
+
+    Find this statement in the application and check whether it aggregates more rows than it needs.
+
+    ## How to verify
+
+    - pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes timescale-demo --since <ship time>`): there its time per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+
+    ## What to do in the codebase
+
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan timescale-demo` and check `heavy-query:-6927356924371546951` the way *How to verify* says.
+
+=== finding config:track_io_timing
+Optional improvement · low severity · medium confidence · configuration
+title: I/O timing isn't tracked
+summary: With track_io_timing off, pg_stat_statements and EXPLAIN (BUFFERS) can't tell how much of a query's time is spent waiting on disk.
+impact: Setting
+fix: Turn it on; the overhead is negligible on modern systems. Set track_io_timing to on and reload the configuration (settings marked as needing a restart take effect after one).
+  sql:
+      ALTER SYSTEM SET track_io_timing = 'on';
+      SELECT pg_reload_conf();
+verify:
+  1. Re-scan once the change has taken effect: this finding is gone.
+brief:
+    # I/O timing isn't tracked
+
+    Database: **timescale-demo** (TimescaleDB 2.31.0 (PostgreSQL 17.11), database `culprit_timescale`, local environment). Finding `config:track_io_timing`: Optional improvement, low impact, medium confidence. Scanned 2026-10-23T21:32:41Z.
+
+    ## What's happening
+
+    With track_io_timing off, pg_stat_statements and EXPLAIN (BUFFERS) can't tell how much of a query's time is spent waiting on disk.
+
+    ## Suggested fix
+
+    Turn it on; the overhead is negligible on modern systems. Set track_io_timing to on and reload the configuration (settings marked as needing a restart take effect after one).
+
+    ```sql
+    ALTER SYSTEM SET track_io_timing = 'on';
+    SELECT pg_reload_conf();
+    ```
+
+    ## How to verify
+
+    - Re-scan once the change has taken effect: this finding is gone.
+
+    ## What to do in the codebase
+
+    The fix is a setting of the database server, not a change to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the fix's SQL against the server as a login allowed to change its settings, the way the fix says. After any change is live, run `culprit scan timescale-demo` and check `config:track_io_timing` the way *How to verify* says.
+
+=== plan -6927356924371546951
+no insights
+note: This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values.
+shares: No share is given for a step whose rows rest on the planner's default guess for a parameter, nor for the steps above it.
+
+=== plan 3152047327284928468
+no insights
+note: This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values.
+shares: The plan's costs rest on the planner's default guess for a parameter, so no share of them is put on one step.
+
+=== plan -2225272007542897168
+no insights
+note: This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. A filtered scan of a small table can be appropriate today. Track rows read and execution time as the table grows; low current cost does not establish that the access path will scale.
+shares: The plan as a whole is cheap, so no share of its cost is put on one step.

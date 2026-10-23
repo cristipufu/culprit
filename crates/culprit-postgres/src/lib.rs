@@ -17,6 +17,7 @@ mod sessions;
 mod signals;
 pub mod sources;
 mod tables;
+mod timescale;
 mod trust;
 mod workload;
 
