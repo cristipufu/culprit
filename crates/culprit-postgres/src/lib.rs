@@ -11,6 +11,7 @@ mod pressure;
 mod probe;
 mod progress;
 mod recorded;
+mod results;
 mod rows;
 mod sessions;
 mod signals;
@@ -27,11 +28,11 @@ use culprit_core::{
     ServerInfo, Session, SessionAction, Snapshot, SnapshotOptions, WaitStat,
 };
 use serde_json::Value;
+use tokio_postgres::Client;
 use tokio_postgres::types::Type;
-use tokio_postgres::{Client, SimpleQueryMessage};
 
 use connect::{COLLECTOR, Connector, EXECUTION, INTERACTIVE, map_error, sql_state};
-use rows::{iso, parse_array, query, query_one, rows_of, tagged};
+use rows::{iso, parse_array, query, query_one, tagged};
 pub use workload::{leading_keyword, plannable};
 
 const CURSOR: &str = "culprit_cursor";
@@ -434,39 +435,16 @@ async fn run_in_transaction(client: &Client, statement: &str, limit: usize, curs
         && !columns.is_empty()
         && leading_keyword(statement).is_some_and(|k| matches!(k.as_str(), "select" | "with" | "values" | "table"));
 
-    let messages = if cursor_friendly {
+    let query = if cursor_friendly {
         client
             .batch_execute(&tagged(&format!("DECLARE {CURSOR} NO SCROLL CURSOR FOR {statement}")))
             .await
             .map_err(map_error)?;
-        client
-            .simple_query(&tagged(&format!("FETCH FORWARD {} FROM {CURSOR}", limit.saturating_add(1))))
-            .await
-            .map_err(map_error)?
+        format!("FETCH FORWARD {} FROM {CURSOR}", limit.min(results::MAX_ROWS).saturating_add(1))
     } else {
-        client.simple_query(&tagged(statement)).await.map_err(map_error)?
+        statement.to_string()
     };
-
-    let completions: Vec<u64> = messages
-        .iter()
-        .filter_map(|m| match m {
-            SimpleQueryMessage::CommandComplete(count) => Some(*count),
-            _ => None,
-        })
-        .collect();
-    let raw_rows = rows_of(messages);
-    let truncated = raw_rows.len() > limit;
-    let rows: Vec<Vec<Value>> = raw_rows
-        .iter()
-        .take(limit)
-        .map(|row| (0..columns.len()).map(|i| json_value(row.text_at(i), types.get(i))).collect())
-        .collect();
-    let affected = if columns.is_empty() { completions.last().copied().unwrap_or(0) } else { rows.len() as u64 };
-    let mut message = format!("{affected} row{}", if affected == 1 { "" } else { "s" });
-    if truncated {
-        message.push_str(&format!(" (stopped at {limit})"));
-    }
-    Ok(ResultSet { columns, rows, truncated, elapsed_ms: 0.0, messages: vec![message] })
+    results::collect(client, &tagged(&query), columns, &types, limit).await
 }
 
 fn strip_concurrently_keyword(stmt: &str) -> String {

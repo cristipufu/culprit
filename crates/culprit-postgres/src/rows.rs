@@ -18,10 +18,6 @@ impl Row {
         self.0.try_get(column).ok().flatten().map(str::to_string)
     }
 
-    pub fn text_at(&self, index: usize) -> Option<String> {
-        self.0.try_get(index).ok().flatten().map(str::to_string)
-    }
-
     pub fn string(&self, column: &str) -> String {
         self.text(column).unwrap_or_default()
     }
