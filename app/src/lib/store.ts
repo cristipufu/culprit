@@ -1,19 +1,15 @@
-import { isActionable } from "./findings";
 import { useSyncExternalStore } from "react";
 import type { ChangeRequest } from "../gen/ChangeRequest";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
 import type { Report } from "../gen/Report";
 import type { SavedQuery } from "../gen/SavedQuery";
-import { api, errorMessage, type ApiError } from "./api";
+import { api } from "./api";
+import { ReportRequests, type ReportState } from "./report-requests";
+import { LatestRequest } from "./requests";
+export type { ReportState } from "./report-requests";
 
 /** `dashboard` is where a connection opens; `overview` is the ranked findings list (titled "Findings"). */
 export type View = "dashboard" | "overview" | "queries" | "live" | "schema" | "editor" | "plans" | "connections";
-
-export type ReportState =
-  | { status: "none" }
-  | { status: "loading" }
-  | { status: "ready"; report: Report; scanning: boolean; scanError: ApiError | null }
-  | { status: "error"; error: ApiError };
 
 export type State = {
   connections: ConnectionInfo[];
@@ -120,6 +116,8 @@ export function getState(): State {
 
 export function setState(patch: Partial<State> | ((s: State) => Partial<State>)): void {
   const next = typeof patch === "function" ? patch(state) : patch;
+  if ((next.active !== undefined && next.active !== state.active)
+    || (next.windowMinutes !== undefined && next.windowMinutes !== state.windowMinutes)) reports.invalidate();
   state = { ...state, ...next };
   listeners.forEach((l) => l());
 }
@@ -134,17 +132,22 @@ export function useStore<T>(select: (s: State) => T): T {
   );
 }
 
+const reports = new ReportRequests({ client: api, read: getState, publish: setState, collected: loadConnections });
+const connectionRequests = new LatestRequest();
+const savedRequests = new LatestRequest();
+
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
 /** Load (or reload) the saved queries into the store. */
 export async function loadSaved(): Promise<SavedQuery[]> {
+  const owns = savedRequests.start();
   try {
     const saved = await (await api()).savedQueries();
-    setState({ saved });
+    if (owns()) setState({ saved });
     return saved;
   } catch {
-    setState({ saved: [] });
-    return [];
+    if (owns()) setState({ saved: getState().saved ?? [] });
+    return getState().saved ?? [];
   }
 }
 
@@ -155,8 +158,9 @@ export function toast(message: string): void {
 }
 
 export async function loadConnections(): Promise<ConnectionInfo[]> {
+  const owns = connectionRequests.start();
   const connections = await (await api()).connections();
-  setState({ connections });
+  if (owns()) setState({ connections });
   return connections;
 }
 
@@ -166,7 +170,7 @@ export async function openConnection(name: string, options: { rescan?: boolean }
   const windowMinutes = rememberedWindow(name);
   setState({ active: name, view: "dashboard", finding: null, query: null, changes: null, report: { status: "loading" }, windowMinutes });
   rememberLast(name);
-  await showCachedThenScan(name, windowMinutes, rescan);
+  await reports.open(name, windowMinutes, rescan);
 }
 
 /** Switch the workload window (Query Store): cached report for that window if there is one, then a fresh scan. */
@@ -177,46 +181,12 @@ export async function setWindow(minutes: WindowMinutes): Promise<void> {
     localStorage.setItem(windowKey(name), String(minutes));
   } catch {}
   setState({ windowMinutes: minutes, report: { status: "loading" } });
-  await showCachedThenScan(name, minutes, true);
+  await reports.open(name, minutes, true);
 }
 
-async function showCachedThenScan(name: string, windowMinutes: WindowMinutes, rescan: boolean): Promise<void> {
-  const client = await api();
-  try {
-    const cached = await client.latestReport(name, windowMinutes);
-    if (getState().active !== name || getState().windowMinutes !== windowMinutes) return;
-    if (cached) {
-      const keep = getState().finding;
-      const finding = keep && cached.findings.some((f) => f.id === keep) ? keep : cached.findings.find(isActionable)?.id ?? null;
-      setState({ report: { status: "ready", report: cached, scanning: rescan, scanError: null }, finding });
-    }
-    if (!cached || rescan) await scan(name);
-  } catch (e) {
-    if (getState().active === name) setState({ report: { status: "error", error: errorMessage(e) } });
-  }
-}
-
+/** Refresh only the current report session; a stale view cannot start work for a different connection. */
 export async function scan(name: string): Promise<void> {
-  const windowMinutes = getState().windowMinutes;
-  const current = getState().report;
-  if (current.status === "ready") setState({ report: { ...current, scanning: true, scanError: null } });
-  else setState({ report: { status: "loading" } });
-  try {
-    const report = await (await api()).scan(name, windowMinutes);
-    if (getState().active !== name || getState().windowMinutes !== windowMinutes) return;
-    const keep = getState().finding;
-    const stillThere = keep && report.findings.some((f) => f.id === keep);
-    setState({
-      report: { status: "ready", report, scanning: false, scanError: null },
-      finding: stillThere ? keep : report.findings.find(isActionable)?.id ?? null,
-    });
-    loadConnections();
-  } catch (e) {
-    if (getState().active !== name || getState().windowMinutes !== windowMinutes) return;
-    const prev = getState().report;
-    if (prev.status === "ready") setState({ report: { ...prev, scanning: false, scanError: errorMessage(e) } });
-    else setState({ report: { status: "error", error: errorMessage(e) } });
-  }
+  await reports.scan(name, getState().windowMinutes);
 }
 
 export function toggleDismissed(id: string): void {

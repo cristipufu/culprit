@@ -17,6 +17,8 @@ import { PasswordNeeded } from "./components/PasswordNeeded";
 import { DashboardSkeleton } from "./components/DashboardSkeleton";
 import { startUpdateChecks } from "./lib/updates";
 import { windowUnknown } from "./lib/rates";
+import { errorMessage } from "./lib/api";
+import { toast as notify } from "./lib/store";
 
 const Editor = lazy(() => import("./views/Editor"));
 // Where a connection opens; its skeleton (and stylesheet) are in the main bundle so the grid never jumps.
@@ -52,14 +54,17 @@ export function App() {
   useEffect(() => startUpdateChecks(), []);
 
   useEffect(() => {
+    let cancelled = false;
     loadConnections().then((connections) => {
+      if (cancelled || getState().active !== null) return;
       const last = lastConnection();
       if (last && connections.some((c) => c.name === last)) {
         // The dashboard is where it opens: fetch its code alongside the cached report, not after it.
-        void import("./views/Dashboard");
-        openConnection(last);
+        void import("./views/Dashboard").catch(() => {});
+        return openConnection(last);
       }
-    });
+    }).catch((error) => { if (!cancelled) notify(errorMessage(error).message); });
+    return () => { cancelled = true; };
   }, []);
 
   useHotkeys({

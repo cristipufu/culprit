@@ -418,6 +418,16 @@ implementation. The cold dashboard is pinned to the displayed report, and a repl
 or selected window is discarded. A failed read clears current measurements; incomplete visibility cannot establish
 zero blocked sessions. MCP returns the original numeric signal values, leaving display rounding to its consumer.
 
+## Desktop request lifecycles
+
+`app/src/lib/store.ts` owns UI state and navigation. `report-requests.ts` owns a report's cache → scan lifecycle,
+including loading, selection, refresh errors and sidebar refresh. Every open or manual scan gets a distinct owner
+from `requests.ts::LatestRequest`, alongside its connection and window. Changing either target invalidates that owner;
+returning to the same target never revives an earlier response. Superseded promises may finish, but cannot publish
+results or errors, clear a newer spinner, or launch another scan. Connection and saved-query lists have independent
+owners. API initialization is shared and retries after rejection. View-local effects retire their callbacks on cleanup.
+This ownership governs UI publication; the desktop invocation itself remains bounded by the backend execution policy.
+
 ## Extending Culprit
 
 - **A check**: write `<name>_info()` and `<name>(&Snapshot)` in a file of its own in the area's directory under

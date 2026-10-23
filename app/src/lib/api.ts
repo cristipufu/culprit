@@ -1,3 +1,4 @@
+import { lazyResource } from "./requests";
 import type { Catalog } from "../gen/Catalog";
 import type { ChangeRequest } from "../gen/ChangeRequest";
 import type { Changes } from "../gen/Changes";
@@ -239,12 +240,7 @@ async function desktopApi(): Promise<Api> {
   };
 }
 
-let instance: Promise<Api> | null = null;
-
-export function api(): Promise<Api> {
-  if (!instance) instance = isDesktop() ? desktopApi() : import("./demo-api").then((m) => m.demoApi());
-  return instance;
-}
+export const api = lazyResource<Api>(() => isDesktop() ? desktopApi() : import("./demo-api").then((m) => m.demoApi()));
 
 export async function copyText(text: string): Promise<void> {
   try {
