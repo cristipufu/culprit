@@ -349,10 +349,19 @@ async fn dashboard(
     window_days: Option<u32>,
     report_id: Option<String>,
 ) -> Result<culprit_core::Dashboard> {
-    if let Some(report_id) = report_id {
-        return ws.dashboard_for_report(&name, &report_id);
-    }
-    ws.dashboard(&name, requested_window(window_minutes, window_days), false).await
+    blocking_workspace(ws.inner().clone(), move |ws| {
+        if let Some(report_id) = report_id {
+            return ws.dashboard_for_report(&name, &report_id);
+        }
+        let report = ws.latest_report(&name, requested_window(window_minutes, window_days))?.ok_or_else(|| {
+            Error::not_found(format!("No saved report for '{name}'"))
+                .with_hint(format!("Run `culprit scan {name}` first"))
+        })?;
+        let mut dashboard = culprit_engine::dashboard_report(&report);
+        dashboard.connection = name;
+        Ok(dashboard)
+    })
+    .await
 }
 
 #[tauri::command]
