@@ -151,8 +151,9 @@ fn resolve_aliases(n: &mut PlanNode, aliases: &[(String, String)]) {
     }
 }
 
-// Plans are recursively inspected and rendered after import, so bound their depth before constructing a tree.
-const MAX_DEPTH: usize = 64;
+// Each step adds both an object and a children array to saved JSON. Leave room below serde_json's recursion limit
+// for node facts and the enclosing report, as well as for recursively inspecting the tree on worker threads.
+const MAX_DEPTH: usize = 32;
 const MAX_NODES: usize = 10_000;
 
 fn validate_rows(rows: &[(i64, i64, String)]) -> Result<HashMap<i64, Vec<usize>>> {
@@ -419,6 +420,22 @@ mod tests {
         let wide: Vec<_> = (1..=MAX_NODES as i64 + 1).map(|id| (id, 0, "SCAN items".into())).collect();
         assert!(plan_from_rows("", &wide).is_err());
         assert_eq!(plan_from_rows("", &wide[..MAX_NODES]).unwrap().root.children.len(), MAX_NODES);
+    }
+
+    #[test]
+    fn deepest_accepted_plan_can_be_reopened_on_its_own_and_in_a_report() {
+        let rows: Vec<_> = (1..=MAX_DEPTH as i64).map(|id| (id, id - 1, "SCAN items".into())).collect();
+        let plan = plan_from_rows("SELECT * FROM items", &rows).unwrap();
+        let json = serde_json::to_vec(&plan).unwrap();
+        let reopened: Plan = serde_json::from_slice(&json).unwrap();
+        assert_eq!(reopened.nodes().len(), plan.nodes().len());
+
+        let mut report: culprit_core::Report =
+            serde_json::from_str(include_str!("../../../fixtures/mssql-demo.report.json")).unwrap();
+        report.snapshot.workload.as_mut().unwrap().queries[0].plan = Some(plan);
+        let json = serde_json::to_vec(&report).unwrap();
+        let reopened: culprit_core::Report = serde_json::from_slice(&json).unwrap();
+        assert!(reopened.snapshot.workload.unwrap().queries[0].plan.is_some());
     }
 
     #[test]
