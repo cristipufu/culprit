@@ -36,24 +36,37 @@ impl From<Snapshot> for Input {
 impl From<Report> for Input {
     fn from(report: Report) -> Self {
         let Report { snapshot, evidence, provenance, .. } = report;
-        let mut input = if let Some(e) = evidence {
-            let mut input = Self::from(*e.input);
-            input.collected = e.collected;
-            input.recorded_changes = e.recorded_changes;
-            input.origin = AnalysisOrigin::RetainedInput;
-            input
-        } else {
-            let mut input = Self::from(snapshot);
-            input.origin = AnalysisOrigin::PreparedReport;
-            input
+        let input = match evidence {
+            Some(evidence) => Self::retained(evidence),
+            None => Self::prepared(snapshot),
         };
-        if let Some(p) = provenance {
-            input.collection = p.collection;
-            input.last_analyzer = Some(p.analyzer);
-            input.previous_analyzer = p.previous_analyzer;
-            input.baselines = p.baselines;
-        }
+        input.with_provenance(provenance)
+    }
+}
+
+impl Input {
+    pub(crate) fn retained(evidence: culprit_core::ReportEvidence) -> Self {
+        let mut input = Self::from(*evidence.input);
+        input.collected = evidence.collected;
+        input.recorded_changes = evidence.recorded_changes;
+        input.origin = AnalysisOrigin::RetainedInput;
         input
+    }
+
+    pub(crate) fn prepared(snapshot: Snapshot) -> Self {
+        let mut input = Self::from(snapshot);
+        input.origin = AnalysisOrigin::PreparedReport;
+        input
+    }
+
+    pub(crate) fn with_provenance(mut self, provenance: Option<culprit_core::AnalysisProvenance>) -> Self {
+        if let Some(p) = provenance {
+            self.collection = p.collection;
+            self.last_analyzer = Some(p.analyzer);
+            self.previous_analyzer = p.previous_analyzer;
+            self.baselines = p.baselines;
+        }
+        self
     }
 }
 

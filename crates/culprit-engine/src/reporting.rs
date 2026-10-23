@@ -31,17 +31,17 @@ impl Reports<'_> {
     /// scan taken now would read the same data ([`crate::Workspace::analyze_file`]).
     pub(crate) fn latest_report(&self, name: &str, window_minutes: Option<u32>) -> Result<Option<Report>> {
         let dir = self.paths.reports_dir(name);
-        Ok(reports::latest(&dir, window_minutes)?.map(|r| {
-            let mut input = analysis::Input::from(r);
-            reports::rebase_on_scans(&dir, &mut input.snapshot);
-            self.reread(input)
-        }))
+        let Some(summary) = reports::latest_summary(&dir, window_minutes) else { return Ok(None) };
+        let mut input = reports::load_analysis_input(&dir.join(format!("{}.json", summary.id)))?;
+        reports::rebase_on_scans(&dir, &mut input.snapshot);
+        Ok(Some(self.reread(input)))
     }
 
     /// The newest saved snapshot for `name`, without re-parsing execution plans or re-running the check pipeline.
     pub(crate) fn latest_snapshot(&self, name: &str) -> Result<Option<culprit_core::Snapshot>> {
         let dir = self.paths.reports_dir(name);
-        Ok(reports::latest(&dir, None)?.map(|r| r.snapshot))
+        let Some(summary) = reports::latest_summary(&dir, None) else { return Ok(None) };
+        reports::load_snapshot(&dir.join(format!("{}.json", summary.id))).map(Some)
     }
 
     pub(crate) fn report_history(&self, name: &str) -> Result<Vec<ReportSummary>> {
@@ -65,8 +65,7 @@ impl Reports<'_> {
         // Plans are read again from their text before the redaction drops it.
         let load = |name: &str, id: &str| {
             let dir = self.paths.reports_dir(name);
-            reports::load(&dir.join(format!("{id}.json"))).map(|r| {
-                let mut input = analysis::Input::from(r);
+            reports::load_analysis_input(&dir.join(format!("{id}.json"))).map(|mut input| {
                 reports::rebase_on_scans(&dir, &mut input.snapshot);
                 input
             })

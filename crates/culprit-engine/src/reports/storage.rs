@@ -172,7 +172,51 @@ pub(super) fn decode(bytes: &[u8]) -> serde_json::Result<Report> {
     Ok(report)
 }
 
+/// Replay needs the retained input and collection, not typed copies of the prepared view or obsolete findings.
+/// Move the prepared JSON into the input difference rather than cloning it into a third snapshot.
+pub(super) fn analysis_input(mut value: Value) -> serde_json::Result<crate::analysis::Input> {
+    let provenance = serde_json::from_value(value.get_mut("provenance").map(Value::take).unwrap_or(Value::Null))?;
+    let mut input = if let Some(stored) = value.as_object_mut().and_then(|o| o.remove(KEY)) {
+        let stored: Stored = serde_json::from_value(stored)?;
+        if stored.version != 1 {
+            return Err(serde_json::Error::custom("Unsupported saved report encoding"));
+        }
+        let mut snapshot =
+            value.get_mut("snapshot").map(Value::take).ok_or_else(|| serde_json::Error::custom("No saved snapshot"))?;
+        apply(&mut snapshot, stored.input)?;
+        let collected = if let Some(diff) = stored.collected {
+            let mut collected = snapshot.clone();
+            apply(&mut collected, diff)?;
+            Some(collected)
+        } else {
+            None
+        };
+        crate::analysis::Input::retained(culprit_core::ReportEvidence {
+            input: Box::new(serde_json::from_value(snapshot)?),
+            collected: collected.map(serde_json::from_value).transpose()?.map(Box::new),
+            recorded_changes: stored.recorded_changes,
+        })
+    } else if let Some(evidence) = value.get_mut("evidence").map(Value::take).filter(|e| !e.is_null()) {
+        // Full-report JSON from before compact storage retained the two original snapshots directly.
+        drop(value.get_mut("snapshot").map(Value::take));
+        crate::analysis::Input::retained(serde_json::from_value(evidence)?)
+    } else {
+        let snapshot =
+            value.get_mut("snapshot").map(Value::take).ok_or_else(|| serde_json::Error::custom("No saved snapshot"))?;
+        crate::analysis::Input::prepared(serde_json::from_value(snapshot)?)
+    }
+    .with_provenance(provenance);
+    share_snapshots(std::iter::once(&mut input.snapshot).chain(input.collected.as_deref_mut()));
+    Ok(input)
+}
+
 pub(super) fn share_native_text(report: &mut Report) {
+    let evidence =
+        report.evidence.iter_mut().flat_map(|e| std::iter::once(e.input.as_mut()).chain(e.collected.as_deref_mut()));
+    share_snapshots(std::iter::once(&mut report.snapshot).chain(evidence));
+}
+
+fn share_snapshots<'a>(snapshots: impl IntoIterator<Item = &'a mut culprit_core::Snapshot>) {
     use std::{collections::HashSet, sync::Arc};
     let mut texts: HashSet<Arc<str>> = HashSet::new();
     let mut share = |snapshot: &mut culprit_core::Snapshot| {
@@ -186,12 +230,8 @@ pub(super) fn share_native_text(report: &mut Report) {
             }
         }
     };
-    share(&mut report.snapshot);
-    if let Some(evidence) = &mut report.evidence {
-        share(&mut evidence.input);
-        if let Some(collected) = &mut evidence.collected {
-            share(collected);
-        }
+    for snapshot in snapshots {
+        share(snapshot);
     }
 }
 
@@ -270,8 +310,49 @@ mod tests {
             serde_json::to_value(decode(&compact).unwrap()).unwrap(),
             serde_json::to_value(decode(&full).unwrap()).unwrap()
         );
+        for encoded in [&compact, &full] {
+            let input = analysis_input(serde_json::from_slice(encoded).unwrap()).unwrap();
+            assert_eq!(
+                serde_json::to_value(&input.snapshot).unwrap(),
+                serde_json::to_value(decoded.analysis_input()).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(&input.collected).unwrap(),
+                serde_json::to_value(&decoded.evidence.as_ref().unwrap().collected).unwrap()
+            );
+            assert!(std::sync::Arc::ptr_eq(&raw(&input.snapshot), &raw(input.collected.as_ref().unwrap())));
+            assert_eq!(input.origin, culprit_core::AnalysisOrigin::RetainedInput);
+        }
         let mut expected = serde_json::to_value(&report).unwrap();
         expected.as_object_mut().unwrap().remove("evidence");
         assert_eq!(serde_json::to_value(super::super::display(&report)).unwrap(), expected);
+    }
+
+    #[test]
+    fn replay_ignores_obsolete_output_but_rejects_invalid_retained_data() {
+        let snapshot: culprit_core::Snapshot =
+            serde_json::from_str(include_str!("../../../../fixtures/mssql-demo.json")).unwrap();
+        let report = culprit_checks::analyze(snapshot);
+        for mut value in [
+            serde_json::from_slice::<Value>(&encode(&report).unwrap()).unwrap(),
+            serde_json::to_value(&report).unwrap(),
+        ] {
+            value["findings"] = serde_json::json!({"obsolete": "finding format"});
+            value["summary"] = serde_json::json!("obsolete summary format");
+            value["assessments"] = serde_json::json!(false);
+            let input = analysis_input(value.clone()).unwrap();
+            assert_eq!(input.snapshot.id, report.analysis_input().id);
+            assert_eq!(input.origin, culprit_core::AnalysisOrigin::RetainedInput);
+            if value.get(KEY).is_some() {
+                let mut unsupported = value.clone();
+                unsupported[KEY]["version"] = serde_json::json!(2);
+                assert!(analysis_input(unsupported).is_err());
+                value[KEY]["input"] =
+                    serde_json::json!({"changes": [{"kind": "resize", "path": ["tables"], "length": usize::MAX}]});
+            } else {
+                value["evidence"]["input"]["tables"] = serde_json::json!("invalid retained tables");
+            }
+            assert!(analysis_input(value).is_err());
+        }
     }
 }

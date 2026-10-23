@@ -20,15 +20,25 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 mod screenshot;
 
 type Ws<'a> = State<'a, Arc<Workspace>>;
+static WORKSPACE_TASKS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
-/// Store updates may wait for another Culprit process's file lock. Keep them off the UI and async runtime threads.
-async fn write_workspace<T: Send + 'static>(
+/// Store updates can wait for file locks; report reads decode and replay large artifacts. Keep both off UI/runtime threads.
+async fn blocking_workspace<T: Send + 'static>(
     ws: Arc<Workspace>,
     update: impl FnOnce(&Workspace) -> Result<T> + Send + 'static,
 ) -> Result<T> {
-    tokio::task::spawn_blocking(move || update(&ws))
+    let permit = tokio::time::timeout(culprit_core::limits::QUERY_TIMEOUT, WORKSPACE_TASKS.acquire())
         .await
-        .map_err(|_| Error::internal("The workspace update stopped before completing"))?
+        .map_err(|_| {
+            Error::new(ErrorCode::Timeout, "The workspace is busy; try again after the current work finishes")
+        })?
+        .map_err(|_| Error::internal("Workspace workers are unavailable"))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        update(&ws)
+    })
+    .await
+    .map_err(|_| Error::internal("The workspace task stopped before completing"))?
 }
 
 /// The device code being shown, so "Open the sign-in page" opens Microsoft's page and nothing the webview asks for.
@@ -52,17 +62,17 @@ async fn test_connection(ws: Ws<'_>, input: NewConnection) -> Result<ServerInfo>
 
 #[tauri::command]
 async fn add_connection(ws: Ws<'_>, input: NewConnection) -> Result<ConnectionInfo> {
-    write_workspace(ws.inner().clone(), move |ws| ws.add_connection(input)).await
+    blocking_workspace(ws.inner().clone(), move |ws| ws.add_connection(input)).await
 }
 
 #[tauri::command]
 async fn remove_connection(ws: Ws<'_>, name: String) -> Result<()> {
-    write_workspace(ws.inner().clone(), move |ws| ws.remove_connection(&name)).await
+    blocking_workspace(ws.inner().clone(), move |ws| ws.remove_connection(&name)).await
 }
 
 #[tauri::command]
 async fn rename_connection(ws: Ws<'_>, old: String, new: String) -> Result<ConnectionInfo> {
-    write_workspace(ws.inner().clone(), move |ws| ws.rename_connection(&old, &new)).await
+    blocking_workspace(ws.inner().clone(), move |ws| ws.rename_connection(&old, &new)).await
 }
 
 #[tauri::command]
@@ -77,7 +87,7 @@ async fn discover_aws(ws: Ws<'_>, terms: Vec<String>, regions: Vec<String>) -> R
 
 #[tauri::command]
 async fn set_password(ws: Ws<'_>, name: String, password: String) -> Result<ConnectionInfo> {
-    write_workspace(ws.inner().clone(), move |ws| ws.set_password(&name, &password)).await
+    blocking_workspace(ws.inner().clone(), move |ws| ws.set_password(&name, &password)).await
 }
 
 #[tauri::command]
@@ -87,7 +97,7 @@ async fn import_candidates(ws: Ws<'_>, source: Option<ImportSource>) -> Result<V
 
 #[tauri::command]
 async fn import_connections(ws: Ws<'_>, items: Vec<ImportCandidate>) -> Result<Vec<ConnectionInfo>> {
-    write_workspace(ws.inner().clone(), move |ws| ws.import_connections(&items)).await
+    blocking_workspace(ws.inner().clone(), move |ws| ws.import_connections(&items)).await
 }
 
 #[tauri::command]
@@ -126,7 +136,7 @@ fn open_sign_in_page(sign_in: State<SignIn>) -> Result<()> {
 
 #[tauri::command]
 async fn add_discovered(ws: Ws<'_>, items: Vec<DiscoveredDatabase>) -> Result<Vec<ConnectionInfo>> {
-    write_workspace(ws.inner().clone(), move |ws| items.iter().map(|d| ws.add_discovered(d)).collect()).await
+    blocking_workspace(ws.inner().clone(), move |ws| items.iter().map(|d| ws.add_discovered(d)).collect()).await
 }
 
 /// The UI never shows raw plan XML/JSON, and on busy databases it is most of a report's size; keep it on disk only.
@@ -150,13 +160,16 @@ fn requested_window(window_minutes: Option<u32>, window_days: Option<u32>) -> Op
 }
 
 #[tauri::command]
-fn latest_report(
-    ws: Ws,
+async fn latest_report(
+    ws: Ws<'_>,
     name: String,
     window_minutes: Option<u32>,
     window_days: Option<u32>,
 ) -> Result<Option<Report>> {
-    Ok(ws.latest_report(&name, requested_window(window_minutes, window_days))?.map(for_ui))
+    blocking_workspace(ws.inner().clone(), move |ws| {
+        Ok(ws.latest_report(&name, requested_window(window_minutes, window_days))?.map(for_ui))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -168,23 +181,26 @@ async fn scan(ws: Ws<'_>, name: String, window_minutes: Option<u32>, window_days
 }
 
 #[tauri::command]
-fn brief(
-    ws: Ws,
+async fn brief(
+    ws: Ws<'_>,
     name: String,
     finding_id: String,
     window_minutes: Option<u32>,
     window_days: Option<u32>,
 ) -> Result<String> {
-    let report = ws
-        .latest_report(&name, requested_window(window_minutes, window_days))?
-        .or(ws.latest_report(&name, None)?)
-        .ok_or_else(|| Error::not_found(format!("No report for {name}")))?;
-    let finding = report
-        .findings
-        .iter()
-        .find(|f| f.id == finding_id)
-        .ok_or_else(|| Error::not_found(format!("No finding {finding_id}")))?;
-    Ok(culprit_engine::agent_brief(&report, finding))
+    blocking_workspace(ws.inner().clone(), move |ws| {
+        let window = requested_window(window_minutes, window_days);
+        let selected = ws.latest_report(&name, window)?;
+        let report = if selected.is_none() && window.is_some() { ws.latest_report(&name, None)? } else { selected }
+            .ok_or_else(|| Error::not_found(format!("No report for {name}")))?;
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.id == finding_id)
+            .ok_or_else(|| Error::not_found(format!("No finding {finding_id}")))?;
+        Ok(culprit_engine::agent_brief(&report, finding))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -283,14 +299,14 @@ async fn export_query_plan(
 }
 
 #[tauri::command]
-fn export_finding(
-    ws: Ws,
+async fn export_finding(
+    ws: Ws<'_>,
     name: String,
     finding_id: String,
     format: ExportFormat,
     options: ExportOptions,
 ) -> Result<ExportFile> {
-    ws.export_finding(&name, &finding_id, format, &options)
+    blocking_workspace(ws.inner().clone(), move |ws| ws.export_finding(&name, &finding_id, format, &options)).await
 }
 
 #[tauri::command]
@@ -310,17 +326,18 @@ async fn screenshot(webview: tauri::Webview, area: screenshot::Area) -> Result<(
 }
 
 #[tauri::command]
-fn drift(ws: Ws, a: String, b: String) -> Result<Drift> {
-    ws.drift(&a, &b)
+async fn drift(ws: Ws<'_>, a: String, b: String) -> Result<Drift> {
+    blocking_workspace(ws.inner().clone(), move |ws| ws.drift(&a, &b)).await
 }
 
 /// The index advisor's plan for the displayed scan (older clients may omit the id).
 #[tauri::command]
-fn index_advice(ws: Ws, name: String, report_id: Option<String>) -> Result<culprit_core::IndexAdvice> {
-    match report_id {
+async fn index_advice(ws: Ws<'_>, name: String, report_id: Option<String>) -> Result<culprit_core::IndexAdvice> {
+    blocking_workspace(ws.inner().clone(), move |ws| match report_id {
         Some(id) => ws.index_advice_at(&name, &id),
         None => ws.index_advice(&name),
-    }
+    })
+    .await
 }
 
 /// The dashboard from the connection's latest report for the window; the app reads sessions itself, every few seconds.
@@ -354,13 +371,14 @@ async fn dashboard_live(
 
 /// Where the latest scan's database time went, by wait category with the queries behind each.
 #[tauri::command]
-fn waits(
+async fn waits(
     ws: Ws<'_>,
     name: String,
     window_minutes: Option<u32>,
     window_days: Option<u32>,
 ) -> Result<Option<culprit_core::WaitsReport>> {
-    ws.waits(&name, requested_window(window_minutes, window_days))
+    blocking_workspace(ws.inner().clone(), move |ws| ws.waits(&name, requested_window(window_minutes, window_days)))
+        .await
 }
 
 /// What the server waits on right now, sampled for `seconds`.
@@ -399,12 +417,12 @@ async fn cloud(ws: Ws<'_>, name: String, request: culprit_engine::EventsRequest)
 /// Put a moment (a deploy, a migration) on a connection's timeline.
 #[tauri::command]
 async fn mark(ws: Ws<'_>, name: String, text: String, at: Option<String>) -> Result<culprit_engine::Mark> {
-    write_workspace(ws.inner().clone(), move |ws| ws.mark(&name, &text, at.as_deref(), "app")).await
+    blocking_workspace(ws.inner().clone(), move |ws| ws.mark(&name, &text, at.as_deref(), "app")).await
 }
 
 #[tauri::command]
 async fn unmark(ws: Ws<'_>, name: String, id: String) -> Result<culprit_engine::Mark> {
-    write_workspace(ws.inner().clone(), move |ws| ws.unmark(&name, &id)).await
+    blocking_workspace(ws.inner().clone(), move |ws| ws.unmark(&name, &id)).await
 }
 
 /// Recent deadlocks on a connection, explained (pattern, statements, fixes).
@@ -438,27 +456,34 @@ fn check_statement(engine: culprit_core::Engine, sql: String) -> culprit_core::s
 
 /// Lint migration or DDL SQL offline against the connection's latest saved snapshot (no database access).
 #[tauri::command]
-fn lint_sql(ws: Ws<'_>, name: String, sql: String) -> Result<Vec<culprit_core::Finding>> {
-    static CACHE: std::sync::Mutex<Option<(String, String, std::sync::Arc<culprit_core::Snapshot>)>> =
-        std::sync::Mutex::new(None);
-    let latest_id =
-        ws.report_history(&name).ok().and_then(|mut h| h.drain(..).next().map(|s| s.id)).unwrap_or_default();
-    if !latest_id.is_empty()
-        && let Ok(guard) = CACHE.lock()
-        && let Some((cached_name, cached_id, snap)) = guard.as_ref()
-        && cached_name == &name
-        && cached_id == &latest_id
-    {
-        return Ok(culprit_engine::lint_sql(snap, &sql));
-    }
-    let Some(snapshot) = ws.latest_snapshot(&name)? else {
-        return Ok(Vec::new());
-    };
-    let snap = std::sync::Arc::new(snapshot);
-    if let Ok(mut guard) = CACHE.lock() {
-        *guard = Some((name, snap.id.clone(), std::sync::Arc::clone(&snap)));
-    }
-    Ok(culprit_engine::lint_sql(&snap, &sql))
+async fn lint_sql(ws: Ws<'_>, name: String, sql: String) -> Result<Vec<culprit_core::Finding>> {
+    blocking_workspace(ws.inner().clone(), move |ws| {
+        static CACHE: std::sync::Mutex<Option<(String, String, std::sync::Arc<culprit_core::Snapshot>)>> =
+            std::sync::Mutex::new(None);
+        let latest_id = culprit_engine::reports::latest_summary(&ws.paths().reports_dir(&name), None)
+            .map(|summary| summary.id)
+            .unwrap_or_default();
+        let cached = CACHE.lock().ok().and_then(|guard| {
+            guard
+                .as_ref()
+                .filter(|(cached_name, cached_id, _)| {
+                    !latest_id.is_empty() && cached_name == &name && cached_id == &latest_id
+                })
+                .map(|(_, _, snapshot)| snapshot.clone())
+        });
+        if let Some(snapshot) = cached {
+            return Ok(culprit_engine::lint_sql(&snapshot, &sql));
+        }
+        let Some(snapshot) = ws.latest_snapshot(&name)? else {
+            return Ok(Vec::new());
+        };
+        let snap = std::sync::Arc::new(snapshot);
+        if let Ok(mut guard) = CACHE.lock() {
+            *guard = Some((name, snap.id.clone(), std::sync::Arc::clone(&snap)));
+        }
+        Ok(culprit_engine::lint_sql(&snap, &sql))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -473,27 +498,27 @@ fn saved_queries(ws: Ws<'_>) -> Result<Vec<culprit_engine::saved::SavedQuery>> {
 
 #[tauri::command]
 async fn save_query(ws: Ws<'_>, query: culprit_engine::saved::SaveQuery) -> Result<culprit_engine::saved::SavedQuery> {
-    write_workspace(ws.inner().clone(), move |ws| ws.save_query(query)).await
+    blocking_workspace(ws.inner().clone(), move |ws| ws.save_query(query)).await
 }
 
 #[tauri::command]
 async fn delete_saved_query(ws: Ws<'_>, name: String) -> Result<()> {
-    write_workspace(ws.inner().clone(), move |ws| ws.delete_saved_query(&name)).await
+    blocking_workspace(ws.inner().clone(), move |ws| ws.delete_saved_query(&name)).await
 }
 
 #[tauri::command]
 async fn saved_query_ran(ws: Ws<'_>, name: String) -> Result<()> {
-    write_workspace(ws.inner().clone(), move |ws| ws.saved_query_ran(&name)).await
+    blocking_workspace(ws.inner().clone(), move |ws| ws.saved_query_ran(&name)).await
 }
 
 #[tauri::command]
 async fn set_agent_access(ws: Ws<'_>, name: String, access: AgentAccess) -> Result<ConnectionInfo> {
-    write_workspace(ws.inner().clone(), move |ws| ws.set_agent_access(&name, access)).await
+    blocking_workspace(ws.inner().clone(), move |ws| ws.set_agent_access(&name, access)).await
 }
 
 #[tauri::command]
 async fn set_query_log(ws: Ws<'_>, name: String, path: Option<String>) -> Result<ConnectionInfo> {
-    write_workspace(ws.inner().clone(), move |ws| ws.set_query_log(&name, path.as_deref().map(std::path::Path::new)))
+    blocking_workspace(ws.inner().clone(), move |ws| ws.set_query_log(&name, path.as_deref().map(std::path::Path::new)))
         .await
 }
 
@@ -538,7 +563,7 @@ async fn choose_query_log(app: AppHandle, ws: Ws<'_>, name: String) -> Result<Op
     });
     let Some(picked) = receiver.await.ok().flatten() else { return Ok(None) };
     let path = picked.into_path().map_err(|e| Error::invalid(format!("That file can't be read from here: {e}")))?;
-    write_workspace(ws.inner().clone(), move |ws| ws.set_query_log(&name, Some(&path)).map(Some)).await
+    blocking_workspace(ws.inner().clone(), move |ws| ws.set_query_log(&name, Some(&path)).map(Some)).await
 }
 
 /// Approval requests already announced to the person, so the dock/taskbar only asks for attention once per request.
@@ -780,7 +805,7 @@ mod workspace_write_tests {
         held.lock().unwrap();
         let ws = Arc::new(Workspace::open_in(&dir));
         let (started, waiting) = tokio::sync::oneshot::channel();
-        let write = tokio::spawn(write_workspace(ws.clone(), move |ws| {
+        let write = tokio::spawn(blocking_workspace(ws.clone(), move |ws| {
             let _ = started.send(());
             ws.save_query(culprit_engine::saved::SaveQuery {
                 name: "health".into(),

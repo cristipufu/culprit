@@ -60,6 +60,36 @@ fn saved_readers_replay_original_input_and_keep_collection_without_rewriting_the
 }
 
 #[test]
+fn snapshot_consumers_skip_replay_metadata_and_replay_skips_obsolete_views() {
+    let home = home("focused-readers");
+    let ws = Workspace::open_in(&home);
+    let snapshot = snapshot();
+    let table_count = snapshot.tables.len();
+    let mut report = culprit_checks::analyze(snapshot);
+    report.snapshot.tables.truncate(1);
+    let name = &report.snapshot.connection;
+    let dir = ws.paths().reports_dir(name);
+    reports::save(&dir, &report).unwrap();
+    let path = dir.join(format!("{}.json", report.snapshot.id));
+    let mut value: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    value["findings"] = serde_json::json!("obsolete findings");
+    value["summary"] = serde_json::json!({"obsolete": "summary"});
+    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(reports::load(&path).is_err());
+    let replayed = ws.latest_report(name, None).unwrap().unwrap();
+    assert_eq!(replayed.snapshot.tables.len(), table_count);
+    assert_eq!(replayed.provenance.unwrap().origin, AnalysisOrigin::RetainedInput);
+
+    value["_culprit_store"]["input"] = serde_json::json!("invalid retained difference");
+    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(ws.latest_report(name, None).is_err());
+    let prepared = ws.latest_snapshot(name).unwrap().unwrap();
+    assert_eq!(prepared.tables.len(), 1);
+    assert_eq!(prepared.id, report.snapshot.id);
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
 fn repeated_replay_is_stable_and_does_not_nest_or_accumulate_evidence() {
     let home = home("stable");
     let ws = Workspace::open_in(&home);

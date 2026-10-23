@@ -205,6 +205,31 @@ differences for retained input and collection. Loading restores the full report;
 readable. Immutable native plan text is shared in memory across these snapshots. Report lists read small summary
 sidecars, or stream only the header of an older report, without deserializing its plans and retained evidence.
 
+Consumers request only what they need. `latest_snapshot` and scan-to-scan comparisons read the prepared snapshot
+directly, skipping derived views and retained evidence. Analysis readers reconstruct retained input and collection
+without decoding a typed prepared snapshot or obsolete derived views. They share the same origin/provenance
+constructors as in-memory replay, validate retained differences, and never rewrite a saved artifact.
+
+For a repeatable offline profile, `profile_reports` creates a synthetic workload from the checked-in SQL Server
+fixture. Run each measured mode separately so preparation does not inflate its peak memory:
+
+```sh
+culprit_profile_dir=$(mktemp -d "${TMPDIR:-/tmp}/culprit-profile.XXXXXX")
+cargo run --locked -p culprit-engine --example profile_reports -- prepare "$culprit_profile_dir" 1000
+target/debug/examples/profile_reports load "$culprit_profile_dir" 3
+target/debug/examples/profile_reports snapshot "$culprit_profile_dir" 3
+target/debug/examples/profile_reports replay "$culprit_profile_dir" 3
+```
+
+The modes print workload size and mean wall time as JSON. On macOS, prefix an individual measured command with
+`/usr/bin/time -l` for peak resident memory. Compare the same file, build profile and iteration count; these local
+debug measurements describe the code path and are not release latency guarantees.
+
+The desktop dispatches cached-report replay, export, drift, advice and linting through a bounded pool of two blocking
+workspace workers, shared with store updates. Queue acquisition has a deadline; cancelled queued calls start no work.
+Database futures stay asynchronous. Editor linting checks the small latest pointer and releases its snapshot-cache
+mutex before analysis. Brief generation reads its global fallback only when the selected window has no saved report.
+
 The desktop, CLI JSON and generated browser demo omit `evidence` from their view projection while keeping provenance;
 MCP returns its focused views. Shared exports and digests reparse before
 redacting, analyze only redacted input and never copy unredacted collection or recorded events into their replay body.

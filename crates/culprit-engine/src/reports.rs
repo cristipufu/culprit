@@ -499,23 +499,14 @@ pub(crate) fn load_analysis_input(path: &Path) -> Result<crate::analysis::Input>
     let mut value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
     if value.get("snapshot").is_some() && value.get("findings").is_some() && value.get("summary").is_some() {
-        return storage::expand(&mut value)
-            .and_then(|()| serde_json::from_value::<Report>(value))
-            .map(|mut report| {
-                storage::share_native_text(&mut report);
-                crate::analysis::Input::from(report)
-            })
+        return storage::analysis_input(value)
             .map_err(|e| Error::invalid(format!("{} is not a Culprit report: {e}", path.display())));
     }
     let wrapped = value.get("snapshot").is_some();
     let snapshot = if wrapped { value["snapshot"].take() } else { value };
     let snapshot: culprit_core::Snapshot = serde_json::from_value(snapshot)
         .map_err(|e| Error::invalid(format!("{} is not a Culprit snapshot or report: {e}", path.display())))?;
-    let mut input = crate::analysis::Input::from(snapshot);
-    if wrapped {
-        input.origin = culprit_core::AnalysisOrigin::PreparedReport;
-    }
-    Ok(input)
+    Ok(if wrapped { crate::analysis::Input::prepared(snapshot) } else { crate::analysis::Input::from(snapshot) })
 }
 
 pub fn list(dir: &Path) -> Result<Vec<ReportSummary>> {

@@ -85,8 +85,7 @@ impl<'a> Scan<'a> {
         let recorded_evidence = recorded.clone();
         let previous = previous
             .filter(|p| p.id != snapshot.id)
-            .and_then(|p| reports::load(&dir.join(format!("{}.json", p.id))).ok())
-            .map(|r| r.snapshot);
+            .and_then(|p| reports::load_snapshot(&dir.join(format!("{}.json", p.id))).ok());
         // A replica's usage counters are its own reads: set them aside before anything compares or judges them.
         history::set_aside_replica_usage(&mut snapshot);
         let same_database = previous.as_ref().filter(|p| history::same_database(p, &snapshot));
