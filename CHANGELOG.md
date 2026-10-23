@@ -2,6 +2,22 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.4.4
+
+### Fixes
+
+- **Safer plan exports and updated dependencies.** SQL Server native-plan redaction handles parsed XML attributes, including alternate attribute quoting and encoded values. Vulnerable TLS dependencies are updated, and unused ZIP extraction is removed.
+- **Bounded queries and reliable cancellation.** Queries and measured plans share a 30-second deadline across connection setup, validation and execution; observations and connection tests use 10 seconds after authentication. SQLite stops work when its deadline expires or its caller cancels, including time queued for a worker. Result grids retain at most 10,000 rows or 8 MiB of cell data, while network results are drained so a late database error is still reported.
+- **Safer saved state and report selection.** Saves are published atomically, concurrent local updates are serialized, and the newest-report pointer follows scan time. Large report reads, exports, comparisons and store updates run in bounded background workers so they cannot freeze the desktop or monopolize async runtime threads.
+- **Bounded query-log ingestion.** Large or growing logs are sampled within size limits, cut multiline records are discarded, and incomplete coverage is stated explicitly. Invalid or extreme duration values cannot produce infinite totals or variance.
+- **Plan and MCP crash fixes.** Malformed, oversized and excessively deep SQLite plan trees are rejected before building them. MCP tool calls keep engine operation state off the caller's stack, preventing a stack overflow while opening captured plans.
+- **Current connection and window own their results.** Late responses from a previous connection, time window or overlapping scan cannot replace the active report, clear its progress indicator or surface a stale error. Failed API initialization can be retried. Renaming a connection carries its active session and remembered window to the new alias and submits only once when Enter is followed by blur.
+
+### Performance
+
+- **Lower saved-report memory use.** Replay skips obsolete derived views, releases unused JSON early and shares identical retained snapshots and native plan text. Readers that need only a snapshot or comparison statistics avoid replaying the entire report.
+- **Responsive large workloads.** Query lists are paginated and query summaries are indexed. Editor linting releases its snapshot-cache lock before analysis, allowing other editor requests to proceed.
+
 ## 0.4.3
 
 ### Added
