@@ -225,9 +225,15 @@ fn redact_showplan(xml: &str) -> String {
     // Wrap fragments too (some tools copy individual Showplan elements). Leave the original declaration in place
     // when writing the result, but not inside the wrapper used to parse attributes and their exact source ranges.
     let trimmed = xml.trim_start_matches('\u{feff}').trim_start();
-    let offset = if trimmed.starts_with("<?xml") {
+    let offset = if trimmed.strip_prefix("<?xml").is_some_and(|rest| rest.starts_with(char::is_whitespace)) {
         let Some(end) = trimmed.find("?>") else { return redaction_failed() };
-        xml.len() - trimmed.len() + end + 2
+        let decl_end = xml.len() - trimmed.len() + end + 2;
+        let decl_probe = format!("{}<culprit/>", &xml[..decl_end]);
+        let Ok(decl_doc) = roxmltree::Document::parse(&decl_probe) else { return redaction_failed() };
+        if decl_doc.descendants().any(|n| n.is_pi() || n.is_comment()) {
+            return redaction_failed();
+        }
+        decl_end
     } else {
         0
     };
@@ -236,8 +242,16 @@ fn redact_showplan(xml: &str) -> String {
     let Ok(doc) = roxmltree::Document::parse(&wrapped) else { return redaction_failed() };
     let mut replacements = Vec::new();
     for node in doc.descendants() {
+        if node.is_pi() {
+            return redaction_failed();
+        }
         if node.is_comment() {
             replacements.push((node.range(), "<!-- … -->".to_string()));
+        }
+        if node.is_text()
+            && let Some(text) = node.text().filter(|t| !t.trim().is_empty())
+        {
+            replacements.push((node.range(), xml_escape(&strip_database(&redact_sql(text, Engine::Mssql)))));
         }
         for attr in node.attributes() {
             let replacement = match attr.name() {

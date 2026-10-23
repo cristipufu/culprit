@@ -376,7 +376,13 @@ fn native_xml_redaction_handles_xml_syntax_and_fails_closed() {
         let doc = roxmltree::Document::parse(&out).unwrap();
         assert_eq!(doc.root_element().attribute("StatementText"), Some("SELECT * FROM t WHERE token = '?'"));
     }
-    for xml in ["<StmtSimple StatementText='PLANTED", "<!DOCTYPE x [<!ENTITY secret 'PLANTED'>]><x/>"] {
-        assert!(!redact_native(xml, Engine::Mssql).contains("PLANTED"));
+    for xml in [
+        "<StmtSimple StatementText='PLANTED",
+        "<!DOCTYPE x [<!ENTITY secret 'PLANTED'>]><x/>",
+        "<?xml-stylesheet type=\"text/xsl\" href=\"PLANTED\"?><StmtSimple/>",
+        "<StmtSimple><?pi PLANTED?></StmtSimple>",
+        "<StmtSimple>SELECT * FROM t WHERE token = 'PLANTED'</StmtSimple>",
+    ] {
+        assert!(!redact_native(xml, Engine::Mssql).contains("PLANTED"), "{xml}");
     }
 }

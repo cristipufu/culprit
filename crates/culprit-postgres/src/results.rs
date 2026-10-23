@@ -72,7 +72,7 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    async fn message(socket: &mut tokio::net::TcpStream, tag: u8, body: &[u8]) {
+    async fn message(socket: &mut tokio::io::DuplexStream, tag: u8, body: &[u8]) {
         socket.write_u8(tag).await.unwrap();
         socket.write_u32((body.len() + 4) as u32).await.unwrap();
         socket.write_all(body).await.unwrap();
@@ -80,10 +80,8 @@ mod tests {
 
     // A protocol peer exercises the real streaming driver without needing a live database or executing SQL.
     async fn peer(values: Vec<String>, late_error: bool) -> (Client, tokio::task::JoinHandle<()>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let (client_io, mut socket) = tokio::io::duplex(64 * 1024);
         let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
             let length = socket.read_u32().await.unwrap() as usize;
             socket.read_exact(&mut vec![0; length - 4]).await.unwrap();
             message(&mut socket, b'R', &0u32.to_be_bytes()).await;
@@ -112,11 +110,9 @@ mod tests {
             message(&mut socket, b'Z', b"I").await;
         });
         let (client, connection) = tokio_postgres::Config::new()
-            .host("127.0.0.1")
-            .port(port)
             .user("test")
             .ssl_mode(tokio_postgres::config::SslMode::Disable)
-            .connect(tokio_postgres::NoTls)
+            .connect_raw(client_io, tokio_postgres::NoTls)
             .await
             .unwrap();
         tokio::spawn(async move {

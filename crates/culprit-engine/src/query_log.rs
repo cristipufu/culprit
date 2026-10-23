@@ -27,15 +27,21 @@ const ENVIRONMENTS: &[&str] = &["development", "production", "staging", "test"];
 /// The format of the log at `path` ("Rails"), told from its first lines; an error that says why when it holds no
 /// statement in a format Culprit reads (most often: the framework logs SQL only at debug level).
 pub fn recognize(path: &Path) -> Result<&'static str> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| Error::new(ErrorCode::NotFound, format!("Can't read {}: {e}", path.display())))?;
-    let sample: Vec<String> = BufReader::new(std::io::Read::take(file, SAMPLE_BYTES))
-        .split(b'\n')
-        .take(SAMPLE_LINES)
-        .map_while(std::result::Result::ok)
-        .map(|l| String::from_utf8_lossy(&l).trim_end_matches('\r').to_string())
-        .collect();
-    culprit_querylog::detect(sample.iter().map(String::as_str)).map(|f| f.name()).ok_or_else(|| no_statements(path))
+    let mut lines = LogLines::open(path, LogLimits { bytes: SAMPLE_BYTES, ..LogLimits::default() })?;
+    let mut sample = Vec::new();
+    let mut sample_bytes = 0;
+    while sample.len() < SAMPLE_LINES && sample_bytes < SAMPLE_BYTES as usize {
+        match lines.next()? {
+            Some(line) => {
+                sample_bytes += line.len();
+                sample.push(line);
+            }
+            None => break,
+        }
+    }
+    culprit_querylog::detect(sample.iter().map(String::as_str)).map(|f| f.name()).ok_or_else(|| {
+        lines.limitation.as_ref().map_or_else(|| no_statements(path), |reason| Error::invalid(reason.clone()))
+    })
 }
 
 fn no_statements(path: &Path) -> Error {
