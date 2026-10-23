@@ -208,10 +208,29 @@ struct LogLines {
     buffer: Vec<u8>,
     deadline: Instant,
     line_limit: u64,
-    clipped: bool,
+    end: u64,
     limitation: Option<String>,
 }
 impl LogLines {
+    fn open(path: &Path, limits: LogLimits) -> Result<Self> {
+        let file = std::fs::File::open(path)
+            .map_err(|e| Error::new(ErrorCode::NotFound, format!("Can't read {}: {e}", path.display())))?;
+        let metadata = file.metadata().map_err(|e| Error::invalid(e.to_string()))?;
+        if !metadata.is_file() {
+            return Err(Error::invalid("A query log must be a regular file"));
+        }
+        // Snapshot the length so a growing log cannot keep a scan alive indefinitely.
+        let end = metadata.len().min(limits.bytes);
+        Ok(Self {
+            reader: BufReader::new(file.take(end)),
+            buffer: Vec::new(),
+            deadline: Instant::now() + limits.time,
+            line_limit: limits.line,
+            end,
+            limitation: None,
+        })
+    }
+
     fn next(&mut self) -> Result<Option<String>> {
         if self.limitation.is_some() {
             return Ok(None);
@@ -226,9 +245,11 @@ impl LogLines {
             .take(self.line_limit + 1)
             .read_until(b'\n', &mut self.buffer)
             .map_err(|e| Error::new(ErrorCode::QueryFailed, format!("Reading the query log failed: {e}")))?;
-        let at_limit = self.clipped && self.reader.get_ref().limit() == 0 && self.reader.buffer().is_empty();
+        let at_limit = self.reader.get_ref().limit() == 0
+            && self.reader.buffer().is_empty()
+            && self.reader.get_ref().get_ref().metadata().map_err(|e| Error::invalid(e.to_string()))?.len() > self.end;
         if at_limit && (read == 0 || !self.buffer.ends_with(b"\n")) {
-            self.limitation = Some("The log is larger than Culprit can read in one scan; only complete earlier records were collected. Use a smaller or rotated log for recent activity.".into());
+            self.limitation = Some("The log grew or exceeds Culprit's reading budget; only complete earlier records were collected. Use a smaller or rotated log for recent activity.".into());
             return Ok(None);
         }
         if read as u64 > self.line_limit {
@@ -252,21 +273,14 @@ fn read_file_with_limits(
     engine: culprit_core::Engine,
     limits: LogLimits,
 ) -> Result<(&'static str, Aggregator, Option<String>)> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| Error::new(ErrorCode::NotFound, format!("Can't read {}: {e}", path.display())))?;
-    let metadata = file.metadata().map_err(|e| Error::invalid(e.to_string()))?;
-    if !metadata.is_file() {
-        return Err(Error::invalid("A query log must be a regular file"));
-    }
-    // Snapshot the length so a log growing faster than collection cannot keep a scan alive indefinitely.
-    let mut lines = LogLines {
-        reader: BufReader::new(file.take(metadata.len().min(limits.bytes))),
-        buffer: Vec::new(),
-        deadline: Instant::now() + limits.time,
-        line_limit: limits.line,
-        clipped: metadata.len() > limits.bytes,
-        limitation: None,
-    };
+    read_lines(path, engine, LogLines::open(path, limits)?)
+}
+
+fn read_lines(
+    path: &Path,
+    engine: culprit_core::Engine,
+    mut lines: LogLines,
+) -> Result<(&'static str, Aggregator, Option<String>)> {
     let mut sample = Vec::new();
     let mut sample_bytes = 0;
     while sample.len() < SAMPLE_LINES && sample_bytes < SAMPLE_BYTES as usize {
@@ -366,6 +380,34 @@ mod tests {
                 .err()
                 .unwrap();
         assert!(error.message.contains("deadline"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_growing_log_does_not_flush_a_cut_multiline_statement() {
+        use std::io::Write;
+
+        let root = app("growing");
+        let path = root.join("log/production.log");
+        for ending in ["", "\n"] {
+            let text = format!(
+                "Executed DbCommand (1ms) SELECT * FROM items\ninfo: ready\n\
+                 Executed DbCommand (2ms)\n    SELECT * FROM other_items{ending}"
+            );
+            std::fs::write(&path, &text).unwrap();
+            let lines = LogLines::open(&path, LogLimits::default()).unwrap();
+            let mut writer = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+            writer.write_all(b"    WHERE id = 1\ninfo: ready\n").unwrap();
+            drop(writer);
+            let (_, a, reason) = read_lines(&path, culprit_core::Engine::Sqlite, lines).unwrap();
+            assert_eq!(a.entries(), 1, "a cut statement must not count: {ending:?}");
+            assert!(reason.unwrap().contains("grew"));
+            // A static EOF still completes a final statement, including one without a trailing newline.
+            std::fs::write(&path, text).unwrap();
+            let (_, a, reason) = read_file(&path, culprit_core::Engine::Sqlite).unwrap();
+            assert_eq!(a.entries(), 2);
+            assert!(reason.is_none());
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
