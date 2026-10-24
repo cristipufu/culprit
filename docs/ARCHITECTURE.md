@@ -73,6 +73,8 @@ native reads check their caller's operation guard before starting. Exhausted bud
 partial source failures cannot produce a complete empty result. Exact remaining counts are intentionally absent.
 CLI bulk saving refuses incomplete results. Pagination tests use scripted pages and never require a cloud login.
 The generated `app/src/gen/discovery.json` keeps the demo's result limit aligned with the backend.
+All Azure and AWS CLI calls, including Entra token acquisition and Azure Monitor reads, use `cloud_process.rs` for
+the subprocess bounds above and close stdin so a background CLI cannot wait for interactive input.
 
 Azure and AWS subprocesses share `cloud_cli.rs`, including authentication and metrics calls. Resolution respects the
 inherited PATH first, then standard user and system install directories on macOS, Linux and Windows (including

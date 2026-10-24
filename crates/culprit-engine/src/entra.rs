@@ -494,15 +494,18 @@ pub fn token_user(token: &str) -> Option<String> {
 
 /// A token from the Azure CLI's signed-in account (the CLI caches and refreshes it).
 pub async fn azure_cli_token(engine: Engine) -> Result<String> {
-    let output = crate::cloud_cli::command(crate::cloud_cli::Cli::Azure)
+    let mut command = crate::cloud_cli::command(crate::cloud_cli::Cli::Azure);
+    command
         .args(["account", "get-access-token", "--resource", resource(engine), "--query", "accessToken"])
-        .args(["--output", "tsv"])
-        .output()
-        .await
-        .map_err(|e| {
-            Error::new(ErrorCode::AuthFailed, format!("Could not run the Azure CLI: {e}"))
+        .args(["--output", "tsv"]);
+    let output = crate::cloud_process::output(command).await.map_err(|error| {
+        if error.code == ErrorCode::NotFound {
+            Error::new(ErrorCode::AuthFailed, "The Azure CLI was not found in PATH or standard install locations")
                 .with_hint("Install the Azure CLI and run `az login`, or use password authentication")
-        })?;
+        } else {
+            error
+        }
+    })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(Error::new(ErrorCode::AuthFailed, format!("Azure CLI could not issue a token: {}", stderr.trim()))

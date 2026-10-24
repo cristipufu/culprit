@@ -813,7 +813,7 @@ fn azure_metrics(target: &Target) -> &'static [(&'static str, &'static str, Clou
     }
 }
 
-async fn az_metrics(id: &str, metrics: &[&str], start: f64, end: f64, period: u32) -> Result<Value> {
+async fn az_metrics(id: &str, metrics: &[&str], start: f64, end: f64, period: u32) -> Result<std::process::Output> {
     let (from, to) = (iso(start), iso(end));
     let mut args: Vec<&str> = vec!["monitor", "metrics", "list", "--resource", id, "--metrics"];
     args.extend(metrics);
@@ -829,10 +829,19 @@ async fn az_metrics(id: &str, metrics: &[&str], start: f64, end: f64, period: u3
         "--output",
         "json",
     ]);
-    let output = crate::cloud_cli::command(crate::cloud_cli::Cli::Azure).args(&args).output().await.map_err(|e| {
-        Error::new(ErrorCode::AuthFailed, format!("Could not run the Azure CLI: {e}"))
-            .with_hint("Install the Azure CLI and run `az login`")
-    })?;
+    let mut command = crate::cloud_cli::command(crate::cloud_cli::Cli::Azure);
+    command.args(&args);
+    crate::cloud_process::output(command).await.map_err(|error| {
+        if error.code == ErrorCode::NotFound {
+            Error::new(ErrorCode::AuthFailed, "The Azure CLI was not found in PATH or standard install locations")
+                .with_hint("Install the Azure CLI and run `az login`")
+        } else {
+            error
+        }
+    })
+}
+
+fn parse_az_metrics(output: std::process::Output) -> Result<Value> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let code = if stderr.contains("az login") || stderr.contains("AADSTS") {
@@ -856,7 +865,8 @@ async fn azure_signals(target: &Target, resource: &Resource, start: f64, end: f6
     let names: Vec<&str> = wanted.iter().map(|(m, _, _)| *m).collect();
     // A metric this resource doesn't publish fails the whole call; fall back to the ones every tier has.
     let mut notes = Vec::new();
-    let json = match az_metrics(&id, &names, start, end, period).await {
+    // Process failures (including output limits) bypass the fallback for server-rejected metric names.
+    let json = match parse_az_metrics(az_metrics(&id, &names, start, end, period).await?) {
         Ok(json) => json,
         Err(e) if e.code == ErrorCode::QueryFailed => {
             notes.push("Some metrics aren't published for this tier; showing CPU, memory and storage.".to_string());
@@ -865,7 +875,7 @@ async fn azure_signals(target: &Target, resource: &Resource, start: f64, end: f6
                 .copied()
                 .filter(|m| matches!(*m, "cpu_percent" | "memory_percent" | "storage_percent"))
                 .collect();
-            az_metrics(&id, &basic, start, end, period).await?
+            parse_az_metrics(az_metrics(&id, &basic, start, end, period).await?)?
         }
         Err(e) => return Err(e),
     };

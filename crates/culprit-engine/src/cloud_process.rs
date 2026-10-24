@@ -1,4 +1,4 @@
-//! Bounded cloud CLI output. Cancellation kills the owned child instead of leaving inventory collection running.
+//! Bounded cloud CLI output for discovery, metrics and authentication. Cancellation kills the owned process tree.
 use std::process::{Output, Stdio};
 use std::time::Duration;
 
@@ -89,7 +89,7 @@ async fn within(mut command: Command, timeout: Duration) -> Result<Output> {
     .await
     .map_err(|_| {
         Error::new(ErrorCode::Timeout, "The cloud CLI timed out")
-            .with_hint("Check the CLI login and narrow the search or choose specific regions")
+            .with_hint("Check the cloud CLI login and network connection, then retry")
     })?
 }
 
@@ -109,6 +109,16 @@ mod tests {
         match std::env::var("CULPRIT_TEST_CLOUD_CHILD").as_deref() {
             Ok("large") => {
                 let _ = std::io::stdout().write_all(&vec![b'x'; MAX_OUTPUT + 1]);
+            }
+            Ok("large-stderr") => {
+                let _ = std::io::stderr().write_all(&b"private-cli-diagnostic".repeat(MAX_STDERR));
+            }
+            Ok("stdin") => {
+                use std::io::Read;
+                let mut input = Vec::new();
+                std::io::stdin().read_to_end(&mut input).unwrap();
+                assert!(input.is_empty());
+                println!("CLI stdin reached EOF");
             }
             Ok("wrapper") => {
                 let mut command = std::process::Command::new(std::env::current_exe().unwrap());
@@ -141,7 +151,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn caller_cancellation_kills_the_child() {
+    async fn excessive_stderr_is_bounded_without_including_its_contents_in_the_error() {
+        let error = output(child("large-stderr")).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::QueryFailed);
+        assert!(!serde_json::to_string(&error).unwrap().contains("private-cli-diagnostic"));
+    }
+
+    #[tokio::test]
+    async fn cli_processes_cannot_wait_for_input() {
+        let mut command = child("stdin");
+        command.stdin(Stdio::piped());
+        let output = output(command).await.unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("CLI stdin reached EOF"));
+    }
+
+    async fn assert_child_stopped(timeout: bool) {
         let path = std::env::temp_dir().join(format!(
             "culprit-cloud-child-{}-{:?}",
             std::process::id(),
@@ -150,7 +175,7 @@ mod tests {
         let ready = path.with_extension("ready");
         let mut command = child("wrapper");
         command.env("CULPRIT_TEST_CLOUD_MARKER", &path);
-        let task = tokio::spawn(async move { output(command).await });
+        let task = tokio::spawn(async move { within(command, Duration::from_secs(120)).await });
         for _ in 0..500 {
             if ready.exists() {
                 break;
@@ -158,10 +183,29 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(ready.exists(), "The owned test child did not start");
-        task.abort();
-        let _ = task.await;
+        if timeout {
+            // Start the real process before advancing virtual time, so this tests killing a running process tree.
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(121)).await;
+            let error = task.await.unwrap().unwrap_err();
+            tokio::time::resume();
+            assert_eq!(error.code, ErrorCode::Timeout);
+        } else {
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+        }
         tokio::time::sleep(Duration::from_millis(1200)).await;
-        assert!(!path.exists(), "A canceled CLI child continued running");
+        assert!(!path.exists(), "A retired CLI child continued running");
         let _ = std::fs::remove_file(ready);
+    }
+
+    #[tokio::test]
+    async fn caller_cancellation_kills_the_child() {
+        assert_child_stopped(false).await;
+    }
+
+    #[tokio::test]
+    async fn deadline_kills_the_child() {
+        assert_child_stopped(true).await;
     }
 }
