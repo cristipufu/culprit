@@ -12711,64 +12711,61 @@ button.as-callout:hover {
 
 .new-conn {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--s-3);
   margin-top: 18px;
 }
 
-/* The engine first: one choice, as wide as the form, so what follows is that engine's. */
-.engine-picker {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s-2);
+/* One compact field, independent of the number of providers. The native menu owns keyboard navigation. */
+.engine-select {
+  position: relative;
+  width: min(300px, 100%);
+  min-width: 0;
 }
 
-.engine-choice {
-  display: flex;
-  align-items: center;
-  flex: 1 1 auto;
-  justify-content: center;
-  gap: 8px;
+.engine-select select {
+  appearance: none;
+  width: 100%;
   min-width: 0;
   height: 44px;
-  padding: 0 10px;
+  padding: 0 36px 0 44px;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--raised);
-  color: var(--text-2);
-  font-size: var(--fs-ui);
-  font-weight: 500;
-  white-space: nowrap;
-  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
-}
-
-.engine-choice .engine-badge {
-  --badge-ring: var(--raised);
-}
-
-.engine-choice > span {
-  min-width: 0;
-  overflow: hidden;
+  color: var(--text);
+  font: 500 var(--fs-ui) var(--font);
+  cursor: pointer;
   text-overflow: ellipsis;
 }
 
-.engine-choice:hover {
+.engine-select select:hover {
   border-color: var(--border-strong);
-  color: var(--text);
 }
 
-.engine-choice.on {
-  border-color: color-mix(in srgb, var(--brand) 70%, var(--border-strong));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent);
-  color: var(--text);
+.engine-select-icon,
+.engine-select > svg {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
 }
 
-.engine-choice:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
+.engine-select-icon {
+  left: 12px;
+  display: grid;
+  width: 22px;
+  place-items: center;
+  color: var(--text-3);
+}
+
+.engine-select > svg {
+  right: 12px;
+  color: var(--text-3);
 }
 
 .new-conn-field {
   display: grid;
+  min-width: 0;
   gap: 6px;
 }
 

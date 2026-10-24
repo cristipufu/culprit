@@ -1,4 +1,4 @@
-import { Check, Database, FolderOpen } from "lucide-react";
+import { Check, ChevronDown, Database, FolderOpen } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { EngineBadge } from "../../components/EngineBadge";
 import type { Engine } from "../../gen/Engine";
@@ -46,6 +46,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
   const [password, setPassword] = useState("");
   const [test, setTest] = useState<TestState>({ status: "idle" });
   const field = useRef<HTMLInputElement>(null);
+  const focusInput = useRef(engine !== null);
   const ids = useId();
   const facts = engine ? connectFacts(engine) : null;
 
@@ -62,6 +63,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
         if (!live) return;
         // The text names another engine than the one picked (or none was): it's that engine's, read again as it.
         if (p.engine && p.engine !== engine) {
+          focusInput.current = true;
           setSwitched(engine !== null);
           setEngine(p.engine);
           return;
@@ -82,9 +84,12 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
     };
   }, [input, engine, nameTouched, environmentTouched]);
 
-  // Picking an engine puts the cursor where its connection string (or file) goes.
+  // Restore the input on opening or after paste detection. Native selection keeps focus for arrow keys and Tab.
   useEffect(() => {
-    if (engine) field.current?.focus();
+    if (engine && focusInput.current) {
+      field.current?.focus();
+      focusInput.current = false;
+    }
   }, [engine]);
 
   const pick = (next: Engine) => {
@@ -94,17 +99,6 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
     setEngine(next);
     setSwitched(false);
     setTest({ status: "idle" });
-  };
-
-  const onPickerKey = (e: React.KeyboardEvent) => {
-    const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
-    if (!step) return;
-    e.preventDefault();
-    const at = engine ? ENGINES.indexOf(engine) : step > 0 ? -1 : 0;
-    const next = ENGINES[(at + step + ENGINES.length) % ENGINES.length];
-    if (!next) return;
-    pick(next);
-    (e.currentTarget.querySelector(`[data-engine="${next}"]`) as HTMLElement | null)?.focus();
   };
 
   // Before an engine is picked, a pasted connection string picks its own.
@@ -180,30 +174,31 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
       }}
     >
       <div className="eyebrow">New connection</div>
-      <div className="engine-picker" role="radiogroup" aria-label="Database engine" onKeyDown={onPickerKey}>
-        {ENGINES.map((e) => (
-          <button
-            key={e}
-            type="button"
-            role="radio"
-            data-engine={e}
-            aria-checked={engine === e}
-            tabIndex={(engine ?? ENGINES[0]) === e ? 0 : -1}
-            autoFocus={!engine && e === ENGINES[0]}
-            className={`engine-choice ${engine === e ? "on" : ""}`}
-            onClick={() => pick(e)}
+      <div className="new-conn-field">
+        <label htmlFor={`${ids}-engine`}>Database type</label>
+        <div className="engine-select">
+          <span className="engine-select-icon" aria-hidden="true">
+            {engine ? <EngineBadge engine={engine} /> : <Database size={16} />}
+          </span>
+          <select
+            id={`${ids}-engine`}
+            value={engine ?? ""}
+            autoFocus={!engine}
+            aria-describedby={!engine ? `${ids}-engine-help` : undefined}
+            onChange={(e) => pick(e.currentTarget.value as Engine)}
           >
-            <EngineBadge engine={e} size="md" />
-            <span>{connectFacts(e).choice}</span>
-          </button>
-        ))}
+            <option value="" disabled>Choose a database…</option>
+            {ENGINES.map((e) => <option key={e} value={e}>{connectFacts(e).choice}</option>)}
+          </select>
+          <ChevronDown size={14} aria-hidden="true" />
+        </div>
       </div>
 
       {!engine && (
-        <p className="new-conn-help">
+        <p id={`${ids}-engine-help`} className="new-conn-help">
           {input.trim() && !parseError
-            ? `Which engine is ${input.trim().length > 60 ? `${input.trim().slice(0, 60)}…` : input.trim()}? Pick it above.`
-            : parseError ?? "Pick the engine, or paste a connection string and Culprit picks it."}
+            ? "Choose a database type for this connection string."
+            : parseError ?? "Choose a database type, or paste a connection string to detect it."}
         </p>
       )}
 
