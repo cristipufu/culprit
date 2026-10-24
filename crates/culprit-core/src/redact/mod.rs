@@ -69,6 +69,38 @@ pub fn redact_identity(identity: &mut crate::DatabaseIdentity) {
 
 pub fn redact_measurement(measurement: &mut crate::MeasurementContext) {
     redact_identity(&mut measurement.database);
+    if let crate::MeasurementSource::Named(source) = &mut measurement.source {
+        *source = redact_scope(source);
+    }
+}
+
+// Native scope labels retain node/role visibility without publishing physical UUIDs or catalog role ids.
+fn redact_scope(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some((at, label)) = ["node ", "role "]
+        .into_iter()
+        .filter_map(|label| rest.find(label).map(|at| (at, label)))
+        .min_by_key(|(at, _)| *at)
+    {
+        out.push_str(&rest[..at + label.len()]);
+        let boundary = rest[..at].chars().next_back().is_none_or(|c| !c.is_alphanumeric() && c != '_');
+        rest = &rest[at + label.len()..];
+        let end = rest
+            .bytes()
+            .take_while(|b| if label == "node " { b.is_ascii_hexdigit() || *b == b'-' } else { b.is_ascii_digit() })
+            .count();
+        let value = &rest[..end];
+        let valid = boundary && if label == "node " { value.replace('-', "").len() == 32 } else { !value.is_empty() };
+        if valid {
+            out.push_str(&if label == "node " { opaque(value) } else { "[redacted]".into() });
+        } else {
+            out.push_str(value);
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn redact_reference(reference: &mut crate::ScanReference) {
@@ -108,6 +140,40 @@ pub fn redact_snapshot(snapshot: &Snapshot) -> Snapshot {
     }
     for failure in &mut s.operations.log_failures {
         failure.statement = redact_sql(&failure.statement, engine);
+    }
+    if let Some(resources) = &mut s.operations.node_resources {
+        resources.source = redact_scope(&resources.source);
+        for note in &mut resources.notes {
+            *note = redact_scope(note);
+        }
+        for node in &mut resources.nodes {
+            node.node = opaque(&node.node);
+        }
+    }
+    if let Some(history) = &mut s.operations.activity_history {
+        history.period.source = redact_scope(&history.period.source);
+        for note in &mut history.period.notes {
+            *note = redact_scope(note);
+        }
+        for node in &mut history.period.nodes {
+            *node = opaque(node);
+        }
+        for event in &mut history.events {
+            event.node = event.node.as_deref().map(opaque);
+        }
+    }
+    if let Some(history) = &mut s.operations.termination_history {
+        history.source = redact_scope(&history.source);
+        history.visibility = redact_scope(&history.visibility);
+        for note in &mut history.notes {
+            *note = redact_scope(note);
+        }
+        for node in &mut history.nodes {
+            *node = opaque(node);
+        }
+        for event in &mut history.events {
+            event.node = event.node.as_deref().map(opaque);
+        }
     }
     for table in &mut s.tables {
         table.definition = table.definition.as_deref().map(|sql| redact_sql(sql, engine));
@@ -166,6 +232,11 @@ pub fn redact_snapshot(snapshot: &Snapshot) -> Snapshot {
         redact_measurement(measurement);
     }
     if let Some(w) = &mut s.workload {
+        w.source = redact_scope(&w.source);
+        if let Some(counters) = &mut w.counter_set {
+            counters.members =
+                std::mem::take(&mut counters.members).into_iter().map(|(node, epoch)| (opaque(&node), epoch)).collect();
+        }
         if let Some(measurement) = &mut w.measurement {
             redact_measurement(measurement);
         }
@@ -176,6 +247,7 @@ pub fn redact_snapshot(snapshot: &Snapshot) -> Snapshot {
             q.text = redact_sql(&q.text, engine);
             q.plan = q.plan.as_ref().map(redact_plan);
             if let Some(history) = &mut q.plan_history {
+                history.source = redact_scope(&history.source);
                 history.captured_plan = history.captured_plan.as_ref().map(redact_plan);
             }
             for p in &mut q.plans {

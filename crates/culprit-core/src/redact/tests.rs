@@ -2,6 +2,45 @@ use super::plan::is_measurement;
 use super::*;
 
 #[test]
+fn distributed_scope_redaction_is_complete_correlated_and_idempotent() {
+    let mut snapshot: Snapshot = serde_json::from_str(include_str!("../../../../fixtures/yugabyte-demo.json")).unwrap();
+    let node = snapshot.operations.node_resources.as_ref().unwrap().nodes[0].node.clone();
+    let scope = format!("node {node}, role 4294000001 only");
+    let w = snapshot.workload.as_mut().unwrap();
+    w.source = scope.clone();
+    for q in &mut w.queries {
+        if let Some(h) = &mut q.plan_history {
+            h.source = scope.clone();
+        }
+    }
+    let h = snapshot.operations.activity_history.as_mut().unwrap();
+    h.period.source = scope.clone();
+    let h = snapshot.operations.termination_history.as_mut().unwrap();
+    h.source = scope.clone();
+    h.visibility = scope;
+    snapshot.bind_identity(crate::DatabaseIdentity::server(
+        Engine::Yugabyte,
+        &snapshot.server.database.clone(),
+        "private-host",
+        5433,
+        None,
+    ));
+    let shared = redact_snapshot(&snapshot);
+    let text = serde_json::to_string(&shared).unwrap();
+    assert!(!text.contains(&node) && !text.contains("4294000001"));
+    let masked = &shared.operations.node_resources.as_ref().unwrap().nodes[0].node;
+    assert!(masked.starts_with("redacted-"));
+    let w = shared.workload.as_ref().unwrap();
+    assert!(w.counter_set.as_ref().unwrap().members.contains_key(masked));
+    assert!(w.source.contains(masked) && w.source.contains("role [redacted] only"));
+    let h = shared.operations.activity_history.as_ref().unwrap();
+    assert!(h.period.nodes.contains(masked) && h.events.iter().all(|e| e.node.as_ref() == Some(masked)));
+    let h = shared.operations.termination_history.as_ref().unwrap();
+    assert!(h.nodes.contains(masked) && h.events.iter().all(|e| e.node.as_ref() == Some(masked)));
+    assert_eq!(serde_json::to_value(&shared).unwrap(), serde_json::to_value(redact_snapshot(&shared)).unwrap());
+}
+
+#[test]
 fn ysql_literals_are_redacted_without_losing_parameters_or_subplan_references() {
     let sql = "SELECT $$private-canary$$, $tag$it's private-canary$tag$, 'private-canary', $1";
     assert_eq!(redact_sql(sql, Engine::Yugabyte), "SELECT '?', '?', '?', $1");
