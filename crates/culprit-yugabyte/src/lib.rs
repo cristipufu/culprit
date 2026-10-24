@@ -100,6 +100,9 @@ impl Provider for YugabyteProvider {
         )
         .await
     }
+    async fn explain_hypothetical(&self, sql: &str, indexes: &[String]) -> Result<Plan> {
+        deadline(OBSERVE_TIMEOUT, async { plan::native(self.execution.hypothetical_ysql(sql, indexes).await?) }).await
+    }
     async fn explain_recorded(&self, sql: &str, id: Option<&str>) -> Result<Plan> {
         deadline(OBSERVE_TIMEOUT, async {
             let session = self.connector.connect_observed(COLLECTOR).await?;

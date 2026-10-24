@@ -7,6 +7,69 @@ static LIVE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
 #[ignore = "requires dev/yugabyte and CULPRIT_YSQL_TEST_PORT"]
+async fn live_hypothetical_indexes_use_native_plans_without_persistent_indexes_or_heap_measurements() {
+    let _fixture = LIVE.lock().await;
+    let provider = YugabyteProvider::new(&local_spec()).unwrap();
+    let admin = provider.connector.connect(INTERACTIVE).await.unwrap();
+    admin.batch_execute(&tagged("SET default_transaction_read_only=off")).await.unwrap();
+    let existing=query_one(&admin,"SELECT n.nspname AS schema FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='hypopg'").await.unwrap();
+    let pid = query_one(&admin, "SELECT pg_backend_pid()::text AS pid").await.unwrap().unwrap().string("pid");
+    let schema = format!("culprit_hypothetical_{pid}");
+    admin.batch_execute(&tagged(&format!("CREATE SCHEMA {schema}"))).await.unwrap();
+    if existing.is_none() {
+        let missing = provider
+            .explain_hypothetical(
+                "SELECT * FROM public.orders",
+                &["CREATE INDEX ON public.orders (customer_id ASC)".into()],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(missing.code, culprit_core::ErrorCode::Unsupported);
+        assert!(missing.hint.as_deref().unwrap().contains("CREATE EXTENSION hypopg"));
+        admin.batch_execute(&tagged(&format!("CREATE EXTENSION hypopg WITH SCHEMA {schema}"))).await.unwrap();
+    }
+    let observed = async {
+        let sql = "SELECT * FROM public.orders WHERE customer_id=42";
+        let index = "CREATE INDEX culprit_virtual_customer ON public.orders (customer_id ASC)".to_string();
+        let plan = provider.explain_hypothetical(sql, std::slice::from_ref(&index)).await?;
+        let parameterized = provider
+            .explain_hypothetical("SELECT * FROM public.orders WHERE customer_id=$1", std::slice::from_ref(&index))
+            .await?;
+        let invalid = provider.explain_hypothetical(sql, &["DROP TABLE public.orders".into()]).await;
+        let multiple = provider.explain_hypothetical(sql, &[format!("{index}; DROP TABLE public.orders")]).await;
+        let sql_error = provider
+            .explain_hypothetical("SELECT missing_column FROM public.orders", std::slice::from_ref(&index))
+            .await;
+        let unmodified = provider.explain(sql, culprit_core::ExplainMode::Estimated).await?;
+        let persistent =
+            query_one(&admin, "SELECT to_regclass('public.culprit_virtual_customer') IS NOT NULL AS found")
+                .await?
+                .unwrap()
+                .flag("found");
+        Ok::<_, Error>((plan, parameterized, invalid, multiple, sql_error, unmodified, persistent))
+    }
+    .await;
+    if existing.is_none() {
+        admin.batch_execute(&tagged("DROP EXTENSION hypopg")).await.unwrap();
+    }
+    admin.batch_execute(&tagged(&format!("DROP SCHEMA {schema}"))).await.unwrap();
+    let (plan, parameterized, invalid, multiple, sql_error, unmodified, persistent) = observed.unwrap();
+    assert_eq!(plan.engine, Engine::Yugabyte);
+    assert_eq!(parameterized.engine, Engine::Yugabyte);
+    assert_eq!(parameterized.kind, culprit_core::PlanKind::Generic);
+    assert!(plan.props.get("VirtualIndexes").is_some_and(|names| names.contains("hypo") || names.contains("lsm")));
+    assert_eq!(crate::plan::reparse(&plan).unwrap().props.get("VirtualIndexes"), plan.props.get("VirtualIndexes"));
+    assert!(plan.nodes().iter().any(|n| n.index.as_deref().is_some_and(|i| i.contains("lsm"))));
+    assert!(
+        plan.nodes().iter().all(|n| n.table_rows.is_none() && n.facts().heap_fetches.is_none() && n.runtime.is_none())
+    );
+    assert!(invalid.is_err() && multiple.is_err() && sql_error.is_err());
+    assert!(!persistent);
+    assert!(!unmodified.props.contains_key("VirtualIndexes"));
+}
+
+#[tokio::test]
+#[ignore = "requires dev/yugabyte and CULPRIT_YSQL_TEST_PORT"]
 async fn live_copy_progress_keeps_native_counters_and_rejects_retained_results_and_stale_sessions() {
     use futures_util::SinkExt;
 

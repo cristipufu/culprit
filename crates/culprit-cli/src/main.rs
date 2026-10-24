@@ -408,7 +408,7 @@ struct ExplainArgs {
     /// Never runs the query.
     #[arg(long, requires = "query_id")]
     last_actual: bool,
-    /// Test one or more virtual indexes (`CREATE INDEX ...`) in planner memory without building them (PostgreSQL `hypopg`).
+    /// Test virtual indexes in planner memory without building them (PostgreSQL or YugabyteDB `hypopg`).
     #[arg(long = "with-index", value_name = "CREATE_INDEX_SQL", conflicts_with_all = ["analyze", "last_actual"])]
     with_index: Vec<String>,
     #[arg(long)]

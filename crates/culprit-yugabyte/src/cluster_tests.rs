@@ -7,6 +7,23 @@ use std::collections::BTreeSet;
 static CLUSTER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const WORK: &str = "/* native-cluster-workload */ SELECT sum(id) FROM public.cluster_probe WHERE id>0";
 
+#[tokio::test]
+#[ignore = "requires the seeded disposable three-node cluster and CULPRIT_YSQL_CLUSTER_TEST=1"]
+async fn live_cluster_virtual_indexes_refuse_pooled_backend_memory_before_extension_calls() {
+    let _fixture = CLUSTER.lock().await;
+    let provider = YugabyteProvider::new(&spec(55439, "culprit_cluster_app")).unwrap();
+    let error = provider
+        .explain_hypothetical(
+            "SELECT * FROM public.cluster_probe WHERE payload='fixture'",
+            &["CREATE INDEX ON public.cluster_probe(payload ASC)".into()],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, culprit_core::ErrorCode::Unsupported);
+    assert!(error.message.contains("direct YSQL backend"));
+    assert!(error.hint.as_deref().unwrap().contains("No virtual index was registered"));
+}
+
 fn spec(port: u16, user: &str) -> ConnectionSpec {
     assert_eq!(
         std::env::var("CULPRIT_YSQL_CLUSTER_TEST").as_deref(),

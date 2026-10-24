@@ -63,6 +63,102 @@ impl PostgresProvider {
         Ok(PostgresProvider { connector: Connector::new(spec)?, spec: spec.clone() })
     }
 
+    async fn hypothetical_wire(&self, sql: &str, indexes: &[String], fill_table_sizes: bool) -> Result<Plan> {
+        let statement = single_statement(sql)?;
+        let client = self.connector.connect(INTERACTIVE).await?;
+        if !fill_table_sizes
+            && query_one(
+                &client,
+                "SELECT backend_type FROM pg_catalog.pg_stat_activity WHERE pid=pg_catalog.pg_backend_pid()",
+            )
+            .await?
+            .is_none_or(|row| row.text("backend_type").as_deref() != Some("client backend"))
+        {
+            return Err(Error::new(culprit_core::ErrorCode::Unsupported,
+                "Virtual indexes require a direct YSQL backend; pooled workers cannot establish isolated planner memory")
+                .with_hint("Connect to the direct YSQL port to test virtual indexes. No virtual index was registered."));
+        }
+        let hypopg_schema = query_one(
+            &client,
+            "SELECT n.nspname AS schema FROM pg_catalog.pg_extension e JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'hypopg'",
+        )
+        .await?
+        .map(|r| r.string("schema"));
+        let Some(ext_schema) = hypopg_schema else {
+            return Err(Error::new(
+                culprit_core::ErrorCode::Unsupported,
+                "The `hypopg` extension is not installed on this database",
+            )
+            .with_hint("Install it with `CREATE EXTENSION hypopg;` to test virtual indexes with `--with-index`."));
+        };
+        let q_schema = Engine::Postgres.dialect().quote(&ext_schema);
+        let reset_sql = format!("SELECT {q_schema}.hypopg_reset()");
+        let create_sql = format!("SELECT * FROM {q_schema}.hypopg_create_index($1)");
+        let mut cleanup_needed = false;
+        let result = async {
+            let elevated = trust::elevated(&client).await?;
+            // Registration can reach expression/operator code too. Apply the planner trust and read-only
+            // boundary before invoking HypoPG; virtual indexes live in session memory across this rollback.
+            trust::begin(&client, elevated).await?;
+            cleanup_needed = true;
+            let registered = async {
+                client.batch_execute(&tagged(&reset_sql)).await.map_err(map_error)?;
+                let mut virtual_names = Vec::new();
+                for raw_idx in indexes {
+                    let idx_stmt = single_statement(raw_idx)?;
+                    if !culprit_core::sql::creates_index(idx_stmt, Engine::Postgres) {
+                        return Err(Error::invalid("`--with-index` expects a `CREATE INDEX` statement"));
+                    }
+                    let cleaned = strip_concurrently_keyword(idx_stmt);
+                    let rows = client.query(&tagged(&create_sql), &[&cleaned]).await.map_err(map_error)?;
+                    if rows.is_empty() {
+                        return Err(Error::invalid(format!(
+                            "`hypopg_create_index` did not create a virtual index for `{idx_stmt}`"
+                        )));
+                    }
+                    for row in rows {
+                        if let Ok(name) = row.try_get::<_, String>("indexname").or_else(|_| row.try_get::<_, String>(1))
+                        {
+                            virtual_names.push(name);
+                        }
+                    }
+                }
+                Ok(virtual_names)
+            }
+            .await;
+            trust::end(&client).await;
+            let virtual_names = registered?;
+            let parameters = parameter_count(&client, statement).await?;
+            let mut plan = if parameters == 0 {
+                trust::begin(&client, elevated).await?;
+                let explained = explain_text(
+                    &client,
+                    &format!("EXPLAIN (FORMAT JSON, VERBOSE) {statement}"),
+                    PlanKind::Estimated,
+                    statement,
+                )
+                .await;
+                trust::end(&client).await;
+                explained?
+            } else {
+                let json = generic::plan_json(&client, statement, server_version(&client).await?, elevated).await?;
+                plan_json::parse(&json, PlanKind::Generic, Some(statement))?
+            };
+            if fill_table_sizes {
+                tables::fill(&client, &mut plan).await;
+            }
+            if !virtual_names.is_empty() {
+                plan.props.insert("VirtualIndexes".into(), virtual_names.join(", "));
+            }
+            Ok(plan)
+        }
+        .await;
+        if cleanup_needed {
+            let _ = client.batch_execute(&tagged(&reset_sql)).await;
+        }
+        result
+    }
+
     fn environment(&self) -> Environment {
         self.spec.environment
     }
@@ -198,71 +294,7 @@ impl Provider for PostgresProvider {
     }
 
     async fn explain_hypothetical(&self, sql: &str, indexes: &[String]) -> Result<Plan> {
-        let statement = single_statement(sql)?;
-        let client = self.connector.connect(INTERACTIVE).await?;
-        let hypopg_schema = query_one(
-            &client,
-            "SELECT n.nspname AS schema FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'hypopg'",
-        )
-        .await?
-        .map(|r| r.string("schema"));
-        let Some(ext_schema) = hypopg_schema else {
-            return Err(Error::new(
-                culprit_core::ErrorCode::Unsupported,
-                "The `hypopg` extension is not installed on this PostgreSQL database",
-            )
-            .with_hint("Install it with `CREATE EXTENSION hypopg;` to test virtual indexes with `--with-index`."));
-        };
-        let q_schema = Engine::Postgres.dialect().quote(&ext_schema);
-        let reset_sql = format!("SELECT {q_schema}.hypopg_reset()");
-        let create_sql = format!("SELECT * FROM {q_schema}.hypopg_create_index($1)");
-        client.batch_execute(&tagged(&reset_sql)).await.map_err(map_error)?;
-        let result = async {
-            let mut virtual_names = Vec::new();
-            for raw_idx in indexes {
-                let idx_stmt = single_statement(raw_idx)?;
-                if !culprit_core::sql::creates_index(idx_stmt, Engine::Postgres) {
-                    return Err(Error::invalid("`--with-index` expects a `CREATE INDEX` statement"));
-                }
-                let cleaned = strip_concurrently_keyword(idx_stmt);
-                let rows = client.query(&tagged(&create_sql), &[&cleaned]).await.map_err(map_error)?;
-                if rows.is_empty() {
-                    return Err(Error::invalid(format!(
-                        "`hypopg_create_index` did not create a virtual index for `{idx_stmt}`"
-                    )));
-                }
-                for row in rows {
-                    if let Ok(name) = row.try_get::<_, String>("indexname").or_else(|_| row.try_get::<_, String>(1)) {
-                        virtual_names.push(name);
-                    }
-                }
-            }
-            let parameters = parameter_count(&client, statement).await?;
-            let elevated = trust::elevated(&client).await?;
-            let mut plan = if parameters == 0 {
-                trust::begin(&client, elevated).await?;
-                let explained = explain_text(
-                    &client,
-                    &format!("EXPLAIN (FORMAT JSON, VERBOSE) {statement}"),
-                    PlanKind::Estimated,
-                    statement,
-                )
-                .await;
-                trust::end(&client).await;
-                explained?
-            } else {
-                let json = generic::plan_json(&client, statement, server_version(&client).await?, elevated).await?;
-                plan_json::parse(&json, PlanKind::Generic, Some(statement))?
-            };
-            tables::fill(&client, &mut plan).await;
-            if !virtual_names.is_empty() {
-                plan.props.insert("VirtualIndexes".into(), virtual_names.join(", "));
-            }
-            Ok(plan)
-        }
-        .await;
-        let _ = client.batch_execute(&tagged(&reset_sql)).await;
-        result
+        self.hypothetical_wire(sql, indexes, true).await
     }
 
     async fn query_progress(&self, session: &str, with_plan: bool) -> Result<culprit_core::QueryProgress> {

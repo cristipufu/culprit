@@ -26,6 +26,11 @@ impl SqlExecutor {
         self.inner.explain_wire(sql, mode, false, true).await
     }
 
+    /// Session-local virtual indexes, using the YSQL HypoPG implementation and no PostgreSQL heap enrichment.
+    pub async fn hypothetical_ysql(&self, sql: &str, indexes: &[String]) -> Result<Plan> {
+        self.inner.hypothetical_wire(sql, indexes, false).await
+    }
+
     pub async fn recorded_text(&self, sql: &str, query_id: Option<&str>) -> Result<String> {
         let client = self.inner.connector.connect(INTERACTIVE).await?;
         if !crate::trust::elevated(&client).await? {
@@ -49,6 +54,55 @@ impl SqlExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL database with HypoPG available and CULPRIT_HYPOPG_PG_TEST_PORT"]
+    async fn live_postgres_hypothetical_registration_uses_read_only_trust_and_leaves_no_real_index() {
+        let port =
+            std::env::var("CULPRIT_HYPOPG_PG_TEST_PORT").expect("set CULPRIT_HYPOPG_PG_TEST_PORT").parse().unwrap();
+        let mut spec = ConnectionSpec {
+            host: "127.0.0.1".into(),
+            port: Some(port),
+            user: Some("postgres".into()),
+            database: Some("culprit_hypopg".into()),
+            environment: culprit_core::Environment::Local,
+            ..Default::default()
+        };
+        spec.options.insert("sslmode".into(), "disable".into());
+        let provider = crate::PostgresProvider::new(&spec).unwrap();
+        let admin = provider.connector.connect(INTERACTIVE).await.unwrap();
+        admin.batch_execute(&tagged("SET default_transaction_read_only=off")).await.unwrap();
+        admin.batch_execute(&tagged("CREATE EXTENSION IF NOT EXISTS hypopg")).await.unwrap();
+        let pid = query_one(&admin, "SELECT pg_backend_pid()::text AS pid").await.unwrap().unwrap().string("pid");
+        let schema = format!("culprit_hypothetical_{pid}");
+        let role = format!("culprit_hypothetical_role_{pid}");
+        admin.batch_execute(&tagged(&format!("CREATE SCHEMA {schema}; CREATE ROLE {role}; CREATE TABLE {schema}.items(id int PRIMARY KEY, value int); INSERT INTO {schema}.items SELECT n,n FROM generate_series(1,5000) n; ANALYZE {schema}.items"))).await.unwrap();
+        let observed=async {
+            let sql=format!("SELECT * FROM {schema}.items WHERE value=42");
+            let index=format!("CREATE INDEX culprit_virtual ON {schema}.items(value)");
+            let plan=provider.explain_hypothetical(&sql,std::slice::from_ref(&index)).await?;
+            let parameterized=provider.explain_hypothetical(&format!("SELECT * FROM {schema}.items WHERE value=$1"),std::slice::from_ref(&index)).await?;
+            admin.batch_execute(&tagged(&format!("GRANT USAGE,CREATE ON SCHEMA {schema} TO {role}; CREATE FUNCTION {schema}.other_role_code(int) RETURNS int LANGUAGE sql IMMUTABLE AS 'SELECT $1'; ALTER FUNCTION {schema}.other_role_code(int) OWNER TO {role}"))).await.map_err(map_error)?;
+            let refused=provider.explain_hypothetical(&sql,std::slice::from_ref(&index)).await;
+            admin.batch_execute(&tagged(&format!("DROP FUNCTION {schema}.other_role_code(int)"))).await.map_err(map_error)?;
+            let failed=provider.explain_hypothetical(&format!("SELECT missing_column FROM {schema}.items"),std::slice::from_ref(&index)).await;
+            let plain=provider.explain(&sql,ExplainMode::Estimated).await?;
+            let real=query_one(&admin,&format!("SELECT count(*)::text AS n FROM pg_index WHERE indrelid='{schema}.items'::regclass")).await?.unwrap().string("n");
+            Ok::<_,culprit_core::Error>((plan,parameterized,refused,failed,plain,real))
+        }.await;
+        admin.batch_execute(&tagged(&format!("DROP SCHEMA {schema} CASCADE; DROP ROLE {role}"))).await.unwrap();
+        let (plan, parameterized, refused, failed, plain, real) = observed.unwrap();
+        assert_eq!(plan.engine, Engine::Postgres);
+        assert!(plan.props.contains_key("VirtualIndexes"));
+        assert!(plan.nodes().iter().any(|n| n.index.as_deref().is_some_and(|name| name.contains("btree"))));
+        assert!(plan.nodes().iter().any(|n| n.table_rows == Some(5000.0)));
+        assert_eq!(parameterized.kind, culprit_core::PlanKind::Generic);
+        assert!(parameterized.props.contains_key("VirtualIndexes"));
+        assert_eq!(refused.unwrap_err().code, culprit_core::ErrorCode::PermissionDenied);
+        assert!(failed.is_err());
+        assert!(!plain.props.contains_key("VirtualIndexes"));
+        assert_eq!(real, "1", "only the original primary key may exist");
+    }
 
     /// Opt-in against dev/yugabyte's disposable loopback database. No PostgreSQL probe or heap collector is called.
     #[tokio::test]

@@ -85,6 +85,19 @@ temporary login are removed afterward. Temporary PostgreSQL-local tables cannot 
 
 ## Cluster-view verification
 
+Verify native HypoPG plans without creating an actual index:
+
+```sh
+CULPRIT_YSQL_TEST_PORT=55434 cargo test --locked -p culprit-yugabyte --lib live_hypothetical -- --ignored
+```
+
+This case installs HypoPG in a temporary schema only when absent, checks constant and parameterized native plans,
+retained labels, missing-extension/invalid-SQL errors, and unchanged physical indexes. It removes its extension and
+schema afterward; collection never installs extensions. The cluster suite below also verifies that pooled workers
+are refused before extension calls. Shared PostgreSQL coverage uses the opt-in
+`wire::tests::live_postgres_hypothetical_registration_uses_read_only_trust_and_leaves_no_real_index` test, against a
+disposable `culprit_hypopg` database with HypoPG available and `CULPRIT_HYPOPG_PG_TEST_PORT` set to its loopback port.
+
 The separate [three-node fixture](cluster.compose.yml) uses the same pinned release, without touching the one-node
 demo above. Each container is capped at two CPUs and 2 GiB; it publishes only loopback YSQL ports:
 55436/55437/55438 for direct connections and 55439 for Connection Manager on node three.

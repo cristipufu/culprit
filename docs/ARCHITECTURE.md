@@ -479,6 +479,11 @@ implementation. The cold dashboard is pinned to the displayed report, and a repl
 or selected window is discarded. A failed read clears current measurements; incomplete visibility cannot establish
 zero blocked sessions. MCP returns the original numeric signal values, leaving display rounding to its consumer.
 
+PostgreSQL and YugabyteDB share HypoPG wire operations, with read-only/trust checks before virtual-index registration
+as well as planning. Native YSQL omits heap enrichment and retains the virtual-index label through native parsing and
+replay. Connection Manager workers are refused before invoking HypoPG: session-memory indexes must not cross logical
+clients on a reusable physical backend. The provider's observation deadline bounds the complete native operation.
+
 ## Desktop request lifecycles
 
 Session identities are validated through `EngineSpec` before resolving a provider or its credentials. SQL Server,

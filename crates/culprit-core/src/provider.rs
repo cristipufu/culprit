@@ -85,7 +85,7 @@ pub trait Provider: Send + Sync {
     }
 
     /// Estimated plan of `sql` with one or more virtual indexes (`CREATE INDEX ...`) registered only in this session's
-    /// planner memory (PostgreSQL `hypopg`). Never creates a real index or modifies the database.
+    /// planner memory (PostgreSQL/YSQL `hypopg`). Never creates a real index or modifies the database.
     async fn explain_hypothetical(&self, _sql: &str, _indexes: &[String]) -> Result<Plan> {
         Err(Error::new(
             ErrorCode::Unsupported,

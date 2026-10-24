@@ -28,6 +28,7 @@ are not claimed as verified; optional views and functions that are absent or den
 | Captured plans | Safe generic/estimated YSQL plans; elevated logins plan their own recorded text, including their copy on another node when global views are configured |
 | Retained plan history | Native `yb_pg_stat_plans` cache counts, weighted average/max elapsed times and first/last use; selected cached bodies stay in saved scans for offline inspection |
 | Analyze | `EXPLAIN (ANALYZE, DIST, VERBOSE, FORMAT JSON)`; measured writes roll back |
+| Virtual indexes | Native HypoPG with `explain --with-index`; session-memory indexes, trusted read-only registration/planning, native estimates and offline labels; requires a direct YSQL backend |
 | Plan files | Native JSON with DIST/storage markers is detected as YugabyteDB; saved scans reparse with the native reader |
 | Catalog | Tables, row estimates, columns, defaults, foreign keys, index definitions, hash keys, tablet counts and colocation |
 | Deferred constraints | CHECK and foreign-key constraints added NOT VALID; findings explain unvalidated existing rows and suggest version-appropriate validation, without PostgreSQL planner or locking promises |
@@ -176,6 +177,25 @@ Unknown memory limits stay distinct from native unlimited (`-1`) and measured ze
 agent output carries a bounded summary and the total retained/expected counts. Verified live on the one-node
 fixture, including ordinary-login and `pg_read_all_stats` refusals, successful `yb_db_admin` access and revocation.
 
+## Virtual indexes
+
+YugabyteDB's [HypoPG extension](https://docs.yugabyte.com/stable/additional-features/pg-extensions/extension-hypopg/)
+supports testing an index without building it. After an administrator installs `hypopg`, use:
+
+```sh
+culprit explain shop --sql 'SELECT * FROM public.orders WHERE customer_id = 42' \
+  --with-index 'CREATE INDEX ON public.orders (customer_id ASC)'
+```
+
+Only estimated plans are requested, including generic plans for `$n` parameters. Virtual index names remain labelled
+in the result and saved-plan replay. Registration and planning use the same read-only/trust guards as other estimates;
+cleanup resets HypoPG on success or failure, and the direct backend closes afterward. No real index or application
+query is executed. Missing extensions and invalid index statements return explicit errors.
+
+Connection Manager worker backends are refused before registering virtual state. Their reused physical backend
+memory cannot establish an isolated what-if session; use the direct YSQL port. Cost differences describe native
+optimizer estimates, without predicted milliseconds, PostgreSQL heap enrichment or measured storage work.
+
 ## Live command progress
 
 Live reads native `pg_stat_progress_create_index`, `pg_stat_progress_analyze` and `pg_stat_progress_copy`
@@ -203,7 +223,11 @@ PostgreSQL heap pages, buffer ratios, dead tuples, HOT updates, autovacuum, XID/
 advice are unavailable by design. Database size remains unknown. Configuration suggestions are restricted to supported
 YSQL database settings; other changes use YugabyteDB administration rather than PostgreSQL `ALTER SYSTEM` guesses.
 
-Native command progress covers the views above; distributed deadlock history is not yet collected.
+Native command progress covers the views above. Distributed deadlock history is unavailable: live native lock
+metadata describes current contention, while DocDB [distributed deadlock detection](https://docs.yugabyte.com/stable/architecture/transactions/concurrency-control/)
+reports failures to the affected transactions. Culprit refuses the historical deadlock operation instead of treating
+the PostgreSQL counter or an empty termination buffer as zero distributed deadlocks. Correlate the application's
+`40P01` errors with YB-TServer logs for retrospective investigation.
 Database-attributed resource pressure and a complete SQL error history are not supplied by these native views;
 PostgreSQL placeholders are not substituted. Current session/lock collection is limited to 1,000 sessions and 2,000
 waits and labels truncated or node-local visibility incomplete. Live lowers the lock metadata reader's session-local
