@@ -29,6 +29,10 @@ pub fn session_target(session: &str) -> crate::Result<(String, i32, String)> {
 }
 
 impl EngineSpec for Yugabyte {
+    fn products(&self) -> &'static [ProductSpec] {
+        const PRODUCTS: &[ProductSpec] = &[ProductSpec::primary(DatabaseProduct::Yugabyte, "YugabyteDB")];
+        PRODUCTS
+    }
     fn unused_index_advice(&self, _server: &ServerInfo, _table_kind: Option<&str>) -> &'static str {
         "Save its native definition and sharding keys before dropping it. Check a complete cluster-wide business cycle of usage, and measure the affected queries after the change."
     }
@@ -46,9 +50,6 @@ impl EngineSpec for Yugabyte {
     }
     fn sql_syntax(&self) -> SqlSyntax {
         SqlSyntax::Postgres
-    }
-    fn label(&self) -> &'static str {
-        "YugabyteDB"
     }
     fn inactive_index_state(&self, _: &ServerInfo) -> crate::IndexState {
         crate::IndexState::Invalid

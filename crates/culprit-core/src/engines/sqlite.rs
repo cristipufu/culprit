@@ -7,6 +7,10 @@ use crate::dialect::{NewIndex, keys, unique};
 pub(super) struct Sqlite;
 
 impl EngineSpec for Sqlite {
+    fn products(&self) -> &'static [ProductSpec] {
+        const PRODUCTS: &[ProductSpec] = &[ProductSpec::primary(DatabaseProduct::Sqlite, "SQLite")];
+        PRODUCTS
+    }
     fn unused_index_advice(&self, _server: &ServerInfo, _table_kind: Option<&str>) -> &'static str {
         "Drop it: SQLite can't hide an index first, so keep its CREATE INDEX statement to put it back if a query slows down."
     }
@@ -34,9 +38,6 @@ impl EngineSpec for Sqlite {
         "EXPLAIN QUERY PLAN records access paths, not estimated or measured rows, costs or timing. Query durations and errors require a supported application log; request traces need request identifiers in that telemetry.".into(),
         "A WAL file can retain allocated space after checkpointing. Its size or growth alone does not establish checkpoint starvation or identify a reader holding a snapshot.".into(),
     ]
-    }
-    fn label(&self) -> &'static str {
-        "SQLite"
     }
 
     fn connect(&self) -> Connect {

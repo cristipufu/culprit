@@ -1,6 +1,13 @@
 {
   "mssql": {
     "label": "SQL Server",
+    "products": [
+      {
+        "id": "mssql",
+        "label": "SQL Server",
+        "prefix": null
+      }
+    ],
     "abilities": {
       "sessions": true,
       "wait_sample": true,
@@ -48,6 +55,18 @@
   },
   "postgres": {
     "label": "PostgreSQL",
+    "products": [
+      {
+        "id": "postgres",
+        "label": "PostgreSQL",
+        "prefix": null
+      },
+      {
+        "id": "timescale",
+        "label": "TimescaleDB",
+        "prefix": "TimescaleDB"
+      }
+    ],
     "abilities": {
       "sessions": true,
       "wait_sample": true,
@@ -105,6 +124,13 @@
   },
   "yugabyte": {
     "label": "YugabyteDB",
+    "products": [
+      {
+        "id": "yugabyte",
+        "label": "YugabyteDB",
+        "prefix": null
+      }
+    ],
     "abilities": {
       "sessions": true,
       "wait_sample": true,
@@ -167,6 +193,18 @@
   },
   "mysql": {
     "label": "MySQL",
+    "products": [
+      {
+        "id": "mysql",
+        "label": "MySQL",
+        "prefix": null
+      },
+      {
+        "id": "mariadb",
+        "label": "MariaDB",
+        "prefix": "MariaDB"
+      }
+    ],
     "abilities": {
       "sessions": true,
       "wait_sample": true,
@@ -224,6 +262,13 @@
   },
   "sqlite": {
     "label": "SQLite",
+    "products": [
+      {
+        "id": "sqlite",
+        "label": "SQLite",
+        "prefix": null
+      }
+    ],
     "abilities": {
       "sessions": false,
       "wait_sample": false,

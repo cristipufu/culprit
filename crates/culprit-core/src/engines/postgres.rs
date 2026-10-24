@@ -43,6 +43,13 @@ const USER_SETTINGS: &[&str] = &[
 ];
 
 impl EngineSpec for Postgres {
+    fn products(&self) -> &'static [ProductSpec] {
+        const PRODUCTS: &[ProductSpec] = &[
+            ProductSpec::primary(DatabaseProduct::Postgres, "PostgreSQL"),
+            ProductSpec::variant(DatabaseProduct::Timescale, "TimescaleDB", "TimescaleDB"),
+        ];
+        PRODUCTS
+    }
     fn unused_index_advice(&self, _server: &ServerInfo, table_kind: Option<&str>) -> &'static str {
         if matches!(table_kind, Some("hypertable" | "timescale-chunk" | "timescale-unresolved")) {
             "Save the definition first so you can recreate it. TimescaleDB does not support dropping hypertable indexes concurrently; schedule the drop for a maintenance window."
@@ -80,9 +87,6 @@ impl EngineSpec for Postgres {
         "A newly obtained generic plan uses this connection's role, settings and search path; it may differ from the application's custom plan. Actual rows, spills and timing require a measured plan.".into(),
         "Deadlock graphs, statement errors and auto_explain output live in server logs. SQL counters alone cannot reconstruct them; import the relevant logs or correlate application telemetry.".into(),
     ]
-    }
-    fn label(&self) -> &'static str {
-        "PostgreSQL"
     }
 
     fn connect(&self) -> Connect {

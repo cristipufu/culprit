@@ -21,6 +21,13 @@ fn index_hiding(server: &ServerInfo) -> Option<&'static str> {
 }
 
 impl EngineSpec for Mysql {
+    fn products(&self) -> &'static [ProductSpec] {
+        const PRODUCTS: &[ProductSpec] = &[
+            ProductSpec::primary(DatabaseProduct::Mysql, "MySQL"),
+            ProductSpec::variant(DatabaseProduct::Mariadb, "MariaDB", "MariaDB"),
+        ];
+        PRODUCTS
+    }
     fn unused_index_advice(&self, server: &ServerInfo, _table_kind: Option<&str>) -> &'static str {
         if version_pair(server).is_none() {
             "Save its definition before dropping it. Index-hiding support is not established for this server version."
@@ -68,9 +75,6 @@ impl EngineSpec for Mysql {
         "InnoDB status keeps only the latest deadlock. A complete incident history requires the error log; an empty or old latest report does not prove that no other deadlocks happened.".into(),
         "MySQL and MariaDB differ in plan details, instrumentation and syntax. Runtime measurements, metadata-lock visibility and replication diagnostics depend on the product, version and permissions.".into(),
     ]
-    }
-    fn label(&self) -> &'static str {
-        "MySQL"
     }
 
     fn connect(&self) -> Connect {

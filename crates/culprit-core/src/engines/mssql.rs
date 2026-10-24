@@ -7,6 +7,10 @@ use crate::model::Capability;
 pub(super) struct Mssql;
 
 impl EngineSpec for Mssql {
+    fn products(&self) -> &'static [ProductSpec] {
+        const PRODUCTS: &[ProductSpec] = &[ProductSpec::primary(DatabaseProduct::Mssql, "SQL Server")];
+        PRODUCTS
+    }
     fn hide_index(&self, _server: &ServerInfo, schema: &str, table: &str, index: &str) -> Option<String> {
         Some(format!("ALTER INDEX {} ON {} DISABLE;", self.quote(index), self.qualified(&[schema, table])))
     }
@@ -47,9 +51,6 @@ impl EngineSpec for Mssql {
         "An estimated or stored compilation plan does not measure the rows, timing or waits of the run you are investigating. Runtime-only problems require recorded runtime evidence or an explicitly measured run.".into(),
         "Host CPU and filesystem capacity need their own measurements, such as connected cloud telemetry. Backup recoverability and database corruption are not checked by the statistics scan; they need backup/recovery validation and an appropriate integrity investigation.".into(),
     ]
-    }
-    fn label(&self) -> &'static str {
-        "SQL Server"
     }
 
     fn connect(&self) -> Connect {

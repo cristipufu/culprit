@@ -141,6 +141,10 @@ lock timing, log terminology and missing measurements. The UI consumes these gen
 an engine by name. `wait_sampling` describes session sampling versus counter deltas. Each engine must declare both;
 cross-engine tests cover the declarations and query-cost rendering. Shared statement statistics do not imply shared
 WAL, heap or server-wide measurement semantics.
+Database product identity is separate from the execution provider: MariaDB uses the MySQL provider and TimescaleDB
+uses PostgreSQL. Each engine file declares its products, stable `DatabaseProduct` identifiers, labels and recognition
+rules through `EngineSpec::products`. `ServerInfo` resolves those facts without allocating; generated `EngineFacts`
+exports the same metadata to the UI. Product logos use the generated identifiers and do not infer execution capabilities.
 Runtime-spread wording also follows these facts and the captured workload source; a missing histogram does not prove
 that a product or version lacks histogram support. Server names use `ServerInfo::name`. Index hiding and removal
 advice resolve in the engine specification using the product, version and managed-table kind; unknown versions do

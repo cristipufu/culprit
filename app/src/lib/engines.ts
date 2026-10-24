@@ -1,5 +1,6 @@
 import type { Ability as EngineAbility } from "../gen/Ability";
 import type { Engine } from "../gen/Engine";
+import type { DatabaseProduct } from "../gen/DatabaseProduct";
 import type { EngineFacts } from "../gen/EngineFacts";
 import type { Plan } from "../gen/Plan";
 import type { SessionAction } from "../gen/SessionAction";
@@ -15,6 +16,16 @@ export const ENGINES = Object.keys(FACTS) as Engine[];
 export const sqlSyntax = (engine: Engine) => FACTS[engine].sql_syntax;
 export const statementMetrics = (engine: Engine) => FACTS[engine].statement_metrics;
 export const waitSampling = (engine: Engine) => FACTS[engine].wait_sampling;
+
+function productIdentity(engine: Engine, product?: string | null) {
+  const products = FACTS[engine].products;
+  return products.find((p) => p.prefix !== null && product?.startsWith(p.prefix)) ?? products[0];
+}
+
+/** Branding follows the product the provider actually identified, without changing its execution engine. */
+export function databaseProduct(engine: Engine, product?: string | null): DatabaseProduct {
+  return productIdentity(engine, product)?.id ?? engine;
+}
 
 const LABEL = Object.fromEntries(Object.entries(FACTS).map(([e, f]) => [e, f.label])) as Record<Engine, string>;
 
@@ -33,7 +44,7 @@ export function engineLimitations(engine: Engine): string[] { return FACTS[engin
 
 /** MariaDB is served by the MySQL engine; the server's product string (or a plan's flavor) tells them apart. */
 export function isMariadb(engine: Engine, product?: string | null): boolean {
-  return engine === "mysql" && !!product?.startsWith("MariaDB");
+  return databaseProduct(engine, product) === "mariadb";
 }
 
 export type Ability = EngineAbility;
@@ -64,10 +75,10 @@ export function measuresRuns(engine: Engine): boolean {
 
 /** The server's name in sentences: "SQL Server", "PostgreSQL", "MySQL" or "MariaDB". */
 export function serverName(engine: Engine, product?: string | null): string {
-  return isMariadb(engine, product) ? "MariaDB" : LABEL[engine];
+  return productIdentity(engine, product)?.label ?? LABEL[engine];
 }
 
 /** The engine a plan came from, telling MariaDB's plans from MySQL's. */
 export function planEngineName(plan: Pick<Plan, "engine" | "props">): string {
-  return plan.engine === "mysql" && plan.props?.flavor === "MariaDB" ? "MariaDB" : LABEL[plan.engine];
+  return serverName(plan.engine, plan.props?.flavor);
 }

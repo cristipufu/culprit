@@ -60,7 +60,9 @@ pub use digest::{
     DigestFinding, DigestIndexAdvice, DigestIndexCreate, DigestIndexDrop, DigestMetric, DigestQuery, DigestTopQuery,
 };
 pub use drift::{Drift, DriftItem, DriftKind, DriftPresence, DriftSide, server_label};
-pub use engines::{EngineSpec, SettingChange, SqlSyntax, ysql_session_target};
+pub use engines::{
+    DatabaseProduct, EngineSpec, ProductFacts, ProductSpec, SettingChange, SqlSyntax, ysql_session_target,
+};
 pub use error::{Error, ErrorCode, Result};
 pub use events::{ChangeEvent, EventAction, EventKind, EventLink, EventSource};
 pub use finding::*;

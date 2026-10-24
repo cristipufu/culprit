@@ -7,10 +7,12 @@
 mod mssql;
 mod mysql;
 mod postgres;
+mod products;
 mod sqlite;
 mod timescale;
 mod yugabyte;
 
+pub use products::{DatabaseProduct, ProductFacts, ProductSpec};
 pub use yugabyte::session_target as ysql_session_target;
 
 use std::borrow::Cow;
@@ -37,6 +39,16 @@ pub struct SettingChange {
 
 /// One engine, as checks and every surface see it.
 pub trait EngineSpec: Send + Sync {
+    /// The provider's default product followed by any independently identified products it also serves.
+    fn products(&self) -> &'static [ProductSpec];
+
+    fn product(&self, recorded: &str) -> Option<&'static ProductSpec> {
+        let products = self.products();
+        products
+            .iter()
+            .find(|p| p.prefix.is_some_and(|prefix| recorded.starts_with(prefix)))
+            .or_else(|| products.first())
+    }
     fn sql_syntax(&self) -> SqlSyntax;
     /// Meaning and presentation of statement counters, independently of SQL grammar or storage.
     fn statement_metrics(&self) -> StatementMetrics;
@@ -61,7 +73,9 @@ pub trait EngineSpec: Send + Sync {
         None
     }
     /// "SQL Server": the engine's name in sentences (a server's product can say more: MariaDB).
-    fn label(&self) -> &'static str;
+    fn label(&self) -> &'static str {
+        self.products().first().map_or("Database", |p| p.label)
+    }
 
     /// What it can answer: sessions, wait samples, measured runs… (see [`EngineAbilities`]).
     fn abilities(&self) -> EngineAbilities;
@@ -233,6 +247,7 @@ impl Connect {
 #[ts(export)]
 pub struct EngineFacts {
     pub label: String,
+    pub products: Vec<ProductFacts>,
     pub abilities: EngineAbilities,
     pub session_actions: Vec<SessionAction>,
     pub waiting_state: String,
@@ -291,6 +306,7 @@ impl Engine {
         let spec = self.spec();
         let abilities = spec.abilities();
         EngineFacts {
+            products: spec.products().iter().map(|product| product.facts()).collect(),
             statement_metrics: spec.statement_metrics(),
             wait_sampling: spec.wait_sampling(),
             sql_syntax: spec.sql_syntax(),

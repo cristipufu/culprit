@@ -283,15 +283,20 @@ impl ServerInfo {
         self.platform().is_some() || self.cloud.is_some()
     }
 
-    /// The server's name in sentences: the engine's, except MariaDB, which the MySQL provider also serves.
+    /// The identified product, independently of the provider's execution family.
+    pub fn database_product(&self) -> Option<crate::DatabaseProduct> {
+        self.engine.spec().product(&self.product).map(|product| product.id)
+    }
+
+    /// The server's product name in sentences, from its provider's declared identities.
     pub fn name(&self) -> &'static str {
-        if self.is_mariadb() { "MariaDB" } else { self.engine.label() }
+        self.engine.spec().product(&self.product).map_or_else(|| self.engine.label(), |product| product.label)
     }
 
     /// MariaDB, which Culprit reads through the MySQL provider: where the two differ (histograms, userstat, ignored
     /// indexes), the rules ask this.
     pub fn is_mariadb(&self) -> bool {
-        self.engine == Engine::Mysql && self.product.starts_with("MariaDB")
+        self.database_product() == Some(crate::DatabaseProduct::Mariadb)
     }
 }
 
