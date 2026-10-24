@@ -309,3 +309,53 @@ async fn live_relocated_statement_extension_keeps_native_statistics_and_planning
     assert!(workload.counter_set.unwrap().epochs_known());
     assert!(workload.queries.iter().any(|q| q.plan.as_ref().is_some_and(|p| p.engine == Engine::Yugabyte)));
 }
+
+#[tokio::test]
+#[ignore = "requires dev/yugabyte and CULPRIT_YSQL_TEST_PORT"]
+async fn live_deferred_checks_and_foreign_keys_are_collected_until_validation() {
+    let _fixture = LIVE.lock().await;
+    let provider = YugabyteProvider::new(&local_spec()).unwrap();
+    let admin = provider.connector.connect(INTERACTIVE).await.unwrap();
+    admin.batch_execute(&tagged("SET default_transaction_read_only=off")).await.unwrap();
+    let pid = query_one(&admin, "SELECT pg_backend_pid()::text AS pid").await.unwrap().unwrap().string("pid");
+    let schema = format!("culprit_native_constraints_{pid}");
+    admin.batch_execute(&tagged(&format!("CREATE SCHEMA {schema}"))).await.unwrap();
+    let observed = async {
+        use culprit_postgres::wire::map_error;
+        for sql in [
+            format!("CREATE TABLE {schema}.parent(id integer PRIMARY KEY)"),
+            format!("CREATE TABLE {schema}.child(id integer PRIMARY KEY, parent_id integer, amount integer)"),
+            format!("INSERT INTO {schema}.child VALUES (1,999,-1)"),
+            format!("ALTER TABLE {schema}.child ADD CONSTRAINT \"Positive amount\" CHECK (amount>=0) NOT VALID"),
+            format!("ALTER TABLE {schema}.child ADD CONSTRAINT \"Parent FK\" FOREIGN KEY (parent_id) REFERENCES {schema}.parent(id) NOT VALID"),
+        ] {
+            admin.batch_execute(&tagged(&sql)).await.map_err(map_error)?;
+        }
+        let options = SnapshotOptions { plans: 0, ..Default::default() };
+        let before = provider.snapshot("deferred-constraint-test", &options).await?;
+        let invalid_rows = admin.batch_execute(&tagged(&format!("ALTER TABLE {schema}.child VALIDATE CONSTRAINT \"Positive amount\""))).await.is_err();
+        admin.batch_execute(&tagged(&format!("DELETE FROM {schema}.child"))).await.map_err(map_error)?;
+        for name in ["Positive amount", "Parent FK"] {
+            admin.batch_execute(&tagged(&format!("ALTER TABLE {schema}.child VALIDATE CONSTRAINT {}", Engine::Yugabyte.dialect().quote(name)))).await.map_err(map_error)?;
+        }
+        let after = provider.snapshot("validated-constraint-test", &options).await?;
+        Ok::<_, Error>((before, after, invalid_rows))
+    }.await;
+    admin.batch_execute(&tagged(&format!("DROP SCHEMA {schema} CASCADE"))).await.unwrap();
+    let (before, after, invalid_rows) = observed.unwrap();
+    assert!(invalid_rows, "NOT VALID must not be treated as proof that existing rows satisfy the constraint");
+    let constraints: Vec<_> = before.constraints.iter().filter(|c| c.schema == schema).collect();
+    assert_eq!(constraints.len(), 2);
+    assert!(constraints.iter().any(|c| c.kind == culprit_core::ConstraintKind::Check && c.name == "Positive amount"));
+    assert!(constraints.iter().any(|c| c.kind == culprit_core::ConstraintKind::ForeignKey && c.name == "Parent FK"));
+    assert!(constraints.iter().all(|c| !c.disabled && !c.inheritance_child));
+    assert!(
+        before.sources.iter().any(
+            |s| s.source == culprit_core::source_id::CONSTRAINTS && s.state == culprit_core::SourceState::Collected
+        )
+    );
+    assert!(
+        !after.constraints.iter().any(|c| c.schema == schema),
+        "validated constraints must disappear on the next scan"
+    );
+}

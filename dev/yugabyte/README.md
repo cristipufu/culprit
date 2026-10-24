@@ -31,6 +31,14 @@ The workload script resets **this disposable container's** statement statistics 
 native check verifies catalog/DocDB measurements, recorded plans, scoped sessions and refusal of stale/wrong-node
 identities. It does not cancel an unverified session.
 
+Deferred-constraint coverage uses a temporary test schema with CHECK and foreign-key constraints added NOT VALID.
+It verifies existing invalid rows are reported, failed validation does not establish validity, and a fresh scan stops
+listing the constraints after successful validation. The schema and its synthetic data are removed afterward:
+
+```sh
+CULPRIT_YSQL_TEST_PORT=55434 cargo test --locked -p culprit-yugabyte --lib live_deferred_checks_and_foreign_keys_are_collected_until_validation -- --ignored
+```
+
 ## Cluster-view verification
 
 [Cluster-wide views](https://docs.yugabyte.com/stable/launch-and-manage/monitor-and-alert/cluster-wide-db-views/) are a disabled-by-default preview in 2026.1.2. Their `server_uuid` identifies each contributing node, and warnings can indicate skipped nodes. A successful SQL response alone does not establish complete cluster coverage.

@@ -20,6 +20,12 @@ pub(crate) async fn snapshot(
     let foreign_keys =
         coverage.read_rows(&sources::FOREIGN_KEYS, catalog::foreign_keys(&session.client).await).unwrap_or_default();
     let settings = coverage.read_rows(&sources::SETTINGS, catalog::settings(&session.client).await).unwrap_or_default();
+    let constraints = catalog::constraints(&session.client).await;
+    let truncated = constraints.as_ref().is_ok_and(|(_, truncated)| *truncated);
+    let constraints = coverage.read_rows(&sources::CONSTRAINTS, constraints.map(|(rows, _)| rows)).unwrap_or_default();
+    if truncated {
+        coverage.partial(&sources::CONSTRAINTS, "Unvalidated constraints reached the 10,000-row or 8 MiB retention budget. This is not a complete constraint inventory.");
+    }
     let workload = workload::read(&session, &probe, options.top_queries, &mut coverage).await;
     let mut snapshot = Snapshot {
         format: SNAPSHOT_FORMAT,
@@ -46,7 +52,7 @@ pub(crate) async fn snapshot(
         plan_cache: None,
         tuning: None,
         deadlocks: None,
-        constraints: vec![],
+        constraints,
         histograms: None,
         escalations_before: None,
         contention_before: None,

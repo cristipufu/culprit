@@ -220,7 +220,7 @@
       "check": "untrusted-constraint",
       "reason": null,
       "status": "assessed",
-      "title": "Constraints the optimizer can't rely on"
+      "title": "Unvalidated or disabled constraints"
     },
     {
       "check": "hot-updates",

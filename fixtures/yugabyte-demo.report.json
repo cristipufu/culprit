@@ -97,6 +97,12 @@
       "reason": null,
       "status": "assessed",
       "title": "Queries that return huge results"
+    },
+    {
+      "check": "untrusted-constraint",
+      "reason": "This scan did not record the required source's collection outcome.",
+      "status": "insufficient-evidence",
+      "title": "Unvalidated or disabled constraints"
     }
   ],
   "findings": [

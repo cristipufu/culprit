@@ -16,6 +16,11 @@ pub const STORAGE: Source = Source {
 pub const COLUMNS: Source = Source { name: source_id::COLUMNS, reads: "YSQL columns and defaults", delivers: &[] };
 pub const FOREIGN_KEYS: Source =
     Source { name: source_id::FOREIGN_KEYS, reads: "YSQL foreign-key catalog", delivers: &[] };
+pub const CONSTRAINTS: Source = Source {
+    name: source_id::CONSTRAINTS,
+    reads: "YSQL CHECK and foreign-key constraints awaiting validation",
+    delivers: &[],
+};
 pub const WORKLOAD: Source = Source {
     name: source_id::WORKLOAD,
     reads: "YSQL pg_stat_statements and native DocDB costs, in node/cluster scope",
@@ -38,5 +43,17 @@ pub const INDEX_USAGE: Source = Source {
     reads: "complete cluster-wide index usage and its reset epochs",
     delivers: &[Capability::IndexUsage],
 };
-pub const ALL: &[Source] =
-    &[TABLES, INDEXES, SIZES, STORAGE, COLUMNS, FOREIGN_KEYS, WORKLOAD, COSTS, EPOCHS, SETTINGS, INDEX_USAGE];
+pub const ALL: &[Source] = &[
+    TABLES,
+    INDEXES,
+    SIZES,
+    STORAGE,
+    COLUMNS,
+    FOREIGN_KEYS,
+    CONSTRAINTS,
+    WORKLOAD,
+    COSTS,
+    EPOCHS,
+    SETTINGS,
+    INDEX_USAGE,
+];

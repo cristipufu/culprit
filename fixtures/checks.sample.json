@@ -617,14 +617,15 @@
   },
   {
     "category": "maintenance",
-    "description": "SQL Server foreign keys and check constraints added or re-enabled WITH NOCHECK (or switched off), and PostgreSQL check constraints added NOT VALID. MySQL and MariaDB don't use constraints when planning.",
+    "description": "SQL Server foreign keys and check constraints added or re-enabled WITH NOCHECK (or switched off), PostgreSQL CHECK constraints added NOT VALID, and YugabyteDB CHECK or foreign-key constraints awaiting validation.",
     "engines": [
       "mssql",
-      "postgres"
+      "postgres",
+      "yugabyte"
     ],
     "id": "untrusted-constraint",
     "requires": [],
-    "title": "Constraints the optimizer can't rely on"
+    "title": "Unvalidated or disabled constraints"
   },
   {
     "category": "maintenance",

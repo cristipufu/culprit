@@ -340,7 +340,7 @@
       "check": "untrusted-constraint",
       "reason": "This scan did not record the required source's collection outcome.",
       "status": "findings",
-      "title": "Constraints the optimizer can't rely on"
+      "title": "Unvalidated or disabled constraints"
     },
     {
       "check": "large-rows",

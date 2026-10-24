@@ -29,6 +29,7 @@ are not claimed as verified; optional views and functions that are absent or den
 | Analyze | `EXPLAIN (ANALYZE, DIST, VERBOSE, FORMAT JSON)`; measured writes roll back |
 | Plan files | Native JSON with DIST/storage markers is detected as YugabyteDB; saved scans reparse with the native reader |
 | Catalog | Tables, row estimates, columns, defaults, foreign keys, index definitions, hash keys, tablet counts and colocation |
+| Deferred constraints | CHECK and foreign-key constraints added NOT VALID; findings explain unvalidated existing rows and suggest version-appropriate validation, without PostgreSQL planner or locking promises |
 | Sizes | Native table/index size APIs, separately from the cheap probe; primary-key storage is part of the table; colocated objects are not charged their shared tablegroup's allocation |
 | Index advice | Ordered candidate keys use explicit ASC/DESC; HASH groups differ from range keys in redundancy, lookup coverage and drift; active backfill must finish before repairing an invalid index |
 | Index usage | Complete global index counters when available; no unused-index verdict from a local zero or unknown reset date |
@@ -85,12 +86,23 @@ advice are unavailable by design. Database size remains unknown. Configuration s
 YSQL database settings; other changes use YugabyteDB administration rather than PostgreSQL `ALTER SYSTEM` guesses.
 
 The current provider does not yet collect native ASH history, saved `yb_pg_stat_plans` history, complete native operation progress,
-server resource pressure, sequence capacity or distributed error/deadlock history. These are implementation gaps;
+server resource pressure or distributed error/deadlock history. These are implementation gaps;
 PostgreSQL placeholders are not substituted. Current session/lock collection is limited to 1,000 sessions and 2,000
 waits and labels truncated or node-local visibility incomplete. Live lowers the lock metadata reader's session-local
 minimum transaction age to include young waiters; native transaction/per-tablet caps still limit its evidence. A no-blocking result is not a whole-cluster assertion
 when visibility is incomplete. Remote sessions can be observed through global views, but actions require reconnecting
 to their node. Logical Connection Manager clients are not identified by reusable physical backend PIDs.
+
+Constraint metadata retains at most 10,000 rows and 8 MiB; truncation records partial coverage. On the verified release,
+both CHECK and foreign-key [deferred validation](https://docs.yugabyte.com/stable/yugabyte-voyager/reference/non-superuser/)
+were exercised against existing invalid rows and collected again after successful validation. Validation can scan
+distributed data and acquire locks; review its behavior on the deployed YugabyteDB version before applying the fix.
+
+Sequence capacity needs a native allocation-state source: `pg_sequences.last_value` returned NULL even for initialized
+sequences on the verified release. The native implementation of
+[`pg_sequence_last_value`](https://github.com/yugabyte/yugabyte-db/blob/master/src/postgres/src/backend/commands/sequence.c)
+returns NULL instead of reading DocDB sequence state. Session-local `currval` and `lastval` cannot supply a cluster allocation watermark,
+and a scan must not call `nextval` to discover one. No remaining-allocation estimate is inferred from those NULLs.
 
 A plan without native storage markers is structurally indistinguishable from PostgreSQL JSON. Plans captured through
 the YugabyteDB provider retain the correct engine; a plain external PostgreSQL-shaped plan needs native DIST output

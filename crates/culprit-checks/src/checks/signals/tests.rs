@@ -603,6 +603,52 @@ fn untrusted_constraints_group_per_table() {
 }
 
 #[test]
+fn ysql_deferred_constraints_name_foreign_keys_without_postgres_planner_or_lock_promises() {
+    let mut s = snapshot_with(Engine::Yugabyte);
+    s.constraints = vec![ConstraintIssue {
+        schema: "Sales".into(),
+        table: "Orders".into(),
+        name: "Customer FK".into(),
+        kind: ConstraintKind::ForeignKey,
+        disabled: false,
+        inheritance_child: true,
+    }];
+    s.settings.push(culprit_core::Setting {
+        name: "constraint_exclusion".into(),
+        value: "on".into(),
+        default_value: None,
+        scope: "YSQL node".into(),
+    });
+    let findings = untrusted_constraint(&s);
+    assert_eq!(findings.len(), 1);
+    let f = &findings[0];
+    assert_eq!(f.title, "The foreign key Customer FK on Orders was never validated");
+    assert_eq!(f.severity, Severity::Low);
+    assert!(f.summary.contains("YugabyteDB") && f.summary.contains("migration"));
+    assert!(!f.summary.contains("skip the table") && !f.summary.contains("SET NOT NULL"));
+    let fix = f.fix.as_ref().unwrap();
+    assert_eq!(fix.sql.as_deref(), Some("ALTER TABLE \"Sales\".\"Orders\" VALIDATE CONSTRAINT \"Customer FK\";"));
+    assert!(fix.summary.contains("distributed scans"));
+    assert!(!fix.summary.contains("SHARE UPDATE EXCLUSIVE") && !fix.summary.contains("reads and writes continue"));
+    s.sources.push(culprit_core::SourceOutcome {
+        source: culprit_core::source_id::CONSTRAINTS.into(),
+        state: culprit_core::SourceState::Collected,
+        reason: None,
+    });
+    assert!(crate::analyze(s.clone()).findings.iter().any(|f| f.check == "untrusted-constraint"));
+    s.constraints.push(ConstraintIssue {
+        name: "Positive amount".into(),
+        kind: ConstraintKind::Check,
+        ..s.constraints[0].clone()
+    });
+    assert_eq!(untrusted_constraint(&s)[0].title, "2 constraints on Orders were never validated");
+    s.constraints.remove(0);
+    assert_eq!(untrusted_constraint(&s)[0].title, "The check constraint Positive amount on Orders was never validated");
+    s.constraints.clear();
+    assert!(untrusted_constraint(&s).is_empty());
+}
+
+#[test]
 fn histograms_for_guessed_filter_columns() {
     let mut s = snapshot_with(Engine::Mysql);
     let table = s.tables.iter().find(|t| t.rows.unwrap_or(0.0) >= 1_000.0).unwrap().clone();

@@ -1,4 +1,5 @@
-//! The `untrusted-constraint` check: SQL Server foreign keys and check constraints added or re-enabled WITH NOCHECK (or switched off), and PostgreSQL check constraints added NOT VALID. MySQL and MariaDB don't use constraints when planning.
+//! SQL Server untrusted/disabled constraints and PostgreSQL/YSQL deferred validation. Native YSQL findings describe
+//! unvalidated data without assuming PostgreSQL planner or lock behavior.
 
 use super::*;
 use crate::evidence::Requirement as Evidence;
@@ -6,11 +7,11 @@ use crate::evidence::Requirement as Evidence;
 pub fn untrusted_constraint_info() -> CheckInfo {
     CheckInfo {
         id: "untrusted-constraint".into(),
-        title: "Constraints the optimizer can't rely on".into(),
+        title: "Unvalidated or disabled constraints".into(),
         category: Category::Maintenance,
-        engines: vec![Engine::Mssql, Engine::Postgres],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Yugabyte],
         requires: vec![],
-        description: "SQL Server foreign keys and check constraints added or re-enabled WITH NOCHECK (or switched off), and PostgreSQL check constraints added NOT VALID. MySQL and MariaDB don't use constraints when planning.".into(),
+        description: "SQL Server foreign keys and check constraints added or re-enabled WITH NOCHECK (or switched off), PostgreSQL CHECK constraints added NOT VALID, and YugabyteDB CHECK or foreign-key constraints awaiting validation.".into(),
     }
 }
 
@@ -29,6 +30,7 @@ pub(super) fn planner_reads_checks(snapshot: &Snapshot, list: &[&ConstraintIssue
 
 pub fn untrusted_constraint(snapshot: &Snapshot) -> Vec<Finding> {
     let mssql = snapshot.server.engine == Engine::Mssql;
+    let ysql = snapshot.server.engine == Engine::Yugabyte;
     let engine = snapshot.server.engine;
     let mut by_table: BTreeMap<(String, String), Vec<&ConstraintIssue>> = BTreeMap::new();
     for c in &snapshot.constraints {
@@ -47,8 +49,10 @@ pub fn untrusted_constraint(snapshot: &Snapshot) -> Vec<Finding> {
             f.title = match (list.as_slice(), mssql) {
                 ([one], _) if one.disabled => format!("The {} {} on {table} is switched off", kind(one), one.name),
                 ([one], true) => format!("SQL Server doesn't trust the {} {} on {table}", kind(one), one.name),
+                ([one], false) if ysql => format!("The {} {} on {table} was never validated", kind(one), one.name),
                 ([one], false) => format!("The check constraint {} on {table} was never validated", one.name),
                 (_, true) => format!("SQL Server doesn't trust {} constraints on {table}", list.len()),
+                (_, false) if ysql => format!("{} constraints on {table} were never validated", list.len()),
                 (_, false) => format!("{} check constraints on {table} were never validated", list.len()),
             };
             let names = format::list(&list.iter().map(|c| c.name.clone()).collect::<Vec<_>>());
@@ -58,6 +62,11 @@ pub fn untrusted_constraint(snapshot: &Snapshot) -> Vec<Finding> {
                     if list.len() == 1 { "was" } else { "were" },
                     if list.len() == 1 { "it" } else { "them" },
                     if disabled > 0 { " A switched-off constraint doesn't check new rows either, so the data may already break it." } else { "" }
+                )
+            } else if ysql {
+                format!(
+                    "{names} {} added NOT VALID. YugabyteDB checks new and changed rows but has not checked the rows that existed when these constraints were added. Some old rows may violate them. Deferred validation can be deliberate during a migration; this catalog state does not establish a query-plan regression.",
+                    if list.len() == 1 { "was" } else { "were" }
                 )
             } else if planner_reads_checks(snapshot, &list) {
                 format!(
@@ -77,7 +86,7 @@ pub fn untrusted_constraint(snapshot: &Snapshot) -> Vec<Finding> {
             };
             f.severity = if disabled > 0 { Severity::Medium } else { Severity::Low };
             severity_score(&mut f);
-            f.impact.label = format!("{} untrusted", list.len());
+            f.impact.label = format!("{} {}", list.len(), if ysql { "not validated" } else { "untrusted" });
             f.confidence = Confidence::High;
             f.metrics = vec![Metric::new("Constraints", list.len() as f64, Unit::Count)];
             let target = qualified(engine, &schema, &table);
@@ -97,14 +106,18 @@ pub fn untrusted_constraint(snapshot: &Snapshot) -> Vec<Finding> {
                 }
             } else {
                 Fix {
-                    summary: "Validate it: PostgreSQL scans the table but takes only a SHARE UPDATE EXCLUSIVE lock, so reads and writes continue. It fails if a row breaks the constraint; fix those rows first.".into(),
+                    summary: if ysql {
+                        "Validate existing rows in a planned maintenance window after checking this YugabyteDB version's validation support. Validation can issue distributed scans and acquire locks. It fails if a row breaks a constraint; fix those rows first. Do not assume PostgreSQL lock or concurrent-write guarantees.".into()
+                    } else {
+                        "Validate it: PostgreSQL scans the table but takes only a SHARE UPDATE EXCLUSIVE lock, so reads and writes continue. It fails if a row breaks the constraint; fix those rows first.".into()
+                    },
                     sql: Some(
                         list.iter()
                             .map(|c| format!("ALTER TABLE {target} VALIDATE CONSTRAINT {};", quote(engine, &c.name)))
                             .collect::<Vec<_>>()
                             .join("\n"),
                     ),
-                    cost: Some("Reads the whole table".into()),
+                    cost: Some(if ysql { "Distributed table scans and validation locks" } else { "Reads the whole table" }.into()),
                 }
             });
             f.verify = vec!["Re-scan: the constraint should no longer be listed.".into()];

@@ -1,9 +1,9 @@
 use crate::{probe::Probe, sources};
 use culprit_core::{
-    ColumnInfo, Coverage, ForeignKey, IndexStat, Result, Setting, Snapshot, TableStat,
+    ColumnInfo, ConstraintIssue, ConstraintKind, Coverage, ForeignKey, IndexStat, Result, Setting, Snapshot, TableStat,
     signals::{DocdbIndex, DocdbTable, TableStorage},
 };
-use culprit_postgres::wire::{Row, query};
+use culprit_postgres::wire::{Row, query, query_bounded};
 use serde_json::json;
 use std::collections::BTreeMap;
 use tokio_postgres::Client;
@@ -188,4 +188,32 @@ pub(crate) async fn foreign_keys(client: &Client) -> Result<Vec<ForeignKey>> {
 pub(crate) async fn settings(client: &Client) -> Result<Vec<Setting>> {
     Ok(query(client,"SELECT name,setting,boot_val FROM pg_settings WHERE name LIKE 'yb_%' OR name IN ('work_mem','statement_timeout','lock_timeout','default_statistics_target','idle_in_transaction_session_timeout','plan_cache_mode')").await?.iter()
         .map(|r|Setting{name:r.string("name"),value:r.string("setting"),default_value:r.text("boot_val"),scope:"YSQL node".into()}).collect())
+}
+
+pub(crate) async fn constraints(client: &Client) -> Result<(Vec<ConstraintIssue>, bool)> {
+    let (rows, truncated) = query_bounded(
+        client,
+        &format!(
+            "SELECT n.nspname AS schema,t.relname AS table,c.conname AS name,c.contype::text AS kind
+             FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
+             JOIN pg_namespace n ON n.oid=t.relnamespace
+             WHERE c.contype IN ('c','f') AND NOT c.convalidated AND c.conparentid=0
+               AND {USER_RELATIONS} ORDER BY 1,2,3 LIMIT 10001"
+        ),
+        10_000,
+    )
+    .await?;
+    let constraints = rows
+        .iter()
+        .map(|r| ConstraintIssue {
+            schema: r.string("schema"),
+            table: r.string("table"),
+            name: r.string("name"),
+            kind: if r.string("kind") == "f" { ConstraintKind::ForeignKey } else { ConstraintKind::Check },
+            disabled: false,
+            // Native validation evidence does not establish PostgreSQL constraint-exclusion behavior.
+            inheritance_child: false,
+        })
+        .collect();
+    Ok((constraints, truncated))
 }
