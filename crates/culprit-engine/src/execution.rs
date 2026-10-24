@@ -158,7 +158,7 @@ impl Execution<'_> {
         session: &str,
         with_plan: bool,
     ) -> Result<culprit_core::QueryProgress> {
-        culprit_core::session_number(session)?;
+        self.connections.connection(name)?.engine.spec().validate_session_id(session)?;
         let provider = self.connections.provider(name).await?;
         crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, async {
             let mut progress =
@@ -330,7 +330,7 @@ impl Execution<'_> {
             )
             .with_hint("Use the database's own tooling, or mark the connection as non-production if it isn't one."));
         }
-        culprit_core::session_number(session)?;
+        info.engine.spec().validate_session_id(session)?;
         let provider = self.connections.provider(name).await?;
         crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, async {
             if !provider.session_actions().contains(&action) {

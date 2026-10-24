@@ -164,16 +164,7 @@ pub(crate) async fn live(connector: &Connector, environment: Environment) -> Res
 }
 
 pub(crate) fn target(id: &str) -> Result<(String, i32, String)> {
-    let parts: Vec<_> = id.split('/').collect();
-    let [node, pid, started] = parts.as_slice() else {
-        return Err(Error::invalid("Select a node-qualified YSQL session from Live"));
-    };
-    let node = node_id(node).ok_or_else(|| Error::invalid("Invalid YSQL node identity"))?;
-    let pid = pid.parse::<i32>().ok().filter(|p| *p > 0).ok_or_else(|| Error::invalid("Invalid YSQL backend id"))?;
-    if culprit_core::format::epoch_seconds(started).is_none() {
-        return Err(Error::invalid("Invalid YSQL backend start time"));
-    }
-    Ok((node, pid, started.to_string()))
+    culprit_core::ysql_session_target(id)
 }
 
 pub(crate) async fn interrupt(connector: &Connector, id: &str, action: SessionAction) -> Result<()> {

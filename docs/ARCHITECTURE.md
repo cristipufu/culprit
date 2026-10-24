@@ -456,6 +456,11 @@ zero blocked sessions. MCP returns the original numeric signal values, leaving d
 
 ## Desktop request lifecycles
 
+Session identities are validated through `EngineSpec` before resolving a provider or its credentials. SQL Server,
+PostgreSQL and MySQL use numeric ids; YugabyteDB requires the node, backend PID and backend start time together. The
+native provider, Workspace progress/actions and suggested termination SQL use the same identity parser. The provider
+then verifies the current database, node, backend start and direct-client ownership before signaling a session.
+
 `app/src/lib/store.ts` owns UI state and navigation. `report-requests.ts` owns a report's cache → scan lifecycle,
 including loading, selection, refresh errors and sidebar refresh. Every open or manual scan gets a distinct owner
 from `requests.ts::LatestRequest`, alongside its connection and window. Changing either target invalidates that owner;

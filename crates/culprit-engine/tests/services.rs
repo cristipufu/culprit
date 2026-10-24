@@ -17,6 +17,76 @@ fn home(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!("culprit-services-{tag}-{}", std::process::id()))
 }
 
+#[cfg(all(feature = "postgres", feature = "yugabyte"))]
+#[tokio::test]
+#[ignore = "requires dev/yugabyte and CULPRIT_YSQL_TEST_PORT"]
+async fn live_native_workspace_session_progress_and_cancel() {
+    use culprit_core::{ConnectionSpec, SessionAction};
+    use culprit_postgres::wire::{Connector, INTERACTIVE, query_one, tagged};
+    let dir = home("native-session-routing");
+    let port: u16 = std::env::var("CULPRIT_YSQL_TEST_PORT").expect("set CULPRIT_YSQL_TEST_PORT").parse().unwrap();
+    let mut spec = ConnectionSpec {
+        engine: Some(Engine::Yugabyte),
+        host: "127.0.0.1".into(),
+        port: Some(port),
+        user: Some("yugabyte".into()),
+        database: Some("culprit_yugabyte".into()),
+        environment: Environment::Local,
+        ..Default::default()
+    };
+    spec.options.insert("sslmode".into(), "disable".into());
+    let connector = Connector::new(&spec).unwrap();
+    let client = connector.connect(INTERACTIVE).await.unwrap();
+    client.batch_execute(&tagged("SET application_name='culprit_native_workspace_test'")).await.unwrap();
+    let row = query_one(
+        &client,
+        "SELECT pg_backend_pid()::text AS pid, yb_get_local_tserver_uuid()::text AS node,
+        to_char(backend_start AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS started
+        FROM pg_stat_activity WHERE pid=pg_backend_pid()",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let id = format!("{}/{}/{}", row.string("node"), row.string("pid"), row.string("started"));
+    let ws = Workspace::open_in(&dir).with_secrets(Arc::new(Memory::default()));
+    ws.add_connection(NewConnection {
+        name: "native-session-test".into(),
+        input: format!("yugabyte://yugabyte@127.0.0.1:{port}/culprit_yugabyte?sslmode=disable"),
+        environment: Environment::Local,
+        auth: Some(AuthKind::None),
+        ..Default::default()
+    })
+    .unwrap();
+    let sleeping = tokio::spawn(async move { client.batch_execute(&tagged("SELECT pg_sleep(10)")).await });
+    let observed = async {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        let progress = loop {
+            let progress = ws.query_progress("native-session-test", &id, false).await?;
+            if progress.running || tokio::time::Instant::now() >= deadline {
+                break progress;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        ws.interrupt_session("native-session-test", &id, SessionAction::Cancel).await?;
+        Ok::<_, Error>(progress)
+    }
+    .await;
+    // Clean up this test's verified backend even when a Workspace regression rejects its native id.
+    let direct = culprit_yugabyte::YugabyteProvider::new(&spec).unwrap();
+    let _ = direct.interrupt_session(&id, SessionAction::Cancel).await;
+    let stopped = sleeping.await.unwrap();
+    drop(ws);
+    let _ = std::fs::remove_dir_all(dir);
+    let progress = observed.unwrap();
+    assert_eq!(progress.session, id);
+    assert_eq!(progress.engine, Engine::Yugabyte);
+    assert!(progress.running && progress.statement.as_deref().is_some_and(|s| s.contains("pg_sleep")));
+    assert!(
+        stopped.is_err_and(|e| e.code().is_some_and(|code| code.code() == "57014")),
+        "only the verified test backend should be canceled"
+    );
+}
+
 #[derive(Clone)]
 struct ParserProvider {
     types: Vec<String>,

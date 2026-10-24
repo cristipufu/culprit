@@ -745,12 +745,12 @@ mod tests {
     }
 
     /// Records interrupts; supports cancelling statements only.
-    struct Sessions(Arc<std::sync::Mutex<Vec<(String, SessionAction)>>>);
+    struct Sessions(Engine, Arc<std::sync::Mutex<Vec<(String, SessionAction)>>>);
 
     #[async_trait::async_trait]
     impl Provider for Sessions {
         fn engine(&self) -> Engine {
-            Engine::Postgres
+            self.0
         }
         async fn probe(&self) -> Result<ServerInfo> {
             Err(Error::new(ErrorCode::Unsupported, "test double"))
@@ -779,8 +779,11 @@ mod tests {
             vec![SessionAction::Cancel]
         }
         async fn interrupt_session(&self, session: &str, action: SessionAction) -> Result<()> {
-            self.0.lock().unwrap().push((session.to_string(), action));
+            self.1.lock().unwrap().push((session.to_string(), action));
             Ok(())
+        }
+        async fn query_progress(&self, session: &str, _: bool) -> Result<culprit_core::QueryProgress> {
+            Ok(culprit_core::QueryProgress::idle(session, self.0, "2026-10-24T00:00:00Z".into()))
         }
     }
 
@@ -791,7 +794,7 @@ mod tests {
         let recorded = calls.clone();
         let ws = Workspace::open_in(&home).with_provider(
             Engine::Postgres,
-            Arc::new(move |_| Ok(Box::new(Sessions(recorded.clone())) as Box<dyn Provider>)),
+            Arc::new(move |_| Ok(Box::new(Sessions(Engine::Postgres, recorded.clone())) as Box<dyn Provider>)),
         );
         for (name, environment) in [("shop-dev", Environment::Development), ("shop-prod", Environment::Production)] {
             ws.add_connection(NewConnection {
@@ -820,6 +823,45 @@ mod tests {
         );
         ws.interrupt_session("shop-dev", "42", SessionAction::Cancel).await.unwrap();
         assert_eq!(*calls.lock().unwrap(), vec![("42".to_string(), SessionAction::Cancel)]);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[tokio::test]
+    async fn native_sessions_keep_complete_identity_for_progress_and_actions() {
+        let home = temp_home("native-sessions");
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = calls.clone();
+        let ws = Workspace::open_in(&home).with_provider(
+            Engine::Yugabyte,
+            Arc::new(move |_| Ok(Box::new(Sessions(Engine::Yugabyte, recorded.clone())) as Box<dyn Provider>)),
+        );
+        for (name, environment) in [("yb-dev", Environment::Development), ("yb-prod", Environment::Production)] {
+            ws.add_connection(NewConnection {
+                name: name.into(),
+                input: "yugabyte://app@db.example:5433/shop".into(),
+                environment,
+                auth: Some(AuthKind::None),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        let id = "3d2d9e10-555b-4ae2-a683-a8402505e416/42/2026-10-23T21:00:00.123456Z";
+        let progress = ws.query_progress("yb-dev", id, false).await.unwrap();
+        assert_eq!(progress.session, id);
+        assert_eq!(progress.engine, Engine::Yugabyte);
+        for malformed in ["42", "node/42/2026-10-23T21:00:00Z"] {
+            assert_eq!(ws.query_progress("yb-dev", malformed, false).await.unwrap_err().code, ErrorCode::InvalidInput);
+            assert_eq!(
+                ws.interrupt_session("yb-dev", malformed, SessionAction::Cancel).await.unwrap_err().code,
+                ErrorCode::InvalidInput
+            );
+        }
+        assert_eq!(
+            ws.interrupt_session("yb-prod", id, SessionAction::Cancel).await.unwrap_err().code,
+            ErrorCode::PermissionDenied
+        );
+        ws.interrupt_session("yb-dev", id, SessionAction::Cancel).await.unwrap();
+        assert_eq!(*calls.lock().unwrap(), vec![(id.to_string(), SessionAction::Cancel)]);
         let _ = std::fs::remove_dir_all(home);
     }
 }

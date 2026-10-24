@@ -11,6 +11,8 @@ mod sqlite;
 mod timescale;
 mod yugabyte;
 
+pub use yugabyte::session_target as ysql_session_target;
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -86,6 +88,11 @@ pub trait EngineSpec: Send + Sync {
     /// What may be done to another session from Live, outside production.
     fn session_actions(&self) -> Vec<SessionAction> {
         Vec::new()
+    }
+
+    /// Validate a Live session's engine-specific identity before resolving credentials or issuing an operation.
+    fn validate_session_id(&self, session: &str) -> crate::Result<()> {
+        crate::session_number(session).map(|_| ())
     }
 
     /// The word the engine uses for a statement that is waiting ("suspended" on SQL Server).

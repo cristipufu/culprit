@@ -5,6 +5,29 @@ use crate::dialect::{NewIndex, included, unique};
 
 pub(super) struct Yugabyte;
 
+/// Parse the node, physical backend and start time that together identify a direct YSQL session. The same parser
+/// guards Workspace routing, provider operations and suggested SQL; a plain PID never identifies a cluster session.
+pub fn session_target(session: &str) -> crate::Result<(String, i32, String)> {
+    let invalid = || crate::Error::invalid("Select a node-qualified YSQL session from Live");
+    if session.len() > 160 {
+        return Err(invalid());
+    }
+    let mut parts = session.split('/');
+    let node = parts.next().ok_or_else(invalid)?.replace('-', "").to_ascii_lowercase();
+    let pid = parts.next().and_then(|p| p.parse::<i32>().ok()).filter(|p| *p > 0).ok_or_else(invalid)?;
+    let started = parts.next().ok_or_else(invalid)?;
+    if parts.next().is_some()
+        || node.len() != 32
+        || !node.bytes().all(|b| b.is_ascii_hexdigit())
+        || chrono::DateTime::parse_from_rfc3339(started)
+            .or_else(|_| chrono::DateTime::parse_from_str(started, "%Y-%m-%d %H:%M:%S%.f%#z"))
+            .is_err()
+    {
+        return Err(invalid());
+    }
+    Ok((node, pid, started.to_string()))
+}
+
 impl EngineSpec for Yugabyte {
     fn sql_syntax(&self) -> SqlSyntax {
         SqlSyntax::Postgres
@@ -20,6 +43,9 @@ impl EngineSpec for Yugabyte {
     }
     fn session_actions(&self) -> Vec<SessionAction> {
         vec![SessionAction::Cancel, SessionAction::Terminate]
+    }
+    fn validate_session_id(&self, session: &str) -> crate::Result<()> {
+        session_target(session).map(|_| ())
     }
     fn connect(&self) -> Connect {
         Connect::server(
@@ -153,22 +179,13 @@ impl Dialect for Yugabyte {
         format!("ANALYZE {target};")
     }
     fn end_session(&self, session: &str) -> String {
-        let parts: Vec<_> = session.split('/').collect();
-        let [node, pid, started] = parts.as_slice() else {
+        let Ok((node, pid, started)) = session_target(session) else {
             return "-- Select a node-qualified YSQL session from Live.".into();
         };
-        let node = node.replace('-', "");
-        let Some(pid) = pid.parse::<i32>().ok().filter(|p| *p > 0) else { return "-- Invalid YSQL backend id.".into() };
-        if node.len() != 32
-            || !node.bytes().all(|b| b.is_ascii_hexdigit())
-            || crate::format::epoch_seconds(started).is_none()
-        {
-            return "-- Invalid YSQL session identity.".into();
-        }
         format!(
             "SELECT pg_catalog.pg_terminate_backend(a.pid) FROM pg_catalog.pg_stat_activity a\nWHERE a.pid = {pid} AND a.datname = pg_catalog.current_database()\n  AND a.backend_type = 'client backend' AND a.pid <> pg_catalog.pg_backend_pid()\n  AND COALESCE(a.application_name, '') <> 'culprit' AND a.backend_start = '{}'::timestamptz\n  AND pg_catalog.replace(pg_catalog.yb_get_local_tserver_uuid()::text, '-', '') = '{}';",
             started.replace('\'', "''"),
-            node.to_ascii_lowercase()
+            node
         )
     }
 }
@@ -176,6 +193,36 @@ impl Dialect for Yugabyte {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn session_identity_validation_keeps_native_scope_and_rejects_malformed_targets() {
+        let node = "3d2d9e10-555b-4ae2-a683-a8402505e416";
+        for started in ["2026-10-23T21:00:00.123456Z", "2026-10-23T21:00:00+03:00", "2026-10-23 21:00:00.123456+00"] {
+            let id = format!("{node}/42/{started}");
+            assert!(Yugabyte.validate_session_id(&id).is_ok());
+            let (parsed, pid, at) = session_target(&id).unwrap();
+            assert_eq!(parsed, node.replace('-', ""));
+            assert_eq!(pid, 42);
+            assert_eq!(at, started);
+            for other in [Engine::Postgres, Engine::Mssql, Engine::Mysql] {
+                assert!(other.spec().validate_session_id(&id).is_err());
+                assert!(other.spec().validate_session_id("42").is_ok());
+            }
+        }
+        for id in [
+            "42".to_string(),
+            format!("{node}/0/2026-10-23T21:00:00Z"),
+            format!("{node}/-1/2026-10-23T21:00:00Z"),
+            format!("{node}/2147483648/2026-10-23T21:00:00Z"),
+            format!("{node}/42/2026-02-31T21:00:00Z"),
+            format!("{node}/42/2026-10-23T21:00:00Z/extra"),
+            format!("{node}/42/2026-10-23T21:00:00Z'; SELECT 1;--"),
+            "x/42/2026-10-23T21:00:00Z".into(),
+            "x/".repeat(1000),
+        ] {
+            assert!(Yugabyte.validate_session_id(&id).is_err(), "{id}");
+            assert!(Yugabyte.end_session(&id).starts_with("--"));
+        }
+    }
     #[test]
     fn indexes_preserve_range_access_and_session_actions_require_node_identity() {
         let keys = vec!["created_at".into(), "id DESC".into()];

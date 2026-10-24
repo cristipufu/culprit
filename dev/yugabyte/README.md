@@ -39,6 +39,13 @@ listing the constraints after successful validation. The schema and its syntheti
 CULPRIT_YSQL_TEST_PORT=55434 cargo test --locked -p culprit-yugabyte --lib live_deferred_checks_and_foreign_keys_are_collected_until_validation -- --ignored
 ```
 
+Verify session progress and cancellation through Workspace, which serves the desktop and CLI, using this test's
+own sleeping backend and its full node/PID/start identity:
+
+```sh
+CULPRIT_YSQL_TEST_PORT=55434 cargo test --locked -p culprit-engine --test all services::live_native_workspace_session_progress_and_cancel -- --ignored
+```
+
 ## Cluster-view verification
 
 [Cluster-wide views](https://docs.yugabyte.com/stable/launch-and-manage/monitor-and-alert/cluster-wide-db-views/) are a disabled-by-default preview in 2026.1.2. Their `server_uuid` identifies each contributing node, and warnings can indicate skipped nodes. A successful SQL response alone does not establish complete cluster coverage.
