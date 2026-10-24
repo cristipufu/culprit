@@ -85,7 +85,7 @@ mod tests {
         assert!(dropped.load(Ordering::Acquire));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn validation_and_execution_share_one_deadline() {
         let error = within(Duration::from_millis(20), async {
             tokio::time::sleep(Duration::from_millis(12)).await;
