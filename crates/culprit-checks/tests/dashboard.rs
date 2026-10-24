@@ -282,6 +282,13 @@ fn mariadb_is_called_mariadb() {
 }
 
 #[test]
+fn unrelated_product_text_does_not_change_the_engine_family() {
+    let mut r = report("pg-demo");
+    r.snapshot.server.product = "PostgreSQL test build with mariadb migration helpers".into();
+    assert_eq!(family(&r.snapshot.server), "PostgreSQL");
+}
+
+#[test]
 fn slow_log_lock_time_is_not_called_where_time_goes() {
     // MariaDB without performance_schema: the slow query log keeps only each statement's lock time.
     let mut r = report("mysql-demo");

@@ -29,11 +29,17 @@ pub fn session_target(session: &str) -> crate::Result<(String, i32, String)> {
 }
 
 impl EngineSpec for Yugabyte {
+    fn unused_index_advice(&self, _server: &ServerInfo, _table_kind: Option<&str>) -> &'static str {
+        "Save its native definition and sharding keys before dropping it. Check a complete cluster-wide business cycle of usage, and measure the affected queries after the change."
+    }
     fn session_advice(&self, command: &str) -> Option<&'static str> {
         super::postgres::session_reset_advice(command)
     }
     fn statement_metrics(&self) -> StatementMetrics {
-        StatementMetrics::PG_STAT_STATEMENTS
+        StatementMetrics {
+            runtime_note: "YSQL keeps aggregate run-time statistics in the recorded node or cluster scope. Their spread does not identify which parameter values, tablets, RPCs or retries caused slow runs.".into(),
+            ..StatementMetrics::PG_STAT_STATEMENTS
+        }
     }
     fn wait_sampling(&self) -> Option<WaitSampling> {
         Some(WaitSampling::Sessions)

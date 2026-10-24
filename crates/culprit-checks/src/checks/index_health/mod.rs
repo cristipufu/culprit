@@ -2,8 +2,8 @@
 //! read in full over and over. Every engine where the statistics exist.
 
 use culprit_core::{
-    Capability, Category, CheckInfo, Confidence, Engine, Finding, Fix, IndexStat, Metric, QueryStat, ServerInfo,
-    Severity, Snapshot, SubjectKind, Unit, format,
+    Capability, Category, CheckInfo, Confidence, Engine, Finding, Fix, IndexStat, Metric, QueryStat, Severity,
+    Snapshot, SubjectKind, Unit, format,
 };
 
 use crate::indexes::{
@@ -32,30 +32,8 @@ pub(crate) fn hide_index_sql(snapshot: &Snapshot, i: &IndexStat) -> String {
     if i.is_disabled {
         return drop_index_for_snapshot(snapshot, &i.schema, &i.table, &i.name);
     }
-    if server.is_mariadb() {
-        return match mariadb_can_ignore(server) {
-            true => format!(
-                "ALTER TABLE {} ALTER INDEX {} IGNORED;",
-                qualified(engine, &i.schema, &i.table),
-                quote(engine, &i.name)
-            ),
-            false => drop_index_sql(engine, &i.schema, &i.table, &i.name),
-        };
-    }
-    match engine {
-        Engine::Mssql => {
-            format!("ALTER INDEX {} ON {} DISABLE;", quote(engine, &i.name), qualified(engine, &i.schema, &i.table))
-        }
-        Engine::Postgres | Engine::Yugabyte => drop_index_for_snapshot(snapshot, &i.schema, &i.table, &i.name),
-        Engine::Sqlite => drop_index_sql(engine, &i.schema, &i.table, &i.name),
-        // Invisible indexes arrived in MySQL 8.0; 5.7 can only drop (keep the definition).
-        Engine::Mysql if !culprit_core::version_at_least(&server.version, [8, 0, 0]) => {
-            drop_index_sql(engine, &i.schema, &i.table, &i.name)
-        }
-        Engine::Mysql => format!(
-            "ALTER TABLE {} ALTER INDEX {} INVISIBLE;",
-            qualified(engine, &i.schema, &i.table),
-            quote(engine, &i.name)
-        ),
-    }
+    engine
+        .spec()
+        .hide_index(server, &i.schema, &i.table, &i.name)
+        .unwrap_or_else(|| drop_index_for_snapshot(snapshot, &i.schema, &i.table, &i.name))
 }

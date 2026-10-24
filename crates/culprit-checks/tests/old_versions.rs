@@ -51,3 +51,26 @@ fn mariadb_before_10_6_drops_instead_of_ignoring() {
     assert!(sql.contains("DROP INDEX") && !sql.contains("IGNORED"), "{sql}");
     assert!(summary.contains("ignored indexes arrived in 10.6"), "{summary}");
 }
+
+#[test]
+fn mysql_family_index_hiding_is_declared_for_the_product_and_version() {
+    for (fixture, version, expected) in [
+        ("mysql-demo", "5.7.44", None),
+        ("mysql-demo", "8.0.0", Some("INVISIBLE")),
+        ("mariadb-demo", "10.5.29-MariaDB", None),
+        ("mariadb-demo", "10.6.0-MariaDB", Some("IGNORED")),
+        ("mysql-demo", "custom-build", None),
+        ("mariadb-demo", "custom-build", None),
+    ] {
+        let mut s = snapshot(fixture);
+        s.server.version = version.into();
+        let (summary, sql) = unused_index_fix(s);
+        match expected {
+            Some(state) => assert!(sql.contains(state), "{fixture} {version}: {sql}"),
+            None => assert!(!sql.contains("INVISIBLE") && !sql.contains("IGNORED"), "{fixture} {version}: {sql}"),
+        }
+        if version == "custom-build" {
+            assert!(summary.contains("not established"), "{summary}");
+        }
+    }
+}

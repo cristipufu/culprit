@@ -152,10 +152,3 @@ pub fn overlapping_index(snapshot: &Snapshot) -> Vec<Finding> {
         })
         .collect()
 }
-
-/// MariaDB 10.6+ can tell the optimizer to ignore an index (its INVISIBLE).
-pub(crate) fn mariadb_can_ignore(server: &ServerInfo) -> bool {
-    let mut parts = server.version.split(['.', '-']).map(|p| p.parse::<u32>().unwrap_or(0));
-    let (major, minor) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
-    (major, minor) >= (10, 6)
-}

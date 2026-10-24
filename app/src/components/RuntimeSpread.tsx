@@ -3,7 +3,7 @@ import type { QueryStat } from "../gen/QueryStat";
 import type { WorkloadKind } from "../gen/WorkloadKind";
 import { count, duration, percent } from "../lib/format";
 import { planColor } from "./Trends";
-import { serverName } from "../lib/engines";
+import { serverName, statementMetrics } from "../lib/engines";
 
 /**
  * How a query's run times spread, lane by lane: a plan per lane where the engine keeps plans (SQL Server), the whole
@@ -98,25 +98,11 @@ function coverage(engine: Engine, hasHistogram: boolean, product?: string, kind?
     return hasHistogram
       ? "The slow query log keeps every logged run, so the bars show how many runs took how long (only runs slower than long_query_time)."
       : "The slow query log keeps every logged run slower than long_query_time; the lane shows fastest, average and slowest.";
-  const name = serverName(engine, product);
-  switch (engine) {
-    case "mssql":
-      return kind === "plan-cache"
-        ? "The plan cache keeps the fastest and slowest run of each cached plan since it was cached, not their spread: Query Store would add it."
-        : "Query Store keeps the fastest and slowest run and the spread of every plan, and each plan's compiled parameter values.";
-    case "postgres":
-      return "PostgreSQL keeps one fastest, average, slowest and spread per statement: enough to see a long tail, not which values caused it.";
-    case "yugabyte":
-      return "YSQL keeps aggregate run-time statistics in the recorded node or cluster scope. Their spread does not identify which parameter values, tablets, RPCs or retries caused slow runs.";
-    case "mysql":
-      return hasHistogram
-        ? `${name} keeps a run-time histogram per statement, so the bars show how many runs took how long.`
-        : name === "MariaDB"
-          ? "MariaDB keeps no run-time histogram per statement; the lane shows fastest, average and slowest. The slow query log table adds every run."
-          : "This MySQL keeps no run-time histogram (8.0.19+ does); the lane shows fastest, average and slowest.";
-    case "sqlite":
-      return "SQLite keeps no run times; these come from the query log Culprit read, one entry per logged run.";
-  }
+  const metrics = statementMetrics(engine);
+  const note = (kind === "plan-cache" ? metrics.runtime_cache_note : null)
+    ?? (hasHistogram ? metrics.runtime_histogram_note : null)
+    ?? metrics.runtime_note;
+  return note.replaceAll("{engine}", serverName(engine, product));
 }
 
 function sentence(q: QueryStat, ls: Lane[]): string | null {

@@ -7,4 +7,4 @@ export type StatementMetrics = { planning_label: string, planning_setting: strin
 /**
  * `{engine}` is replaced by the server's display name, including product variants such as MariaDB.
  */
-missing_costs_note: string | null, errors_note: string | null, };
+missing_costs_note: string | null, errors_note: string | null, runtime_note: string, runtime_histogram_note: string | null, runtime_cache_note: string | null, };

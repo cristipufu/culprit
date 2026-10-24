@@ -173,16 +173,7 @@ fn summarize(d: &mut Dashboard) {
 
 /// "SQL Server", "PostgreSQL", "MySQL" or "MariaDB": the name people know the server by.
 pub fn family(server: &ServerInfo) -> &'static str {
-    if server.product.to_ascii_lowercase().contains("mariadb") {
-        return "MariaDB";
-    }
-    match server.engine {
-        Engine::Mssql => "SQL Server",
-        Engine::Postgres => "PostgreSQL",
-        Engine::Yugabyte => "YugabyteDB",
-        Engine::Mysql => "MySQL",
-        Engine::Sqlite => "SQLite",
-    }
+    server.name()
 }
 
 fn last(hours: f64) -> String {

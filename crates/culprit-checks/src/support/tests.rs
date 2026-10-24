@@ -327,7 +327,7 @@ fn mysql_online_ddl_options_are_space_separated() {
     // `ALGORITHM=INPLACE, LOCK=NONE` is ERROR 1064 in CREATE/DROP INDEX on MySQL and MariaDB: index options don't
     // take commas (only ALTER TABLE's clauses do).
     // MariaDB's DROP INDEX has no such options at all, so the drop goes through ALTER TABLE (whose clauses do).
-    let drop = drop_index_sql(Engine::Mysql, "shop", "orders", "ix_orders_status");
+    let drop = Engine::Mysql.dialect().drop_index("shop", "orders", "ix_orders_status");
     assert_eq!(drop, "ALTER TABLE `shop`.`orders` DROP INDEX `ix_orders_status`, ALGORITHM=INPLACE, LOCK=NONE;");
 }
 

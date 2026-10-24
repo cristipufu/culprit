@@ -354,10 +354,6 @@ fn index_sql(
     })
 }
 
-pub fn drop_index_sql(engine: Engine, schema: &str, table: &str, index: &str) -> String {
-    engine.dialect().drop_index(schema, table, index)
-}
-
 pub fn drop_index_for_snapshot(snapshot: &Snapshot, schema: &str, table: &str, index: &str) -> String {
     let kind = snapshot.table(schema, table).and_then(|t| t.kind.as_deref());
     snapshot.server.engine.spec().table_dialect(kind).drop_index(schema, table, index)

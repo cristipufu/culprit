@@ -129,30 +129,11 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
             }
             let sql = list
                 .iter()
-                .map(|i| match engine {
-                    Engine::Mssql => format!(
-                        "ALTER INDEX {} ON {} DISABLE;",
-                        quote(engine, &i.name),
-                        qualified(engine, &i.schema, &i.table)
-                    ),
-                    Engine::Postgres | Engine::Yugabyte => drop_index_for_snapshot(snapshot, &i.schema, &i.table, &i.name),
-                    Engine::Sqlite => drop_index_for_snapshot(snapshot, &i.schema, &i.table, &i.name),
-                    Engine::Mysql => crate::index_health::hide_index_sql(snapshot, i),
-                })
+                .map(|i| crate::index_health::hide_index_sql(snapshot, i))
                 .collect::<Vec<_>>()
                 .join("\n");
             f.fix = Some(Fix {
-                summary: match engine {
-                    Engine::Yugabyte => "Save its native definition and sharding keys before dropping it. Check a complete cluster-wide business cycle of usage, and measure the affected queries after the change.".into(),
-                    Engine::Mssql => "Disable first: the definition stays, nothing reads it, and `ALTER INDEX … REBUILD` brings it back. Drop it after a full business cycle without complaints.".into(),
-                    Engine::Postgres if snapshot.table(&schema, &table).and_then(|t| t.kind.as_deref()).is_some_and(|kind| matches!(kind, "hypertable" | "timescale-chunk" | "timescale-unresolved")) => "Save the definition first so you can recreate it. TimescaleDB does not support dropping hypertable indexes concurrently; schedule the drop for a maintenance window.".into(),
-                    Engine::Postgres => "Drop it concurrently so writes aren't blocked. Save the definition first so you can recreate it.".into(),
-                    Engine::Mysql if snapshot.server.is_mariadb() && crate::index_health::mariadb_can_ignore(&snapshot.server) => "Have the optimizer ignore it first: it stays maintained, and `ALTER INDEX … NOT IGNORED` brings it back instantly. Drop it after a full business cycle without complaints.".into(),
-                    Engine::Mysql if snapshot.server.is_mariadb() => "Save its definition, then drop it: this MariaDB version can't hide an index (ignored indexes arrived in 10.6).".into(),
-                    Engine::Mysql if !culprit_core::version_at_least(&snapshot.server.version, [8, 0, 0]) => "Save its definition, then drop it: MySQL 5.7 can't hide an index (invisible indexes arrived in 8.0).".into(),
-                    Engine::Sqlite => "Drop it: SQLite can't hide an index first, so keep its CREATE INDEX statement to put it back if a query slows down.".into(),
-                    Engine::Mysql => "Make it invisible first: the optimizer stops using it but it stays maintained, and `ALTER INDEX … VISIBLE` brings it back instantly. Drop it after a full business cycle without complaints.".into(),
-                },
+                summary: engine.spec().unused_index_advice(&snapshot.server, snapshot.table(&schema, &table).and_then(|t| t.kind.as_deref())).into(),
                 sql: Some(sql),
                 cost: Some(format!("Frees {} and makes writes to {} cheaper.", format::bytes(total_size), table_name)),
             });

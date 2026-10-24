@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn report_labels_use_the_same_product_identity_as_the_model() {
+    let mut report: culprit_core::Report =
+        serde_json::from_str(include_str!("../../../../fixtures/pg-demo.report.json")).unwrap();
+    report.snapshot.server.product = "PostgreSQL test build with mariadb migration helpers".into();
+    assert_eq!(report_engine_label(&report), "PostgreSQL");
+    report.snapshot.server.engine = Engine::Mysql;
+    report.snapshot.server.product = "MariaDB 11.8.9".into();
+    assert_eq!(report_engine_label(&report), "MariaDB");
+}
+
+#[test]
 fn comparison_exports_rebuild_scenarios_from_redacted_plans() {
     let snapshot: culprit_core::Snapshot =
         serde_json::from_str(include_str!("../../../../fixtures/mssql-demo.json")).unwrap();

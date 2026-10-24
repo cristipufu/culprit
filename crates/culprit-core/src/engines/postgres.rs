@@ -43,6 +43,13 @@ const USER_SETTINGS: &[&str] = &[
 ];
 
 impl EngineSpec for Postgres {
+    fn unused_index_advice(&self, _server: &ServerInfo, table_kind: Option<&str>) -> &'static str {
+        if matches!(table_kind, Some("hypertable" | "timescale-chunk" | "timescale-unresolved")) {
+            "Save the definition first so you can recreate it. TimescaleDB does not support dropping hypertable indexes concurrently; schedule the drop for a maintenance window."
+        } else {
+            "Drop it concurrently so writes aren't blocked. Save the definition first so you can recreate it."
+        }
+    }
     fn session_advice(&self, command: &str) -> Option<&'static str> {
         session_reset_advice(command)
     }

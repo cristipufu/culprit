@@ -39,7 +39,10 @@
       "log_name": "log",
       "log_label": "Log written",
       "missing_costs_note": null,
-      "errors_note": "Query Store counts errors but doesn't keep them; the finding shows how to capture them."
+      "errors_note": "Query Store counts errors but doesn't keep them; the finding shows how to capture them.",
+      "runtime_note": "Query Store keeps the fastest and slowest run and the spread of every plan, and each plan's compiled parameter values.",
+      "runtime_histogram_note": null,
+      "runtime_cache_note": "The plan cache keeps the fastest and slowest run of each cached plan since it was cached, not their spread: Query Store would add it."
     },
     "wait_sampling": "counters"
   },
@@ -93,7 +96,10 @@
       "log_name": "WAL",
       "log_label": "WAL written",
       "missing_costs_note": "{engine} keeps no error count or lock time per statement; Live shows blocking as it happens.",
-      "errors_note": null
+      "errors_note": null,
+      "runtime_note": "{engine} keeps one fastest, average, slowest and spread per statement: enough to see a long tail, not which values caused it.",
+      "runtime_histogram_note": null,
+      "runtime_cache_note": null
     },
     "wait_sampling": "sessions"
   },
@@ -152,7 +158,10 @@
       "log_name": "log",
       "log_label": "Log written",
       "missing_costs_note": "{engine} keeps no error count or lock time per statement; Live shows blocking as it happens.",
-      "errors_note": null
+      "errors_note": null,
+      "runtime_note": "YSQL keeps aggregate run-time statistics in the recorded node or cluster scope. Their spread does not identify which parameter values, tablets, RPCs or retries caused slow runs.",
+      "runtime_histogram_note": null,
+      "runtime_cache_note": null
     },
     "wait_sampling": "sessions"
   },
@@ -206,7 +215,10 @@
       "log_name": "log",
       "log_label": "Log written",
       "missing_costs_note": "{engine} keeps no planning time or redo bytes per statement.",
-      "errors_note": null
+      "errors_note": null,
+      "runtime_note": "This {engine} scan includes no run-time histogram; the lane shows fastest, average and slowest. Histogram availability depends on the product, server version and collection permissions; the slow query log can add individual logged runs.",
+      "runtime_histogram_note": "{engine} keeps a run-time histogram per statement, so the bars show how many runs took how long.",
+      "runtime_cache_note": null
     },
     "wait_sampling": "counters"
   },
@@ -290,7 +302,10 @@
       "log_name": "log",
       "log_label": "Log written",
       "missing_costs_note": null,
-      "errors_note": null
+      "errors_note": null,
+      "runtime_note": "SQLite keeps no run times; these come from the query log Culprit read, one entry per logged run.",
+      "runtime_histogram_note": null,
+      "runtime_cache_note": null
     },
     "wait_sampling": null
   }

@@ -141,6 +141,10 @@ lock timing, log terminology and missing measurements. The UI consumes these gen
 an engine by name. `wait_sampling` describes session sampling versus counter deltas. Each engine must declare both;
 cross-engine tests cover the declarations and query-cost rendering. Shared statement statistics do not imply shared
 WAL, heap or server-wide measurement semantics.
+Runtime-spread wording also follows these facts and the captured workload source; a missing histogram does not prove
+that a product or version lacks histogram support. Server names use `ServerInfo::name`. Index hiding and removal
+advice resolve in the engine specification using the product, version and managed-table kind; unknown versions do
+not establish support for hiding an index. Checks consume that decision instead of repeating MySQL/MariaDB gates.
 Native index hash groups remain separate from ordered keys. Distributed workload comparisons bind the contributing
 node set and each node's reset epoch through `CounterSet`; partial contributors or unknown epochs cannot establish a
 continuous counter history. Local index zeros cannot establish cluster-wide absence.

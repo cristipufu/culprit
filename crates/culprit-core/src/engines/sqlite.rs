@@ -7,8 +7,16 @@ use crate::dialect::{NewIndex, keys, unique};
 pub(super) struct Sqlite;
 
 impl EngineSpec for Sqlite {
+    fn unused_index_advice(&self, _server: &ServerInfo, _table_kind: Option<&str>) -> &'static str {
+        "Drop it: SQLite can't hide an index first, so keep its CREATE INDEX statement to put it back if a query slows down."
+    }
     fn statement_metrics(&self) -> StatementMetrics {
-        StatementMetrics::BASIC
+        StatementMetrics {
+            runtime_note:
+                "SQLite keeps no run times; these come from the query log Culprit read, one entry per logged run."
+                    .into(),
+            ..StatementMetrics::BASIC
+        }
     }
     fn wait_sampling(&self) -> Option<WaitSampling> {
         None

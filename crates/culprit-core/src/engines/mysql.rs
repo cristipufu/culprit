@@ -6,11 +6,44 @@ use crate::model::Capability;
 
 pub(super) struct Mysql;
 
+fn version_pair(server: &ServerInfo) -> Option<(u32, u32)> {
+    let mut parts = server.version.split(['.', '-']);
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+fn index_hiding(server: &ServerInfo) -> Option<&'static str> {
+    let version = version_pair(server)?;
+    if server.is_mariadb() {
+        (version >= (10, 6)).then_some("IGNORED")
+    } else {
+        (version >= (8, 0)).then_some("INVISIBLE")
+    }
+}
+
 impl EngineSpec for Mysql {
+    fn unused_index_advice(&self, server: &ServerInfo, _table_kind: Option<&str>) -> &'static str {
+        if version_pair(server).is_none() {
+            "Save its definition before dropping it. Index-hiding support is not established for this server version."
+        } else if index_hiding(server) == Some("IGNORED") {
+            "Have the optimizer ignore it first: it stays maintained, and `ALTER INDEX … NOT IGNORED` brings it back instantly. Drop it after a full business cycle without complaints."
+        } else if server.is_mariadb() {
+            "Save its definition, then drop it: this MariaDB version can't hide an index (ignored indexes arrived in 10.6)."
+        } else if index_hiding(server).is_none() {
+            "Save its definition, then drop it: MySQL 5.7 can't hide an index (invisible indexes arrived in 8.0)."
+        } else {
+            "Make it invisible first: the optimizer stops using it but it stays maintained, and `ALTER INDEX … VISIBLE` brings it back instantly. Drop it after a full business cycle without complaints."
+        }
+    }
+    fn hide_index(&self, server: &ServerInfo, schema: &str, table: &str, index: &str) -> Option<String> {
+        let state = index_hiding(server)?;
+        Some(format!("ALTER TABLE {} ALTER INDEX {} {state};", self.qualified(&[schema, table]), self.quote(index)))
+    }
     fn statement_metrics(&self) -> StatementMetrics {
         StatementMetrics {
             write_rows_label: None,
             lock_time: true,
+            runtime_note: "This {engine} scan includes no run-time histogram; the lane shows fastest, average and slowest. Histogram availability depends on the product, server version and collection permissions; the slow query log can add individual logged runs.".into(),
+            runtime_histogram_note: Some("{engine} keeps a run-time histogram per statement, so the bars show how many runs took how long.".into()),
             missing_costs_note: Some("{engine} keeps no planning time or redo bytes per statement.".into()),
             ..StatementMetrics::BASIC
         }

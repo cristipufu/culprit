@@ -155,11 +155,7 @@ pub(crate) fn plan_engine_label(plan: &Plan) -> &'static str {
 
 /// The server a report came from, MariaDB included.
 pub(crate) fn report_engine_label(report: &Report) -> &'static str {
-    if report.snapshot.server.product.to_ascii_lowercase().contains("mariadb") {
-        "MariaDB"
-    } else {
-        report.snapshot.server.engine.label()
-    }
+    report.snapshot.server.name()
 }
 
 pub(crate) fn environment_label(environment: Environment) -> String {

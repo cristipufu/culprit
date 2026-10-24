@@ -7,6 +7,12 @@ use crate::model::Capability;
 pub(super) struct Mssql;
 
 impl EngineSpec for Mssql {
+    fn hide_index(&self, _server: &ServerInfo, schema: &str, table: &str, index: &str) -> Option<String> {
+        Some(format!("ALTER INDEX {} ON {} DISABLE;", self.quote(index), self.qualified(&[schema, table])))
+    }
+    fn unused_index_advice(&self, _server: &ServerInfo, _table_kind: Option<&str>) -> &'static str {
+        "Disable first: the definition stays, nothing reads it, and `ALTER INDEX … REBUILD` brings it back. Drop it after a full business cycle without complaints."
+    }
     fn session_advice(&self, _command: &str) -> Option<&'static str> {
         Some(
             "The driver or the connection pool sends this around the application's statements, not the application's own code: a pooled connection returns to the login's defaults each time it is reused (sp_reset_connection), so options set per session are sent again on every checkout. Set them once instead: as the database's or the login's defaults, or in the connection string where the driver allows.",
@@ -18,6 +24,8 @@ impl EngineSpec for Mssql {
             compilation_history: true,
             lock_time: true,
             write_rows_label: Some("Rows per run".into()),
+            runtime_note: "Query Store keeps the fastest and slowest run and the spread of every plan, and each plan's compiled parameter values.".into(),
+            runtime_cache_note: Some("The plan cache keeps the fastest and slowest run of each cached plan since it was cached, not their spread: Query Store would add it.".into()),
             errors_note: Some(
                 "Query Store counts errors but doesn't keep them; the finding shows how to capture them.".into(),
             ),

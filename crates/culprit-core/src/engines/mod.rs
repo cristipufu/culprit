@@ -50,6 +50,11 @@ pub trait EngineSpec: Send + Sync {
         false
     }
     fn inactive_index_state(&self, server: &ServerInfo) -> crate::IndexState;
+    /// A reversible alternative to dropping an index, only when this server supports it.
+    fn hide_index(&self, _server: &ServerInfo, _schema: &str, _table: &str, _index: &str) -> Option<String> {
+        None
+    }
+    fn unused_index_advice(&self, server: &ServerInfo, table_kind: Option<&str>) -> &'static str;
     fn limitations(&self) -> Vec<String>;
     /// Public collection limits, safe to show after private collector details have been removed for sharing.
     fn deadlock_limitation(&self) -> Option<&'static str> {
@@ -152,6 +157,9 @@ pub struct StatementMetrics {
     /// `{engine}` is replaced by the server's display name, including product variants such as MariaDB.
     pub missing_costs_note: Option<Cow<'static, str>>,
     pub errors_note: Option<Cow<'static, str>>,
+    pub runtime_note: Cow<'static, str>,
+    pub runtime_histogram_note: Option<Cow<'static, str>>,
+    pub runtime_cache_note: Option<Cow<'static, str>>,
 }
 
 impl StatementMetrics {
@@ -165,6 +173,11 @@ impl StatementMetrics {
         log_label: Cow::Borrowed("Log written"),
         missing_costs_note: None,
         errors_note: None,
+        runtime_note: Cow::Borrowed(
+            "The scan includes aggregate run-time statistics rather than individual execution traces.",
+        ),
+        runtime_histogram_note: None,
+        runtime_cache_note: None,
     };
 
     /// YSQL and PostgreSQL share these statement statistics, without sharing heap or WAL measurements.
@@ -174,6 +187,9 @@ impl StatementMetrics {
         missing_costs_note: Some(Cow::Borrowed(
             "{engine} keeps no error count or lock time per statement; Live shows blocking as it happens.",
         )),
+        runtime_note: Cow::Borrowed(
+            "{engine} keeps one fastest, average, slowest and spread per statement: enough to see a long tail, not which values caused it.",
+        ),
         ..Self::BASIC
     };
 }
