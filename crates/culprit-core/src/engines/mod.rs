@@ -42,6 +42,10 @@ pub trait EngineSpec: Send + Sync {
     fn statement_metrics(&self) -> StatementMetrics;
     /// How a live wait sample is collected. Required so a new engine cannot inherit another engine's description.
     fn wait_sampling(&self) -> Option<WaitSampling>;
+    /// Advice for the driver's session settings or reset command, after generic transactions and pings are handled.
+    fn session_advice(&self, _command: &str) -> Option<&'static str> {
+        None
+    }
     fn mutating_function(&self, _name: &str) -> bool {
         false
     }

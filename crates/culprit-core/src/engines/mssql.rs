@@ -7,6 +7,11 @@ use crate::model::Capability;
 pub(super) struct Mssql;
 
 impl EngineSpec for Mssql {
+    fn session_advice(&self, _command: &str) -> Option<&'static str> {
+        Some(
+            "The driver or the connection pool sends this around the application's statements, not the application's own code: a pooled connection returns to the login's defaults each time it is reused (sp_reset_connection), so options set per session are sent again on every checkout. Set them once instead: as the database's or the login's defaults, or in the connection string where the driver allows.",
+        )
+    }
     fn statement_metrics(&self) -> StatementMetrics {
         StatementMetrics {
             planning_label: "Compiling".into(),

@@ -561,21 +561,17 @@ impl ResidualRead<'_> {
 /// the pool's or the driver's settings, never the application's code, and each kind of statement has its own.
 pub(super) fn session_fix(engine: Engine, text: &str) -> String {
     let pool = "The driver or the connection pool sends this around the application's statements, not the application's own code";
-    match first_keyword(text).as_str() {
-        // PostgreSQL's poolers reset a session with DISCARD ALL (or RESET ALL) between one use and the next.
-        "discard" | "reset" if engine == Engine::Postgres => "This resets session state and is commonly sent by a driver or connection pool; the statement statistics do not identify its caller or pooling mode. Inspect the application's connection lifecycle and the driver or pool configuration, and benchmark any change against the measured absolute cost shown here. Keep resets that prevent session state leaking between users. Npgsql arranges its reset on close and sends it on reuse; PgBouncer normally resets on release in session pooling, and normally does not in transaction pooling. Consider changing reset behavior only after verifying that every caller safely handles retained session state.".into(),
+    let command = first_keyword(text);
+    match command.as_str() {
         "begin" | "start" | "commit" | "rollback" | "end" | "savepoint" | "release" => format!(
             "{pool}: check whether it wraps every statement in a transaction of its own (each commit waits for the log to reach disk), and run the statements that belong together in one transaction."
         ),
         "select" => format!(
             "{pool}: it checks that a connection is still alive. Check how often the pool does that (on every checkout, or on a timer) and check less often."
         ),
-        _ if engine == Engine::Mssql => format!(
-            "{pool}: a pooled connection returns to the login's defaults each time it is reused (sp_reset_connection), so options set per session are sent again on every checkout. Set them once instead: as the database's or the login's defaults, or in the connection string where the driver allows."
-        ),
-        _ => format!(
+        _ => engine.spec().session_advice(&command).map(str::to_string).unwrap_or_else(|| format!(
             "{pool}: look at what the pool runs each time it hands out a connection (session settings, a reset), and set what the application needs once instead: in the connection string, or as the role's or the server's defaults."
-        ),
+        )),
     }
 }
 

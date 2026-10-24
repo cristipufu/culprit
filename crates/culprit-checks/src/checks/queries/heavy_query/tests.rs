@@ -293,6 +293,13 @@ fn a_pools_statements_get_the_pools_own_lever() {
     );
     assert!(!discard.contains("sp_reset_connection"), "{discard}");
     assert!(discard.contains("Npgsql") && discard.contains("PgBouncer") && discard.contains("benchmark"), "{discard}");
+    for engine in [Engine::Postgres, Engine::Yugabyte] {
+        for reset in ["DISCARD ALL", "RESET ALL", "/* pooled */ DISCARD ALL"] {
+            let advice = session_fix(engine, reset);
+            assert!(advice.contains("Keep resets") && advice.contains("do not identify its caller"), "{advice}");
+            assert!(!advice.contains("sp_reset_connection"), "{advice}");
+        }
+    }
     // sp_reset_connection is SQL Server's.
     let set = session_fix(Engine::Mssql, "SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
     assert!(set.contains("sp_reset_connection"), "{set}");
@@ -300,4 +307,17 @@ fn a_pools_statements_get_the_pools_own_lever() {
     assert!(commit.contains("transaction of its own") && !commit.contains("sp_reset_connection"), "{commit}");
     let ping = session_fix(Engine::Mysql, "/* ping */ SELECT 1");
     assert!(ping.contains("still alive"), "{ping}");
+}
+
+#[test]
+fn write_row_labels_use_the_declared_counter_meaning() {
+    for (engine, expected) in [
+        (Engine::Postgres, Some("Rows changed per run")),
+        (Engine::Yugabyte, Some("Rows changed per run")),
+        (Engine::Mssql, Some("Rows per run")),
+        (Engine::Mysql, None),
+    ] {
+        assert_eq!(rows_label(engine, StatementKind::Write).as_deref(), expected);
+        assert_eq!(rows_label(engine, StatementKind::Read).as_deref(), Some("Rows returned per run"));
+    }
 }

@@ -254,7 +254,7 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
         f.metrics.push(Metric::new(label, r, unit));
     }
     if let (Some(r), Some(label)) = (q.rows_per_execution(), rows_label(snapshot.server.engine, kind)) {
-        let mut metric = rows_metric(label, r, q.executions);
+        let mut metric = rows_metric(&label, r, q.executions);
         if let Some(basis) = crate::support::totals_basis(snapshot, q) {
             metric.label.push_str(&format!(" over {basis}"));
         }
@@ -540,12 +540,11 @@ pub(super) fn calls(squeezed: &str, function: &str) -> bool {
 }
 
 /// "Rows returned per run", or what the engine's row count means for a write. MySQL counts no rows sent for a write.
-pub(super) fn rows_label(engine: Engine, kind: StatementKind) -> Option<&'static str> {
-    match (kind, engine) {
-        (StatementKind::Write, Engine::Postgres) => Some("Rows changed per run"),
-        (StatementKind::Write, Engine::Mssql) => Some("Rows per run"),
-        (StatementKind::Write, Engine::Mysql) => None,
-        _ => Some("Rows returned per run"),
+pub(super) fn rows_label(engine: Engine, kind: StatementKind) -> Option<std::borrow::Cow<'static, str>> {
+    if kind == StatementKind::Write {
+        engine.spec().statement_metrics().write_rows_label
+    } else {
+        Some("Rows returned per run".into())
     }
 }
 

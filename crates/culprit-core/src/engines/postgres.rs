@@ -5,6 +5,10 @@ use crate::dialect::{NewIndex, included, keys, unique};
 
 pub(super) struct Postgres;
 
+pub(super) fn session_reset_advice(command: &str) -> Option<&'static str> {
+    matches!(command, "discard" | "reset").then_some("This resets session state and is commonly sent by a driver or connection pool; the statement statistics do not identify its caller or pooling mode. Inspect the application's connection lifecycle and the driver or pool configuration, and benchmark any change against the measured absolute cost shown here. Keep resets that prevent session state leaking between users. Npgsql arranges its reset on close and sends it on reuse; PgBouncer normally resets on release in session pooling, and normally does not in transaction pooling. Consider changing reset behavior only after verifying that every caller safely handles retained session state.")
+}
+
 /// Settings of context `user` in pg_settings: a database's owner sets them for that database (`ALTER DATABASE … SET`),
 /// no superuser needed, so they work on a managed service too. Settings of context `superuser` (track_io_timing,
 /// pg_stat_statements.track, wal_compression) are left out: a managed service's admin role isn't a superuser.
@@ -39,6 +43,9 @@ const USER_SETTINGS: &[&str] = &[
 ];
 
 impl EngineSpec for Postgres {
+    fn session_advice(&self, command: &str) -> Option<&'static str> {
+        session_reset_advice(command)
+    }
     fn statement_metrics(&self) -> StatementMetrics {
         StatementMetrics {
             log_name: "WAL".into(),

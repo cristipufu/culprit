@@ -29,6 +29,9 @@ pub fn session_target(session: &str) -> crate::Result<(String, i32, String)> {
 }
 
 impl EngineSpec for Yugabyte {
+    fn session_advice(&self, command: &str) -> Option<&'static str> {
+        super::postgres::session_reset_advice(command)
+    }
     fn statement_metrics(&self) -> StatementMetrics {
         StatementMetrics::PG_STAT_STATEMENTS
     }
