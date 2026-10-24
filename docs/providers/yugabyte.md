@@ -35,7 +35,7 @@ are not claimed as verified; optional views and functions that are absent or den
 | Index advice | Ordered candidate keys use explicit ASC/DESC; HASH groups differ from range keys in redundancy, lookup coverage and drift; active backfill must finish before repairing an invalid index |
 | Index usage | Complete global index counters when available; no unused-index verdict from a local zero or unknown reset date |
 | Live | Current-database sessions and native `yb_lock_status` blocking evidence; node-qualified identities include backend start time |
-| Live samples / progress | Bounded session sampling with native RPC/storage categories; scoped current activity and optional estimated plans; supported CREATE INDEX / ANALYZE phases without guessed percentages |
+| Live samples / progress | Bounded session sampling with native RPC/storage categories; scoped current activity and optional estimated plans; native index-backfill rows, ANALYZE phases and running COPY counters without guessed percentages |
 | Activity history | Database- and role-scoped native ASH observations, with task weights, observation nodes, component/event names and query identities in an independent retained period |
 | Unexpected terminations | Native `yb_terminated_queries` records, with query IDs, recognized reasons, dates and nodes; database-filtered, with native login visibility and bounded retention |
 | Node resources | Native shared host CPU/memory and TServer memory-tracker observations; per-node status, inventory, observation interval and limits remain explicit |
@@ -176,13 +176,34 @@ Unknown memory limits stay distinct from native unlimited (`-1`) and measured ze
 agent output carries a bounded summary and the total retained/expected counts. Verified live on the one-node
 fixture, including ordinary-login and `pg_read_all_stats` refusals, successful `yb_db_admin` access and revocation.
 
+## Live command progress
+
+Live reads native `pg_stat_progress_create_index`, `pg_stat_progress_analyze` and `pg_stat_progress_copy`
+(or their configured global counterparts). Node, database, backend start and statement start must still match the
+observed activity; hidden activity and reusable Connection Manager workers do not authorize command counters.
+The shared SQL lexer selects the matching command, including leading comments. Unparseable or ambiguous SQL leaves
+command progress unknown. Native progress rows do not supply per-operator completion or an overall percentage.
+
+[Index backfill](https://docs.yugabyte.com/stable/explore/ysql-language-features/indexes-constraints/index-backfill/)
+shows table rows processed and a separately labelled estimated total. Partial indexes retain those table-row units;
+heap blocks and estimated totals never become completion percentages. ANALYZE supplies its current phase only.
+[COPY](https://docs.yugabyte.com/stable/explore/observability/pg-stat-progress-copy/) shows the running command's
+native row and byte counters. Batched COPY FROM can persist completed transactions before a later error;
+unknown file size and bytes transferred do not establish whole-command completion.
+
+YSQL retains successful and failed COPY records on a backend, and its native
+[`pg_stat_get_progress_info`](https://github.com/yugabyte/yugabyte-db/blob/master/src/postgres/src/backend/utils/adt/pgstatfuncs.c)
+can expose those counters through other progress views too. Culprit requires matching current SQL and an
+`IN PROGRESS` COPY status; retained results never describe a later SELECT on that backend. Optional-view failures
+leave activity visible with an explicit progress-unavailable note.
+
 ## Limits
 
 PostgreSQL heap pages, buffer ratios, dead tuples, HOT updates, autovacuum, XID/MultiXact wraparound and heap-oriented GUC
 advice are unavailable by design. Database size remains unknown. Configuration suggestions are restricted to supported
 YSQL database settings; other changes use YugabyteDB administration rather than PostgreSQL `ALTER SYSTEM` guesses.
 
-The current provider does not yet collect complete native operation progress or distributed deadlock history.
+Native command progress covers the views above; distributed deadlock history is not yet collected.
 Database-attributed resource pressure and a complete SQL error history are not supplied by these native views;
 PostgreSQL placeholders are not substituted. Current session/lock collection is limited to 1,000 sessions and 2,000
 waits and labels truncated or node-local visibility incomplete. Live lowers the lock metadata reader's session-local

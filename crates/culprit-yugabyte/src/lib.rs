@@ -152,15 +152,15 @@ impl Provider for YugabyteProvider {
     async fn query_progress(&self, id: &str, with_plan: bool) -> Result<culprit_core::QueryProgress> {
         deadline(OBSERVE_TIMEOUT, async {
             let (mut progress, allowed) = progress::read(&self.connector, id, with_plan).await?;
-            if allowed {
+            if allowed && progress.phase.is_none() {
                 if let Some(statement) = &progress.statement {
                     match self.explain(statement,ExplainMode::Estimated).await {
                         Ok(plan) => progress.plan = Some(plan),
-                        Err(_) => progress.note = Some("Current activity was read, but this login could not safely plan the statement. No estimated operator progress is presented as measured work.".into()),
+                        Err(_) => progress.note = Some(format!("{} Current activity was read, but this login could not safely plan the statement. No estimated operator progress is presented as measured work.", progress.note.as_deref().unwrap_or_default())),
                     }
                 }
-            } else if with_plan && progress.running {
-                progress.note = Some("Current activity was read; this backend's ownership or visibility could not authorize planning its text with this login's privileges.".into());
+            } else if with_plan && progress.running && progress.phase.is_none() {
+                progress.note = Some(format!("{} Current activity was read; this backend's ownership or visibility could not authorize planning its text with this login's privileges.", progress.note.as_deref().unwrap_or_default()));
             }
             Ok(progress)
         }).await

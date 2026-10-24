@@ -486,6 +486,13 @@ PostgreSQL and MySQL use numeric ids; YugabyteDB requires the node, backend PID 
 native provider, Workspace progress/actions and suggested termination SQL use the same identity parser. The provider
 then verifies the current database, node, backend start and direct-client ownership before signaling a session.
 
+YugabyteDB command progress also pins the statement start time before reading native index, ANALYZE or COPY views.
+The shared SQL lexer selects the current command: YSQL's progress function can expose retained COPY counters through
+other command views. A COPY row must still be IN PROGRESS; hidden activity and reusable pooled workers cannot
+authorize counters. Index totals remain estimates of table rows, and COPY transfer/transaction counters never become
+an overall completion percentage. Command progress needs no estimated plan; optional-view failures retain activity
+with an explicit limitation.
+
 `app/src/lib/store.ts` owns UI state and navigation. `report-requests.ts` owns a report's cache → scan lifecycle,
 including loading, selection, refresh errors and sidebar refresh. Every open or manual scan gets a distinct owner
 from `requests.ts::LatestRequest`, alongside its connection and window. Changing either target invalidates that owner;

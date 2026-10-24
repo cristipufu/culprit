@@ -7,6 +7,157 @@ static LIVE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
 #[ignore = "requires dev/yugabyte and CULPRIT_YSQL_TEST_PORT"]
+async fn live_copy_progress_keeps_native_counters_and_rejects_retained_results_and_stale_sessions() {
+    use futures_util::SinkExt;
+
+    let _fixture = LIVE.lock().await;
+    let provider = YugabyteProvider::new(&local_spec()).unwrap();
+    let active = provider.connector.connect(INTERACTIVE).await.unwrap();
+    active.batch_execute(&tagged("SET default_transaction_read_only=off")).await.unwrap();
+    let identity = query_one(&active, &format!(
+        "SELECT replace(yb_get_local_tserver_uuid()::text,'-','') AS node,pg_backend_pid()::text AS pid,{} AS started FROM pg_stat_activity WHERE pid=pg_backend_pid()",
+        crate::probe::timestamp("backend_start")
+    )).await.unwrap().unwrap();
+    let pid = identity.string("pid");
+    let id = format!("{}/{pid}/{}", identity.string("node"), identity.string("started"));
+    // Temporary tables use PostgreSQL-local storage; use a bounded, owned DocDB table for native batch counters.
+    let table = format!("public.culprit_progress_copy_{pid}");
+    active.batch_execute(&tagged(&format!("CREATE TABLE {table} (id int PRIMARY KEY, payload text)"))).await.unwrap();
+    let role = format!("culprit_progress_reader_{pid}");
+    active.batch_execute(&tagged(&format!("CREATE ROLE {role} LOGIN"))).await.unwrap();
+    let copy = active
+        .copy_in::<_, std::io::Cursor<Vec<u8>>>(&tagged(&format!(
+            "/* leading application comment */ COPY {table} FROM STDIN WITH (ROWS_PER_TRANSACTION 2)",
+        )))
+        .await
+        .unwrap();
+    tokio::pin!(copy);
+    let data = (1..=16).map(|i| format!("{i}\t{}\n", "x".repeat(8192))).collect::<String>();
+    copy.as_mut().send(std::io::Cursor::new(data.into_bytes())).await.unwrap();
+    copy.as_mut().flush().await.unwrap();
+    let mut observed = None;
+    let mut last = None;
+    for _ in 0..40 {
+        let progress = provider.query_progress(&id, true).await.unwrap();
+        if progress.phase.as_deref().is_some_and(|p| p.contains("COPY FROM PIPE: IN PROGRESS") && !p.contains("0 rows"))
+        {
+            observed = Some(progress);
+            break;
+        }
+        last = Some(progress);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let progress = observed.unwrap_or_else(|| {
+        panic!(
+            "native COPY progress was not visible while its stream was held open: {}",
+            serde_json::to_string(&last).unwrap()
+        )
+    });
+    assert!(progress.running && progress.statement.as_deref().unwrap().starts_with("/* leading"));
+    assert!(progress.phase.as_deref().unwrap().contains("rows reported processed"));
+    assert!(progress.note.as_deref().unwrap().contains("completed transactions"));
+    assert!(progress.percent.is_none() && progress.phase_percent.is_none() && progress.nodes.is_empty());
+    assert!(progress.plan.is_none(), "native command progress does not require an estimated query plan");
+    assert!(!progress.phase.as_deref().unwrap().contains("source file"), "STDIN has no known file size");
+    let global = provider.connector.connect_observed(INTERACTIVE).await.unwrap();
+    global.client.batch_execute(&tagged("SET yb_enable_global_views=on")).await.unwrap();
+    let (cluster, _) = crate::progress::read_session(&global, &id, false).await.unwrap();
+    assert!(cluster.phase.as_deref().is_some_and(|p| p.starts_with("COPY FROM PIPE: IN PROGRESS")));
+    assert!(cluster.percent.is_none());
+    let mut spec = local_spec();
+    spec.user = Some(role.clone());
+    let limited = YugabyteProvider::new(&spec).unwrap().query_progress(&id, false).await.unwrap();
+    assert!(
+        limited.phase.is_none() && limited.statement.is_none(),
+        "hidden activity cannot authorize reading another role's command counters"
+    );
+    let stale = id.rsplit_once('/').map(|(head, _)| format!("{head}/2000-01-01T00:00:00Z")).unwrap();
+    let stale = provider.query_progress(&stale, false).await.unwrap();
+    assert!(!stale.running && stale.phase.is_none());
+    let foreign = format!("00000000000000000000000000000000/{pid}/{}", identity.string("started"));
+    assert!(provider.query_progress(&foreign, false).await.unwrap().phase.is_none());
+    assert_eq!(copy.as_mut().finish().await.unwrap(), 16);
+    let retained = query_one(
+        &active,
+        &format!("SELECT yb_status,tuples_processed::text AS rows FROM pg_stat_progress_copy WHERE pid={pid}"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(retained.string("yb_status"), "SUCCESS");
+    assert_eq!(retained.string("rows"), "16");
+    let idle = provider.query_progress(&id, false).await.unwrap();
+    assert!(!idle.running && idle.phase.is_none());
+    // A failed COPY is retained too; it cannot become progress for a later statement on this backend.
+    let copy = active.copy_in::<_, &'static [u8]>(&tagged(&format!("COPY {table} FROM STDIN"))).await.unwrap();
+    tokio::pin!(copy);
+    copy.as_mut().send(b"invalid-integer\tx\n").await.unwrap();
+    assert!(copy.as_mut().finish().await.is_err());
+    let retained = query_one(&active, &format!("SELECT yb_status FROM pg_stat_progress_copy WHERE pid={pid}"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.string("yb_status"), "ERROR");
+    let sleeping = async {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let progress = provider.query_progress(&id, false).await.unwrap();
+        assert!(progress.running && progress.statement.as_deref().unwrap().contains("pg_sleep"));
+        assert!(progress.phase.is_none(), "retained COPY must not describe a later SELECT");
+    };
+    let sleep_sql = tagged("SELECT pg_sleep(2)");
+    let (done, ()) = tokio::join!(active.batch_execute(&sleep_sql), sleeping);
+    done.unwrap();
+    active.batch_execute(&tagged(&format!("DROP TABLE {table}"))).await.unwrap();
+    active.batch_execute(&tagged(&format!("DROP ROLE {role}"))).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires dev/yugabyte and CULPRIT_YSQL_TEST_PORT"]
+async fn live_index_progress_reports_backfill_rows_without_a_guessed_percentage() {
+    let _fixture = LIVE.lock().await;
+    let provider = YugabyteProvider::new(&local_spec()).unwrap();
+    let active = provider.connector.connect(INTERACTIVE).await.unwrap();
+    active.batch_execute(&tagged("SET default_transaction_read_only=off")).await.unwrap();
+    let identity = query_one(&active, &format!(
+        "SELECT replace(yb_get_local_tserver_uuid()::text,'-','') AS node,pg_backend_pid()::text AS pid,{} AS started FROM pg_stat_activity WHERE pid=pg_backend_pid()",
+        crate::probe::timestamp("backend_start")
+    )).await.unwrap().unwrap();
+    let pid = identity.string("pid");
+    let id = format!("{}/{pid}/{}", identity.string("node"), identity.string("started"));
+    let table = format!("public.culprit_progress_index_{pid}");
+    active.batch_execute(&tagged(&format!("CREATE TABLE {table} (id int PRIMARY KEY, value int); INSERT INTO {table} SELECT n,n%10 FROM generate_series(1,20000) n; ANALYZE {table}"))).await.unwrap();
+    let sql = tagged(&format!(
+        "/* application comment */ CREATE INDEX culprit_progress_idx_{pid} ON {table}(value) WHERE value=1"
+    ));
+    let poll = async {
+        let mut seen = Vec::new();
+        for _ in 0..100 {
+            let progress = provider.query_progress(&id, false).await.unwrap();
+            if progress.phase.is_some() {
+                assert!(progress.percent.is_none() && progress.phase_percent.is_none() && progress.nodes.is_empty());
+                let backfilling = progress.phase.as_deref().unwrap().contains("table rows processed");
+                seen.push(progress);
+                if backfilling {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        }
+        seen
+    };
+    let (built, observed) = tokio::join!(active.batch_execute(&sql), poll);
+    active.batch_execute(&tagged(&format!("DROP TABLE {table}"))).await.unwrap();
+    built.unwrap();
+    assert!(
+        observed.iter().any(|p| p.phase.as_deref().unwrap().contains("table rows processed")),
+        "native backfill rows were not observed: {}",
+        serde_json::to_string(&observed).unwrap()
+    );
+    assert!(observed.iter().any(|p| p.note.as_deref().unwrap().contains("including for partial indexes")));
+}
+
+#[tokio::test]
+#[ignore = "requires dev/yugabyte and CULPRIT_YSQL_TEST_PORT"]
 async fn live_node_resources_are_shared_native_samples_with_their_own_admin_permissions() {
     let _fixture = LIVE.lock().await;
     let provider = YugabyteProvider::new(&local_spec()).unwrap();

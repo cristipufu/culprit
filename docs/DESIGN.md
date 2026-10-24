@@ -225,6 +225,10 @@ Two plans of the same statement (two Query Store plans, before and after an inde
 
 ### Actual runs and live progress
 
+YugabyteDB Live uses native index-backfill row counts, ANALYZE phases and running COPY row/byte counters. Estimated
+table totals, transferred bytes and completed COPY transactions are labelled for what they measure and never shown
+as whole-command completion percentages. Saved COPY results cannot appear as progress for a later statement.
+
 What a query really did, never by running it behind your back.
 
 - **Last run** (Queries → a query → Plan → *Last run*). SQL Server 2019+ keeps the actual plan of each cached query's latest run when `LAST_QUERY_PLAN_STATS` is on; Culprit reads it from `sys.dm_exec_query_plan_stats` and shows real rows next to the estimates. That plan carries row counts only (no per-step time), and the view says so. When the setting is off, a calm card explains what it unlocks and shows the copy-only `ALTER DATABASE SCOPED CONFIGURATION` (also a `last-actual-plans` finding). Postgres and MySQL keep no actual plans; the card says so and offers *Measure it once* when the recorded text is runnable, or *Open in editor* to fill in real values.

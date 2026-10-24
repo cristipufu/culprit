@@ -1105,6 +1105,7 @@ dependencies = [
  "async-trait",
  "culprit-core",
  "culprit-postgres",
+ "futures-util",
  "serde",
  "serde_json",
  "tokio",

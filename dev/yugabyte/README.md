@@ -72,6 +72,17 @@ and verifies that a revoked monitoring grant rejects a stale probe; it performs 
 Shared view tests verify independent periods and weights, unknown elapsed time, and the absence of
 resource-pressure verdicts from sample shares. Agent-output tests bound the response without duplicating raw history.
 
+Verify native command progress, retained COPY results and current-statement ownership:
+
+```sh
+CULPRIT_YSQL_TEST_PORT=55434 cargo test --locked -p culprit-yugabyte --lib progress -- --include-ignored
+```
+
+These cases build a partial index over a bounded synthetic DocDB table and hold a streamed, batched COPY open.
+They check native counts without a guessed percentage, successful/failed COPY retention, leading SQL comments,
+stale/wrong-node session refusal, hidden-role visibility and a one-node global read. Owned test tables and the
+temporary login are removed afterward. Temporary PostgreSQL-local tables cannot verify DocDB batch counters.
+
 ## Cluster-view verification
 
 Verify native node resource observations and their distinct administrative permissions:
