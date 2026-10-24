@@ -7,6 +7,49 @@ static LIVE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
 #[ignore = "requires dev/yugabyte and CULPRIT_YSQL_TEST_PORT"]
+async fn live_partitioned_indexes_preserve_physical_catalog_and_cluster_usage() {
+    let _fixture = LIVE.lock().await;
+    let provider = YugabyteProvider::new(&local_spec()).unwrap();
+    let admin = provider.connector.connect(INTERACTIVE).await.unwrap();
+    admin.batch_execute(&tagged("SET default_transaction_read_only=off")).await.unwrap();
+    let pid = query_one(&admin, "SELECT pg_backend_pid()::text AS pid").await.unwrap().unwrap().string("pid");
+    let schema = format!("culprit_partitions_{pid}");
+    admin
+        .batch_execute(&tagged(&format!(
+            "CREATE SCHEMA {schema}; CREATE TABLE {schema}.events (id int, at int) PARTITION BY RANGE (at);
+         CREATE TABLE {schema}.events_one PARTITION OF {schema}.events FOR VALUES FROM (0) TO (100);
+         CREATE INDEX events_id ON {schema}.events (id ASC)"
+        )))
+        .await
+        .unwrap();
+    let observed = async {
+        let mut snapshot = provider.snapshot("partitioned-index-test", &SnapshotOptions::default()).await?;
+        let global = provider.connector.connect_observed(COLLECTOR).await?;
+        global
+            .client
+            .batch_execute(&tagged("SET yb_enable_global_views=on"))
+            .await
+            .map_err(culprit_postgres::wire::map_error)?;
+        let probe = crate::probe::read(&global.client).await?;
+        let mut coverage = culprit_core::Coverage::default();
+        crate::index_usage::read(&global, &probe, &mut snapshot, &mut coverage).await;
+        coverage.append_to(&mut snapshot);
+        Ok::<_, Error>(snapshot)
+    }
+    .await;
+    admin.batch_execute(&tagged(&format!("DROP SCHEMA {schema} CASCADE"))).await.unwrap();
+    let snapshot = observed.unwrap();
+    let indexes: Vec<_> = snapshot.indexes.iter().filter(|i| i.schema == schema).collect();
+    assert_eq!(indexes.len(), 1);
+    assert_eq!(indexes[0].table, "events_one");
+    assert_eq!(indexes[0].partition_of.as_deref(), Some(format!("{schema}.events_id").as_str()));
+    assert!(snapshot.indexes.iter().all(|i| i.docdb.is_some()));
+    assert!(snapshot.server.has(culprit_core::Capability::IndexUsage));
+    assert!(indexes[0].reads.is_some());
+}
+
+#[tokio::test]
+#[ignore = "requires dev/yugabyte and CULPRIT_YSQL_TEST_PORT"]
 async fn live_hypothetical_indexes_use_native_plans_without_persistent_indexes_or_heap_measurements() {
     let _fixture = LIVE.lock().await;
     let provider = YugabyteProvider::new(&local_spec()).unwrap();

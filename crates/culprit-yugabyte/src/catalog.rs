@@ -36,6 +36,8 @@ pub(crate) async fn indexes(client: &Client, _probe: &Probe) -> Result<Vec<Index
     let rows = query(client,&format!("SELECT n.nspname AS schema,t.relname AS table,i.relname AS name,am.amname AS kind,
         x.indisprimary AS pk,x.indisunique AS unique,x.indisready AS ready,x.indisvalid AS usable,
         pg_get_indexdef(i.oid) AS definition,pg_get_expr(x.indpred,x.indrelid) AS filter,
+        (SELECT pn.nspname || '.' || p.relname FROM pg_inherits inh JOIN pg_class p ON p.oid=inh.inhparent
+         JOIN pg_namespace pn ON pn.oid=p.relnamespace WHERE inh.inhrelid=i.oid LIMIT 1) AS partition_of,
         array_to_json(ARRAY(SELECT COALESCE(a.attname,pg_get_indexdef(i.oid,k,true)) || CASE WHEN (x.indoption[k-1] & 1)=1 THEN ' DESC' ELSE '' END
           FROM generate_series(1,x.indnkeyatts) k LEFT JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=x.indkey[k-1] ORDER BY k))::text AS keys,
         array_to_json(ARRAY(SELECT concat_ws(' ',
@@ -48,10 +50,10 @@ pub(crate) async fn indexes(client: &Client, _probe: &Probe) -> Result<Vec<Index
         array_to_json(ARRAY(SELECT a.attname FROM generate_series(x.indnkeyatts+1,x.indnatts) k
           JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=x.indkey[k-1] ORDER BY k))::text AS included
         FROM pg_index x JOIN pg_class i ON i.oid=x.indexrelid JOIN pg_class t ON t.oid=x.indrelid
-        JOIN pg_namespace n ON n.oid=t.relnamespace JOIN pg_am am ON am.oid=i.relam WHERE {USER_RELATIONS} ORDER BY 1,2,3")).await?;
+        JOIN pg_namespace n ON n.oid=t.relnamespace JOIN pg_am am ON am.oid=i.relam WHERE i.relkind='i' AND {USER_RELATIONS} ORDER BY 1,2,3")).await?;
     rows.iter().map(|r|decode(json!({"schema":r.string("schema"),"table":r.string("table"),"name":r.string("name"),"kind":r.string("kind"),
         "columns":array(r,"keys"),"opclasses":array(r,"opclasses"),"include":array(r,"included"),"filter":r.text("filter"),"is_primary_key":r.flag("pk"),
-        "is_unique":r.flag("unique"),"is_clustered":r.flag("pk"),"is_disabled":!r.flag("usable"),"maintained":r.flag("ready"),"definition":r.text("definition")}))).collect()
+        "is_unique":r.flag("unique"),"is_clustered":r.flag("pk"),"is_disabled":!r.flag("usable"),"maintained":r.flag("ready"),"definition":r.text("definition"),"partition_of":r.text("partition_of")}))).collect()
 }
 pub(crate) async fn details(client: &Client, snapshot: &mut Snapshot, coverage: &mut Coverage) {
     let props = query(
