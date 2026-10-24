@@ -943,6 +943,12 @@ async fn live_relocated_statement_extension_keeps_native_statistics_and_planning
         admin.batch_execute(&tagged(&sql)).await.unwrap();
     }
     let snapshot = observed.unwrap();
+    assert!(
+        snapshot
+            .settings
+            .iter()
+            .any(|s| s.name == "pg_stat_statements.track_planning" && matches!(s.value.as_str(), "on" | "off"))
+    );
     let workload = snapshot.workload.unwrap();
     assert!(!workload.queries.is_empty());
     assert!(workload.counter_set.unwrap().epochs_known());

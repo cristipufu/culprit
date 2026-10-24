@@ -188,7 +188,7 @@ pub(crate) async fn foreign_keys(client: &Client) -> Result<Vec<ForeignKey>> {
         .collect())
 }
 pub(crate) async fn settings(client: &Client) -> Result<Vec<Setting>> {
-    Ok(query(client,"SELECT name,setting,boot_val FROM pg_settings WHERE name LIKE 'yb_%' OR name IN ('work_mem','statement_timeout','lock_timeout','default_statistics_target','idle_in_transaction_session_timeout','plan_cache_mode')").await?.iter()
+    Ok(query(client,"SELECT name,setting,boot_val FROM pg_settings WHERE name LIKE 'yb_%' OR name IN ('work_mem','statement_timeout','lock_timeout','default_statistics_target','idle_in_transaction_session_timeout','plan_cache_mode','pg_stat_statements.track_planning')").await?.iter()
         .map(|r|Setting{name:r.string("name"),value:r.string("setting"),default_value:r.text("boot_val"),scope:"YSQL node".into()}).collect())
 }
 
