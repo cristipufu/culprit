@@ -1,8 +1,11 @@
 # Culprit guide
 
-The reference for the Culprit desktop app and the `culprit` CLI: what it checks, every command, how coding agents use it, what it guarantees on production, and how to build it. For the overview, see the [README](../README.md).
+The reference for the Culprit desktop app and the `culprit` CLI: what it checks, every command, how coding agents use it, what it guarantees on production, and how to build it. For the overview, see the [README](../README.md). For database-specific setup, sources and verified features, see [Engine parity](parity.md).
 
-Culprit reads the statistics your database already keeps (Query Store, plan cache and DMVs on SQL Server; `pg_stat_statements` and the statistics views on Postgres; `performance_schema` on MySQL and MariaDB; the file itself on SQLite, with the query log its framework already writes), ranks what it finds by share of database time, and gives every finding the evidence, a production-safe fix and a way to verify it. Scans never write and never run your queries; the editor runs what you ask, with production guarded. The desktop app (Tauri + React) and the CLI share one Rust core, so a coding agent sees exactly what you see.
+Culprit reads the statistics, catalog or file evidence described by each provider, ranks findings by measured impact,
+and gives each finding the evidence, fix and a way to verify it. Scans do not apply fixes or run the application's
+queries. The editor runs what you ask with production confirmations. The desktop app, CLI and coding-agent tools
+share one Rust core.
 
 ## Contents
 
@@ -17,27 +20,31 @@ Culprit reads the statistics your database already keeps (Query Store, plan cach
 
 ## What it finds
 
-| Check | Engines | What it means |
-|---|---|---|
-| `missing-index` | SQL Server | Index suggestions from the optimizer, merged, de-duplicated against existing indexes and linked to the queries that asked |
-| `filtered-scan` | both | Heavy queries that read a whole table to keep a few rows, with the index that would avoid it |
-| `plan-warnings` | both | Type mismatches that block index seeks, spills to disk, missing join predicates, missing statistics |
-| `chatty-query` | both | N+1 loops: tiny queries executed so often the round trips dominate |
-| `heavy-query` | both | Single statements that dominate database time, and what their plan spends it on |
-| `plan-regression` | SQL Server | Query Store saw a query get much slower after its plan changed |
-| `regression` | all | A query got much slower at a point in the window: when it started, by how much, and whether a plan change coincides |
-| `unstable-query` | both | Same plan, wildly different durations (parameter sensitivity, blocking) |
-| `temp-spill` | Postgres | Sorts and hashes exceeding `work_mem` |
-| `unindexed-fk` | both | Foreign keys with no index on the referencing columns |
-| `unused-index` | both | Indexes maintained on every write but never read |
-| `duplicate-index` | both | Identical or left-prefix-redundant indexes |
-| `stale-stats` | both | Optimizer statistics far behind the data |
-| `heap-table` | SQL Server | Large tables without a clustered index |
-| `dead-rows` | Postgres | Dead tuples and lagging autovacuum |
-| `xid-age` | Postgres | Transaction ID wraparound risk |
-| `config` | both | Query Store off or full, RCSI off, auto statistics off, old compatibility level, `random_page_cost` on SSD storage |
+These are examples; `culprit checks` lists the current checks. [Engine parity](parity.md) explains provider applicability.
 
-Trends: the dashboard and Findings chart database time per hour and Queries draws a sparkline per query, from Query Store's intervals on SQL Server and from the differences between Culprit's own scans on Postgres and MySQL (which only keep running totals). `culprit drift <a> <b>` (Schema → Compare with…) lists the indexes, columns and settings that differ between two connections, with SQL to add a missing index.
+| Check | What it means |
+|---|---|
+| `missing-index` | Index suggestions from the optimizer, merged, de-duplicated against existing indexes and linked to the queries that asked |
+| `filtered-scan` | Heavy queries that read a whole table to keep a few rows, with the index that would avoid it |
+| `plan-warnings` | Type mismatches that block index seeks, spills to disk, missing join predicates, missing statistics |
+| `chatty-query` | Repeated small queries that may indicate polling or an N+1 pattern; request-level evidence is needed to confirm the cause |
+| `heavy-query` | Single statements that dominate database time, and what their plan spends it on |
+| `plan-regression` | Query Store saw a query get much slower after its plan changed |
+| `regression` | A query got much slower at a point in the window: when it started, by how much, and whether a plan change coincides |
+| `unstable-query` | The same statement has widely varying durations; source evidence guides the possible causes |
+| `temp-spill` | Sorts and hashes exceeding `work_mem` |
+| `unindexed-fk` | Foreign keys with no index on the referencing columns |
+| `unused-index` | Indexes maintained on every write but never read |
+| `duplicate-index` | Identical or left-prefix-redundant indexes |
+| `stale-stats` | Optimizer statistics far behind the data |
+| `heap-table` | Large tables without a clustered index |
+| `dead-rows` | Dead tuples and lagging autovacuum |
+| `xid-age` | Transaction ID wraparound risk |
+| `config` | Source-backed settings advice, such as unavailable statement statistics or disabled automatic statistics |
+
+Trends use the source's recorded intervals or differences between Culprit's saved scans. The [provider guides](parity.md)
+explain which periods can be compared. `culprit drift <a> <b>` (Schema → Compare with…) lists the schema differences
+between two connections, with the SQL to close the gap.
 
 `culprit checks` lists them with the capabilities each needs. Checks that can't run with your login show up as locked, with the exact grant or setting that unlocks them.
 
@@ -51,7 +58,7 @@ culprit conn add shop-staging --env staging \
 culprit conn discover --match shop --match stg --save   # or find Azure SQL, PostgreSQL and MySQL databases your az login can see
 culprit conn import --dry-run                  # or bring in connections from Azure Data Studio, VS Code, DBeaver, DataGrip
 culprit conn add app --url db/production.sqlite3   # a SQLite 3 file, opened read-only
-culprit conn set app --query-log log/production.log   # its framework's log, when it isn't found beside the file (docs/sqlite.md)
+culprit conn set app --query-log log/production.log   # its framework's log, when it isn't found beside the file (docs/providers/sqlite.md)
 
 culprit scan shop-staging                      # findings, ranked
 culprit scan shop-staging --window 6h          # the same over the last 6 hours (90m, 2d, 1d12h; up to 90 days)
@@ -172,7 +179,8 @@ CI (`.github/workflows/ci.yml`) checks formatting, runs clippy and the tests on 
 crates/culprit-core      model: snapshots, plans, findings; Provider and Check contracts
 crates/culprit-checks    every check, as a pure function of a snapshot
 crates/culprit-mssql     SQL Server provider
-crates/culprit-postgres  Postgres provider
+crates/culprit-postgres  PostgreSQL provider and TimescaleDB integration
+crates/culprit-yugabyte  Native YugabyteDB YSQL/DocDB provider
 crates/culprit-mysql     MySQL and MariaDB provider
 crates/culprit-sqlite    SQLite 3 file provider
 crates/culprit-querylog  framework query log parser (Rails, Django, EF Core, Ecto, JSONL)

@@ -1,26 +1,23 @@
 # Culprit SQL Studio
 
-> Free, open-source (MIT) database performance tool for SQL Server, PostgreSQL, YugabyteDB, TimescaleDB, MySQL, MariaDB and SQLite: a desktop app for macOS, Windows and Linux, a CLI and an MCP server for coding agents. It reads the statistics the database already keeps (Query Store, plan cache, pg_stat_statements, performance_schema; for SQLite, the file and the query log its framework already writes) and explains each problem in one sentence: what is slow, what it costs in database time, how to fix it and how to verify the fix. Read-only by design; nothing leaves the user's machine.
+> Free, open-source (MIT) database performance tool for SQL Server, PostgreSQL, TimescaleDB, YugabyteDB, MySQL, MariaDB and SQLite: a desktop app for macOS, Windows and Linux, a CLI and an MCP server for coding agents. It reads the statistics the database already keeps (Query Store, plan cache, pg_stat_statements, performance_schema; for SQLite, the file and the query log its framework already writes) and explains each problem in one sentence: what is slow, what it costs in database time, how to fix it and how to verify the fix. Read-only by design; nothing leaves the user's machine.
 
 Key facts:
 
 - Finds slow queries, plan regressions, missing and unused indexes, repeated-query patterns, parameter-sensitive plans, lock waits, blocking chains, deadlocks, FK lock contention, ID/sequence exhaustion, partition hazards, spills and stale statistics: __CHECK_COUNT__ checks, ranked by evidence, urgency and measured impact. Repetition alone does not prove an N+1 bug.
-- Explains execution plans in plain words, draws them, compares any two plans with a one-sentence reason why one is slower, and tests virtual indexes (`--with-index` via PostgreSQL or native YugabyteDB HypoPG; the latter requires a direct YSQL backend) without building them.
+- Explains execution plans in plain words, draws them, compares any two plans with a one-sentence reason why one is slower, and tests virtual indexes where the provider supports HypoPG.
 - Lints SQL migrations (`culprit lint-sql`, MCP `lint_sql`, and live inline editor diagnostics) offline against a saved snapshot's real table sizes, row counts, column types, indexes and active workload, with `--write` auto-fixes and `--format sarif` for GitHub Pull Request annotations.
 - `culprit mcp` serves 27 tools (dashboard, findings, query plans and insights, migration linting, schema drift, what changed, blocking, waits, index advice, verify, read-only queries the person approves) to Claude Code, Codex, Cursor and any MCP client. Every CLI command also prints JSON (or SARIF 2.1.0).
 - Safe on production: scans read statistics and catalog views only; statements run as reads only when Culprit can prove they only read; anything else on production asks first; fixes are shown, never applied.
-- Logins need read access to statistics: SQL Server `VIEW SERVER STATE` (`VIEW DATABASE STATE` on Azure SQL Database), PostgreSQL/TimescaleDB `pg_read_all_stats` or `pg_monitor` plus access to the TimescaleDB APIs; YugabyteDB `pg_read_all_stats` for broader statement visibility and `yb_db_admin` or superuser for node resources; MySQL and MariaDB `PROCESS` and `SELECT` on `performance_schema`; SQLite only read access to the file.
-- Supported: SQL Server 2022 and Azure SQL Database; PostgreSQL 15 to 18 including Amazon RDS; MySQL 5.7 to 8.4; MariaDB 10.5 to 11.8; SQLite 3 files (opened read-only; no live sessions or server counters).
-- YugabyteDB 2026.1.2.0 (YSQL 15.12), with native DocDB counters, DIST plans, sharding, retained activity/plan history and scoped node resources; TimescaleDB 2.31.0 on PostgreSQL 17.11, detected automatically through PostgreSQL, with logical hypertable sizes, row estimates and managed/compressed chunks. Optional sources retain their own coverage and limits. Hosted Tiger Cloud has not been verified.
+- Connections need read access to the relevant statistics and catalog, or to the SQLite file. Each provider guide lists its permissions, optional sources and limitations.
+- Database coverage, setup and verified versions are indexed in Engine parity, with one consistently structured guide per provider.
 
 ## Docs
 
 - [Overview](https://culpritsql.com/docs/readme.md): what Culprit does, the features, coding agents, safety, supported databases and how to get started
 - [Guide](https://culpritsql.com/docs/guide.md): every check and command, the agent setup, measured speed, safety details and how to extend Culprit
 - [Coding agents](https://culpritsql.com/docs/agents.md): the CLI contract, the MCP tools, per-connection permissions, approvals and the audit log
-- [Engine parity](https://culpritsql.com/docs/parity.md): feature coverage, where each answer comes from, and the versions verified
-- [YugabyteDB coverage](https://github.com/cristipufu/culprit-sql-studio/blob/main/docs/providers/yugabyte.md): native YSQL/DocDB measurements, scope, verified features and limits
-- [TimescaleDB coverage](https://github.com/cristipufu/culprit-sql-studio/blob/main/docs/providers/timescale.md): PostgreSQL integration, hypertables, managed/compressed chunks and limits
+- [Engine parity](https://culpritsql.com/docs/parity.md): feature comparison and the setup, measurement, limit and verification guide for every provider
 
 ## Download
 

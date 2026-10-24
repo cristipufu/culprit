@@ -9,6 +9,11 @@ inline handlers and arbitrary third-party scripts are not allowed. It also versi
 including the font referenced by both CSS and its preload, while keeping stable paths available to cached pages.
 The version and check count come from the workspace metadata and exported checks.
 
+The provider catalog in `docs/parity.md` is the documentation entry point. Its ordered provider links drive the
+website cards, the published `/docs/providers/` pages and inclusion in `llms-full.txt`. All provider pages use the
+same seven sections. The build rebases links between published Markdown pages and sends source/fixture links to
+the repository; it rejects missing local documentation targets. The README and `llms.txt` link to the common index.
+
 Screenshots keep the original WebP files and their full recorded quality, including light, dark and high-density
 variants. Their declared sizes follow the layout; below-the-fold images are lazy, while the hero has high fetch priority.
 The font is already preloaded. `llms.txt` and `llms-full.txt` are plain-text resources; an HTML language test on

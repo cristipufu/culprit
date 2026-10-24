@@ -12,10 +12,88 @@ import json
 from pathlib import Path
 import re
 import tomllib
+from urllib.parse import unquote, urlsplit, urlunsplit
+
+
+def documentation(root: Path, site: Path) -> str:
+    """Publish the common docs and every provider linked by the parity catalog."""
+    parity = root / "docs/parity.md"
+    parity_text = parity.read_text()
+    providers = re.findall(r"^\| \[([^\]]+)\]\((providers/[a-z-]+\.md)\)", parity_text, re.MULTILINE)
+    if not providers or len({path for _, path in providers}) != len(providers):
+        raise ValueError("Engine parity must list each provider once")
+
+    sources = ["README.md", "docs/guide.md", "docs/agents.md", "docs/parity.md"]
+    provider_sources = ["docs/" + path for _, path in providers]
+    sections = ["Connecting", "Permissions and setup", "Workload and plans", "Live activity and waits",
+                "Schema and indexes", "Limits and evidence", "Verification"]
+    for (label, _), source in zip(providers, provider_sources):
+        text = (root / source).read_text()
+        if text.splitlines()[0] != f"# {label}" or re.findall(r"^## ([^\n]+)$", text, re.MULTILINE) != sections:
+            raise ValueError(f"Provider page {source} must use the common title and seven-section structure")
+    sources += provider_sources + ["docs/providers/coverage.md", "docs/ARCHITECTURE.md", "docs/DESIGN.md", "docs/sqlite.md"]
+    destinations = {str((root / source).resolve()): source.lower() for source in sources}
+    destinations[str((root / "README.md").resolve())] = "docs/readme.md"
+
+    def publish_links(text: str, source: Path) -> str:
+        def target(url: str) -> str:
+            parts = urlsplit(url)
+            if parts.scheme or parts.netloc or not parts.path:
+                return url
+            path = (source.parent / unquote(parts.path)).resolve()
+            relative = path.relative_to(root).as_posix()
+            if not path.exists():
+                raise ValueError(f"Broken documentation link in {source.relative_to(root)}: {url}")
+            destination = destinations.get(str(path))
+            if destination:
+                base = "/" + destination
+            elif path.suffix.lower() in {".png", ".svg", ".jpg", ".webp"}:
+                base = "https://raw.githubusercontent.com/cristipufu/culprit-sql-studio/main/" + relative
+            else:
+                kind = "tree" if path.is_dir() else "blob"
+                base = f"https://github.com/cristipufu/culprit-sql-studio/{kind}/main/{relative}"
+            parsed = urlsplit(base)
+            return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parts.query, parts.fragment))
+
+        def replace(match: re.Match) -> str:
+            return match[1] + target(match[2]) + match[3]
+
+        text = re.sub(r'(!?\[[^\]\n]*\]\()([^\s)]+)(\))', replace, text)
+        return re.sub(r'''(\b(?:src|href)=["'])([^"']+)(["'])''', replace, text)
+
+    published = {}
+    for source in sources:
+        path = root / source
+        text = publish_links(path.read_text(), path)
+        destination = site / destinations[str(path.resolve())]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(text)
+        published[source] = text
+    full_sources = ["README.md", "docs/guide.md", "docs/parity.md"] + provider_sources + ["docs/agents.md", "docs/providers/coverage.md"]
+    full = "# Culprit SQL Studio: full documentation\n\nSource: https://github.com/cristipufu/culprit-sql-studio · Website: https://culpritsql.com\n"
+    for source in full_sources:
+        full += "\n---\n\n" + published[source]
+    (site / "llms-full.txt").write_text(full)
+
+    badges = {"mssql": ("ms", "MS"), "postgres": ("pg", "Pg"), "timescale": ("ts", "Ts"),
+              "yugabyte": ("yb", "Yb"), "mysql": ("my", "My"), "mariadb": ("ma", "Ma"), "sqlite": ("sq", "Sq")}
+    cards = []
+    for label, provider in providers:
+        slug = Path(provider).stem
+        badge, abbreviation = badges[slug]
+        row = next(line for line in parity_text.splitlines() if line.startswith(f"| [{label}]({provider})"))
+        summary = row.split("|")[3].strip().replace("`", "")
+        cards.append(
+            f'<article class="engine" data-provider="{slug}"><span class="badge {badge}" aria-hidden="true">{abbreviation}</span>'
+            f'<h3>{html.escape(label)}</h3><p>{html.escape(summary)}.</p><p>'
+            f'<a href="https://github.com/cristipufu/culprit-sql-studio/blob/main/docs/{provider}">Coverage and setup →</a></p></article>'
+        )
+    return "\n          ".join(cards)
 
 
 def build(root: Path) -> None:
     site = root / "_site"
+    provider_cards = documentation(root, site)
     version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
     checks = len(json.loads((root / "fixtures/checks.sample.json").read_text()))
     assets = {}
@@ -38,7 +116,7 @@ def build(root: Path) -> None:
         path.write_text(references(path.read_text()))
         remember(path)
     for path in sorted(site.glob("*.html")):
-        text = references(path.read_text().replace("__VERSION__", version).replace("__CHECK_COUNT__", str(checks)))
+        text = references(path.read_text().replace("__VERSION__", version).replace("__CHECK_COUNT__", str(checks)).replace("__PROVIDER_CARDS__", provider_cards))
         inline = re.findall(r'<script type="application/ld\+json">(.*?)</script>', text, flags=re.DOTALL)
         hashes = " ".join("'sha256-" + base64.b64encode(hashlib.sha256(script.encode()).digest()).decode() + "'" for script in inline)
         policy = (

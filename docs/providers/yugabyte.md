@@ -1,12 +1,15 @@
 # YugabyteDB
 
-Culprit has a dedicated `yugabyte` provider for YSQL over DocDB. PostgreSQL supplies the wire transport and SQL grammar;
-its heap, buffer-cache and vacuum collectors are not used.
+[Engine parity](../parity.md)
+
+Culprit has a dedicated YugabyteDB provider for YSQL over DocDB. It shares PostgreSQL wire transport and SQL grammar while keeping native storage, node scope and statement histories separate.
+
+## Connecting
 
 Choose **YugabyteDB** before pasting a PostgreSQL URL, or use a native URL:
 
-```text
-yugabyte://app@db.example.com:5433/shop
+```sh
+culprit conn add shop --env staging --url 'yugabyte://app@db.example.com:5433/shop'
 ```
 
 The CLI accepts `--engine yugabyte` (`ysql` and `yugabytedb` are aliases). The defaults are port 5433 and user/database
@@ -15,14 +18,18 @@ requests another mode. Azure Entra and RDS IAM bearer tokens are refused for thi
 The PostgreSQL provider recognizes a YugabyteDB server before calling storage APIs and asks you to select YugabyteDB,
 so a PostgreSQL URL cannot silently enable heap-oriented collection on DocDB.
 
-Verified against **YugabyteDB 2026.1.2.0-b137**, whose YSQL server identifies as **15.12-YB-2026.1.2.0-b0**. Older releases
-are not claimed as verified; optional views and functions that are absent or denied become coverage notes.
+Connection tests read version, database identity, clock and feature availability without a table-size read.
 
-## Measurements and scope
+## Permissions and setup
+
+`pg_read_all_stats` provides broader statement visibility. Without the effective monitoring privilege, statements and retained activity are restricted to the current role, with that scope retained in the report. Native shared node resources require `yb_db_admin` or superuser; those privileges are optional for the rest of a scan.
+
+Cluster-wide statistics require administrator-configured, enabled global views. Culprit does not enable them automatically, and verifies contributors, warnings and independent node resets before treating a cluster read as complete. Native HypoPG testing requires the extension, trusted planning and a direct physical backend; Connection Manager workers are refused for session-state-sensitive operations.
+
+## Workload and plans
 
 | Area | Current implementation |
 |---|---|
-| Connection test | Version, database identity, clock and feature availability; no `pg_database_size` call |
 | Workload | Database-filtered `pg_stat_statements`, aggregated by query identity; top queries retain totals for the complete source |
 | Native costs | DocDB RPCs, storage operations/entries, timings, retries and LSM traversal counters, only for metric families enabled on every contributing node |
 | Captured plans | Safe generic/estimated YSQL plans; elevated logins plan their own recorded text, including their copy on another node when global views are configured |
@@ -30,36 +37,8 @@ are not claimed as verified; optional views and functions that are absent or den
 | Analyze | `EXPLAIN (ANALYZE, DIST, VERBOSE, FORMAT JSON)`; measured writes roll back |
 | Virtual indexes | Native HypoPG with `explain --with-index`; session-memory indexes, trusted read-only registration/planning, native estimates and offline labels; requires a direct YSQL backend |
 | Plan files | Native JSON with DIST/storage markers is detected as YugabyteDB; saved scans reparse with the native reader |
-| Catalog | Tables, row estimates, columns, defaults, foreign keys, index definitions, hash keys, tablet counts and colocation |
-| Deferred constraints | CHECK and foreign-key constraints added NOT VALID; findings explain unvalidated existing rows and suggest version-appropriate validation, without PostgreSQL planner or locking promises |
-| Sizes | Native table/index size APIs, separately from the cheap probe; primary-key storage is part of the table; colocated objects are not charged their shared tablegroup's allocation |
-| Index advice | Ordered candidate keys use explicit ASC/DESC; HASH groups differ from range keys in redundancy, lookup coverage and drift; active backfill must finish before repairing an invalid index |
-| Index usage | Complete global index counters when available; no unused-index verdict from a local zero or unknown reset date |
-| Live | Current-database sessions and native `yb_lock_status` blocking evidence; node-qualified identities include backend start time |
-| Live samples / progress | Bounded session sampling with native RPC/storage categories; scoped current activity and optional estimated plans; native index-backfill rows, ANALYZE phases and running COPY counters without guessed percentages |
-| Activity history | Database- and role-scoped native ASH observations, with task weights, observation nodes, component/event names and query identities in an independent retained period |
-| Unexpected terminations | Native `yb_terminated_queries` records, with query IDs, recognized reasons, dates and nodes; database-filtered, with native login visibility and bounded retention |
-| Node resources | Native shared host CPU/memory and TServer memory-tracker observations; per-node status, inventory, observation interval and limits remain explicit |
-| Session actions | Non-production only; local node, database and backend-start guards; Connection Manager worker backends are refused |
 
-Workload retention streams at most 8 MiB of statement text and counters, without whole-row latency-histogram expansion.
-An oversized response retains a contiguous prefix and records partial coverage; no retained totals means unknown
-workload rather than a zero. Completion and late errors are still read after retention stops.
-
-The plan-capture phase has one 20-second budget and retains at most 8 MiB of native plan/statement text across current
-estimates and retained cache plans. History metadata retains at most 1,000 entries and 8 MiB; collection fetches one
-dominant retained body for each requested query in a single bounded read. `--plans 0` keeps metadata without fetching
-bodies. Remaining statements can be planned on demand. Operator DIST counters are per-loop averages; normalized row counts multiply by
-executions once. Storage entries can include index and table reads of the same SQL row. Native timings may overlap;
-they are not PostgreSQL page counts, CPU utilization or exclusive shares of statement time.
-
-Saved-scan plan context uses the catalog's logical YSQL row estimates, without heap-page inference. Native optimizer
-costs have no calibrated materiality threshold in Culprit: a large or small cost number alone does not establish
-expensive or cheap work. Measured operator work and elapsed time remain separate from those estimates.
-
-Without `pg_read_all_stats`, statement totals are filtered to the current role before aggregation and labeled with that role scope. Hidden queries never become an invented query group.
-
-## Retained plans
+### Retained plans
 
 [Query Plan Management](https://docs.yugabyte.com/stable/launch-and-manage/monitor-and-alert/query-tuning/query-plan-manage/)
 keeps an independent, evictable cache. Its counts and elapsed times have their own first/last-use dates, resets and
@@ -107,7 +86,37 @@ A global database reset date can be NULL. That means unknown, even on a long-run
 least a week since every contributing node's proven database reset; differing known epochs can bound absence but do
 not supply a common denominator for positive-rate calculations.
 
-## Active Session History
+### Virtual indexes
+
+YugabyteDB's [HypoPG extension](https://docs.yugabyte.com/stable/additional-features/pg-extensions/extension-hypopg/)
+supports testing an index without building it. After an administrator installs `hypopg`, use:
+
+```sh
+culprit explain shop --sql 'SELECT * FROM public.orders WHERE customer_id = 42' \
+  --with-index 'CREATE INDEX ON public.orders (customer_id ASC)'
+```
+
+Only estimated plans are requested, including generic plans for `$n` parameters. Virtual index names remain labelled
+in the result and saved-plan replay. Registration and planning use the same read-only/trust guards as other estimates;
+cleanup resets HypoPG on success or failure, and the direct backend closes afterward. No real index or application
+query is executed. Missing extensions and invalid index statements return explicit errors.
+
+Connection Manager worker backends are refused before registering virtual state. Their reused physical backend
+memory cannot establish an isolated what-if session; use the direct YSQL port. Cost differences describe native
+optimizer estimates, without predicted milliseconds, PostgreSQL heap enrichment or measured storage work.
+
+## Live activity and waits
+
+| Area | Current implementation |
+|---|---|
+| Live | Current-database sessions and native `yb_lock_status` blocking evidence; node-qualified identities include backend start time |
+| Live samples / progress | Bounded session sampling with native RPC/storage categories; scoped current activity and optional estimated plans; native index-backfill rows, ANALYZE phases and running COPY counters without guessed percentages |
+| Activity history | Database- and role-scoped native ASH observations, with task weights, observation nodes, component/event names and query identities in an independent retained period |
+| Unexpected terminations | Native `yb_terminated_queries` records, with query IDs, recognized reasons, dates and nodes; database-filtered, with native login visibility and bounded retention |
+| Node resources | Native shared host CPU/memory and TServer memory-tracker observations; per-node status, inventory, observation interval and limits remain explicit |
+| Session actions | Non-production only; local node, database and backend-start guards; Connection Manager worker backends are refused |
+
+### Active Session History
 
 [Native ASH](https://docs.yugabyte.com/stable/launch-and-manage/monitor-and-alert/active-session-history-monitor/)
 records task observations and inverse-sampling weights. Culprit shows their distribution as **Recorded activity** in
@@ -128,10 +137,7 @@ first/last observations do not prove continuous coverage. Historical samples may
 statements no longer in the statement-statistics cache. Unknown database identities are excluded. These observations
 do not produce resource-pressure or query-regression verdicts. Current live samples remain a separate measurement.
 
-Verified live: bounded local reads, query-ID/node correlation, role isolation, revoked monitoring grants and matching counts through one-node global
-views. Multi-node failure and independent retention scenarios still require verification.
-
-## Unexpected terminations
+### Unexpected terminations
 
 [Native termination history](https://docs.yugabyte.com/stable/explore/observability/yb-pg-stat-get-queries/) records
 unexpected backend exits and temporary-file-limit failures. It does not count ordinary SQL errors, all cancellations
@@ -150,11 +156,7 @@ scope and limitations. Records outside the retained workload remain identified w
 Global termination reads require effective monitoring privileges; restricted logins retain node-local native
 visibility even when global views are configured, with the fallback stated explicitly.
 
-Verified live: temporary-file-limit failures from bounded disposable sorts, database isolation, restricted-login
-visibility, changed privileges, query-ID correlation and matching one-node global reads. No backend crash is induced
-by this verification. Multi-node failure and retention scenarios remain unverified.
-
-## Shared node resources
+### Shared node resources
 
 The native `yb_servers_metrics()` function provides shared node measurements independently of the global-view
 preview. Culprit reads host CPU user/system fractions, host total/free/available memory, and TServer root tracked
@@ -174,29 +176,9 @@ One resource phase has a 10-second deadline and retains at most 1,000 node rows 
 scalar values, omits addresses and free-form RPC errors, checks node inventory before/after collection, and marks
 missing, failed, invalid or truncated observations partial. Failed nodes remain visible without fabricated zeroes.
 Unknown memory limits stay distinct from native unlimited (`-1`) and measured zero limits. Health pages node rows;
-agent output carries a bounded summary and the total retained/expected counts. Verified live on the one-node
-fixture, including ordinary-login and `pg_read_all_stats` refusals, successful `yb_db_admin` access and revocation.
+agent output carries a bounded summary and the total retained/expected counts.
 
-## Virtual indexes
-
-YugabyteDB's [HypoPG extension](https://docs.yugabyte.com/stable/additional-features/pg-extensions/extension-hypopg/)
-supports testing an index without building it. After an administrator installs `hypopg`, use:
-
-```sh
-culprit explain shop --sql 'SELECT * FROM public.orders WHERE customer_id = 42' \
-  --with-index 'CREATE INDEX ON public.orders (customer_id ASC)'
-```
-
-Only estimated plans are requested, including generic plans for `$n` parameters. Virtual index names remain labelled
-in the result and saved-plan replay. Registration and planning use the same read-only/trust guards as other estimates;
-cleanup resets HypoPG on success or failure, and the direct backend closes afterward. No real index or application
-query is executed. Missing extensions and invalid index statements return explicit errors.
-
-Connection Manager worker backends are refused before registering virtual state. Their reused physical backend
-memory cannot establish an isolated what-if session; use the direct YSQL port. Cost differences describe native
-optimizer estimates, without predicted milliseconds, PostgreSQL heap enrichment or measured storage work.
-
-## Live command progress
+### Live command progress
 
 Live reads native `pg_stat_progress_create_index`, `pg_stat_progress_analyze` and `pg_stat_progress_copy`
 (or their configured global counterparts). Node, database, backend start and statement start must still match the
@@ -217,7 +199,34 @@ can expose those counters through other progress views too. Culprit requires mat
 `IN PROGRESS` COPY status; retained results never describe a later SELECT on that backend. Optional-view failures
 leave activity visible with an explicit progress-unavailable note.
 
-## Limits
+## Schema and indexes
+
+| Area | Current implementation |
+|---|---|
+| Catalog | Tables, row estimates, columns, defaults, foreign keys, index definitions, hash keys, tablet counts and colocation |
+| Deferred constraints | CHECK and foreign-key constraints added NOT VALID; findings explain unvalidated existing rows and suggest version-appropriate validation, without PostgreSQL planner or locking promises |
+| Sizes | Native table/index size APIs, separately from the cheap probe; primary-key storage is part of the table; colocated objects are not charged their shared tablegroup's allocation |
+| Index advice | Ordered candidate keys use explicit ASC/DESC; HASH groups differ from range keys in redundancy, lookup coverage and drift; active backfill must finish before repairing an invalid index |
+| Index usage | Complete global index counters when available; no unused-index verdict from a local zero or unknown reset date |
+
+## Limits and evidence
+
+Workload retention streams at most 8 MiB of statement text and counters, without whole-row latency-histogram expansion.
+An oversized response retains a contiguous prefix and records partial coverage; no retained totals means unknown
+workload rather than a zero. Completion and late errors are still read after retention stops.
+
+The plan-capture phase has one 20-second budget and retains at most 8 MiB of native plan/statement text across current
+estimates and retained cache plans. History metadata retains at most 1,000 entries and 8 MiB; collection fetches one
+dominant retained body for each requested query in a single bounded read. `--plans 0` keeps metadata without fetching
+bodies. Remaining statements can be planned on demand. Operator DIST counters are per-loop averages; normalized row counts multiply by
+executions once. Storage entries can include index and table reads of the same SQL row. Native timings may overlap;
+they are not PostgreSQL page counts, CPU utilization or exclusive shares of statement time.
+
+Saved-scan plan context uses the catalog's logical YSQL row estimates, without heap-page inference. Native optimizer
+costs have no calibrated materiality threshold in Culprit: a large or small cost number alone does not establish
+expensive or cheap work. Measured operator work and elapsed time remain separate from those estimates.
+
+Without `pg_read_all_stats`, statement totals are filtered to the current role before aggregation and labeled with that role scope. Hidden queries never become an invented query group.
 
 PostgreSQL heap pages, buffer ratios, dead tuples, HOT updates, autovacuum, XID/MultiXact wraparound and heap-oriented GUC
 advice are unavailable by design. Database size remains unknown. Configuration suggestions are restricted to supported
@@ -251,6 +260,13 @@ the YugabyteDB provider retain the correct engine; a plain external PostgreSQL-s
 for automatic detection. Approximate table DDL preserves known primary-key sharding and colocation, but tablespaces,
 placement, tablegroups and range split boundaries require a native schema export before recreation.
 
+The shared [evidence rules](coverage.md) apply to native observations and every derived finding.
+
+## Verification
+
+Verified against **YugabyteDB 2026.1.2.0-b137**, whose YSQL server identifies as **15.12-YB-2026.1.2.0-b0**. Older releases
+are not claimed as verified; optional views and functions that are absent or denied become coverage notes.
+
 The disposable three-node suite verifies query aggregation, independent node resets, shared resource inventory,
 scoped progress and Connection Manager worker refusal. It also pauses one labelled fixture node, checks skipped-node
 warnings and partial workload/index/ASH/termination/plan/resource evidence, then resumes the node and verifies recovery.
@@ -259,7 +275,17 @@ This is a local-cluster verification, not a multi-region latency or large-cluste
 
 See [dev/yugabyte](../../dev/yugabyte/README.md) for the disposable database, seed workload and opt-in checks.
 
-## Verified UI
+Declared sources are listed in [`culprit-yugabyte/src/sources.rs`](../../crates/culprit-yugabyte/src/sources.rs).
+
+### Source verification
+
+- ASH checks cover bounded local reads, query-ID/node correlation, role isolation, revoked monitoring grants and matching counts through one-node global views.
+- Termination checks cover temporary-file-limit failures from bounded disposable sorts, database isolation, restricted-login visibility, changed privileges, query-ID correlation and matching one-node global reads. They induce no backend crash.
+- Node-resource checks cover native identities and finite measurements, ordinary-login and `pg_read_all_stats` refusals, successful `yb_db_admin` access and revocation.
+
+The three-node suite covers failed contributors and recovery for these sources. Independent circular-buffer retention across multiple nodes has not been verified.
+
+### Verified UI
 
 These screenshots show the UI reading the live fixture described above.
 

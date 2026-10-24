@@ -193,15 +193,12 @@ culprit changes shop --recent 6h --min-runs 20 --threshold 2
 
 Query JSON (`top`, `query`) also carries `runs`, `spread` (`min_ms`; MySQL adds `p50_ms`/`p95_ms`/`p99_ms`, `histogram` as `[low_ms, high_ms, runs]` and `lock_ms`) and, with several plans, `plan_spread[]` (`plan_id`, `runs`, `mean_ms`, `min_ms`, `max_ms`, `stddev_ms`, `compiled`, `variant_query` for SQL Server 2022 parameter-sensitive variants). The `parameter-sensitive` finding names the fast and slow plan and gives a copy-only fix ladder.
 
-## MariaDB
+## Provider coverage
 
-Connections with `engine = "mysql"` may be MariaDB: `latest_scan.product` / `server.product` says which ("MariaDB 11.8.9"), and plan JSON carries `props.flavor = "MariaDB"`. Differences an agent should expect:
-
-- `workload.source` is `"performance_schema"` or `"slow query log"`. The slow log is windowed (`windowed: true`), counts only runs slower than `long_query_time` (a collector note says the threshold), and its query ids are fingerprint hashes, stable across scans. `timeline.source` and `changes.source` are `"slow-log"`; `changes` then compares any two periods straight from the log.
-- When nothing is recorded, `server.missing[]` for `performance-schema` carries the no-restart `SET GLOBAL …;` as the first statement of `fix`. Culprit never runs it; show it to the person.
-- `explain --analyze` runs `ANALYZE FORMAT=JSON` in a read-only transaction; actual plans carry per-operator `act_time_ms`, `runtime.logical_reads` (pages) and spills. `live --progress` returns `nodes` per operator (rows so far against the estimate) on 10.9+.
-- `explain --query-id` (MCP `query_plan`) returns the plan the scan captured when the normalized text can't be planned again.
-- Capabilities add `slow-log` (the table is readable) next to the usual ones; see [parity.md](parity.md) for what each engine can and can't tell.
+[Engine parity](parity.md) indexes the setup, sources, operations, limits and verified versions for every provider.
+Use the report's product, version, capabilities and source coverage when deciding which operations are available.
+A shared engine identifier does not make every product's syntax or measurements interchangeable; the provider guides
+explain automatically detected integrations and product-specific JSON fields.
 
 ## Offline and CI
 

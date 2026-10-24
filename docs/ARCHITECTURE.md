@@ -519,6 +519,9 @@ This ownership governs UI publication; the desktop invocation itself remains bou
 
 ## Extending Culprit
 
+Implemented provider coverage is indexed in [Engine parity](parity.md). The unimplemented
+[Oracle provider design](design/oracle-provider.md) is maintained separately from supported-provider documentation.
+
 - **A check**: write `<name>_info()` and `<name>(&Snapshot)` in a file of its own in the area's directory under
   `checks/` (declared in the area's `mod.rs`), declare its type with `check!`, add it to the area's `CHECKS` list, give each finding a stable id, follow the evidence rules, and test it on a fixture (`fixtures/*-demo.json`)
   for the case it should flag and the cases it must not.
