@@ -14,7 +14,6 @@ use culprit_core::cloud::{
 use culprit_core::{Engine, Error, ErrorCode, Result, format};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::process::Command;
 
 use crate::{ConnectionInfo, aws, discover, private_fs};
 
@@ -830,7 +829,7 @@ async fn az_metrics(id: &str, metrics: &[&str], start: f64, end: f64, period: u3
         "--output",
         "json",
     ]);
-    let output = Command::new(discover::az()).args(&args).output().await.map_err(|e| {
+    let output = crate::cloud_cli::command(crate::cloud_cli::Cli::Azure).args(&args).output().await.map_err(|e| {
         Error::new(ErrorCode::AuthFailed, format!("Could not run the Azure CLI: {e}"))
             .with_hint("Install the Azure CLI and run `az login`")
     })?;

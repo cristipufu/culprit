@@ -11,7 +11,6 @@ use base64::Engine as _;
 use culprit_core::{ConnectionSpec, Engine, Error, ErrorCode, Result, entra_host_allowed};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::process::Command;
 use ts_rs::TS;
 
 use crate::http::{self, Reply};
@@ -495,7 +494,7 @@ pub fn token_user(token: &str) -> Option<String> {
 
 /// A token from the Azure CLI's signed-in account (the CLI caches and refreshes it).
 pub async fn azure_cli_token(engine: Engine) -> Result<String> {
-    let output = Command::new(az_binary())
+    let output = crate::cloud_cli::command(crate::cloud_cli::Cli::Azure)
         .args(["account", "get-access-token", "--resource", resource(engine), "--query", "accessToken"])
         .args(["--output", "tsv"])
         .output()
@@ -515,10 +514,6 @@ pub async fn azure_cli_token(engine: Engine) -> Result<String> {
             .with_hint("Run `az login` and retry"));
     }
     Ok(token)
-}
-
-fn az_binary() -> &'static str {
-    if cfg!(windows) { "az.cmd" } else { "az" }
 }
 
 #[cfg(test)]

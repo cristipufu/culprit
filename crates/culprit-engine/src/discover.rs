@@ -112,10 +112,6 @@ pub(crate) async fn resource_graph<T: serde::de::DeserializeOwned>(query: &str) 
     paging::resource_graph(query).await
 }
 
-pub(crate) fn az() -> &'static str {
-    if cfg!(windows) { "az.cmd" } else { "az" }
-}
-
 /// Read matching cloud resources a page at a time, retaining at most 20 database entries.
 pub async fn azure(terms: &[String]) -> Result<DiscoveryResult> {
     paging::azure(terms).await

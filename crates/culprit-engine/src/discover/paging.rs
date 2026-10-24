@@ -2,7 +2,7 @@
 use std::{collections::BTreeSet, future::Future, time::Duration};
 
 use serde_json::{Value, json};
-use tokio::{process::Command, sync::Semaphore, time::Instant};
+use tokio::{sync::Semaphore, time::Instant};
 
 use super::*;
 
@@ -22,11 +22,11 @@ trait Transport: Send + Sync {
 }
 
 async fn az_output(args: &[&str]) -> Result<std::process::Output> {
-    let mut command = Command::new(az());
+    let mut command = crate::cloud_cli::command(crate::cloud_cli::Cli::Azure);
     command.args(args);
     crate::cloud_process::output(command).await.map_err(|error| {
         if error.code == ErrorCode::NotFound {
-            Error::new(ErrorCode::AuthFailed, "The Azure CLI is not installed")
+            Error::new(ErrorCode::AuthFailed, "The Azure CLI was not found in PATH or standard install locations")
                 .with_hint("Install the Azure CLI and run `az login`")
         } else {
             error

@@ -4,6 +4,7 @@ pub mod aws;
 pub mod catalog;
 pub mod changes;
 pub mod cloud;
+mod cloud_cli;
 mod cloud_process;
 mod connection;
 pub mod connstr;

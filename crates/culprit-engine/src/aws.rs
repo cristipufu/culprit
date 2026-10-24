@@ -4,7 +4,6 @@
 use std::path::{Path, PathBuf};
 
 use culprit_core::{Engine, Error, ErrorCode, Result, aws_iam_host_allowed};
-use tokio::process::Command;
 
 use crate::private_fs;
 
@@ -24,13 +23,9 @@ const INSTALL_HINT: &str = if cfg!(target_os = "macos") {
     "Install the AWS CLI (https://aws.amazon.com/cli/), sign in with `aws login`, then try again"
 };
 
-fn aws_binary() -> &'static str {
-    if cfg!(windows) { "aws.exe" } else { "aws" }
-}
-
 /// Run the AWS CLI and return stdout, turning "not installed" and "not signed in" into actionable errors.
 pub(crate) async fn run(args: &[&str]) -> Result<Vec<u8>> {
-    let mut command = Command::new(aws_binary());
+    let mut command = crate::cloud_cli::command(crate::cloud_cli::Cli::Aws);
     command.args(args).env("AWS_PAGER", "").env("AWS_CLI_AUTO_PROMPT", "off");
     let output = crate::cloud_process::output(command).await.map_err(|error| {
         if error.code == ErrorCode::NotFound {

@@ -74,6 +74,12 @@ partial source failures cannot produce a complete empty result. Exact remaining 
 CLI bulk saving refuses incomplete results. Pagination tests use scripted pages and never require a cloud login.
 The generated `app/src/gen/discovery.json` keeps the demo's result limit aligned with the backend.
 
+Azure and AWS subprocesses share `cloud_cli.rs`, including authentication and metrics calls. Resolution respects the
+inherited PATH first, then standard user and system install directories on macOS, Linux and Windows (including
+Homebrew, XDG user binaries, Windows installers and package-manager shims). Windows batch launchers use Rust's
+native argument escaping. Only the child's PATH is extended, so desktop launches work without loading shell startup
+files or mutating the application's environment. Custom install locations must be on the application's PATH.
+
 Pagination contracts: [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-pagination.html),
 [Azure Resource Graph](https://learn.microsoft.com/en-us/azure/governance/resource-graph/concepts/work-with-data).
 
