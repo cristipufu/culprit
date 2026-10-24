@@ -11,6 +11,7 @@ import type { Deadlock } from "../gen/Deadlock";
 import type { Dashboard } from "../gen/Dashboard";
 import type { DashboardLive } from "../gen/DashboardLive";
 import type { DeadlockReport } from "../gen/DeadlockReport";
+import type { DiscoveryResult } from "../gen/DiscoveryResult";
 import type { DiscoveredDatabase } from "../gen/DiscoveredDatabase";
 import type { Drift } from "../gen/Drift";
 import type { IndexAdvice } from "../gen/IndexAdvice";
@@ -60,8 +61,8 @@ export interface Api {
   addConnection(input: NewConnection): Promise<ConnectionInfo>;
   removeConnection(name: string): Promise<void>;
   renameConnection(old: string, next: string): Promise<ConnectionInfo>;
-  discoverAzure(terms: string[]): Promise<DiscoveredDatabase[]>;
-  discoverAws(terms: string[], regions: string[]): Promise<DiscoveredDatabase[]>;
+  discoverAzure(terms: string[]): Promise<DiscoveryResult>;
+  discoverAws(terms: string[], regions: string[]): Promise<DiscoveryResult>;
   setPassword(name: string, password: string): Promise<ConnectionInfo>;
   addDiscovered(items: DiscoveredDatabase[]): Promise<ConnectionInfo[]>;
   importCandidates(source: ImportSource | null): Promise<ImportCandidate[]>;

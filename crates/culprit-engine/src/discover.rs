@@ -3,21 +3,19 @@
 //! metadata is read; nothing secret is involved.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use culprit_core::{AuthKind, Engine, Environment, Error, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
-use tokio::process::Command;
 use ts_rs::TS;
 
-use crate::{aws, http};
+use crate::aws;
+
+mod paging;
 
 const RESOURCE_GRAPH: &str =
     "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01";
-const MAX_RESULTS: u32 = 500;
+pub const DISCOVERY_LIMIT: usize = 20;
 const MANAGEMENT: &str = "https://management.azure.com";
-/// Database listings per flexible server run in parallel, this many at a time.
-const LISTING_CONCURRENCY: usize = 16;
 
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -59,6 +57,15 @@ pub struct DiscoveredDatabase {
     pub saved_as: Option<String>,
 }
 
+/// A bounded discovery result. More matching resources may exist when collection stopped early.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default)]
+#[ts(export)]
+pub struct DiscoveryResult {
+    pub items: Vec<DiscoveredDatabase>,
+    pub has_more: bool,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Deserialize)]
 struct Row {
     server: String,
@@ -73,13 +80,16 @@ struct Row {
 
 /// Every term must appear in the database or server name. Terms are restricted to identifier characters because they are embedded in a KQL query.
 pub fn validate_terms(terms: &[String]) -> Result<()> {
-    let ok = terms.iter().all(|t| {
-        !t.is_empty() && t.len() <= 64 && t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-    });
+    let ok = terms.len() <= 16
+        && terms.iter().all(|t| {
+            !t.is_empty()
+                && t.len() <= 64
+                && t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        });
     if ok {
         return Ok(());
     }
-    Err(Error::invalid("Search terms may only contain letters, digits, '-', '_' and '.'"))
+    Err(Error::invalid("Use up to 16 search terms of 1–64 letters, digits, hyphens, underscores or dots"))
 }
 
 fn query(terms: &[String]) -> String {
@@ -88,96 +98,27 @@ fn query(terms: &[String]) -> String {
     format!(
         "resources \
          | where type =~ 'microsoft.sql/servers/databases' and name !~ 'master' \
-         | extend server = tostring(split(id, '/')[8]) \
+         | extend server = tostring(split(id, '/')[8]), serverId = tolower(substring(id, 0, indexof(tolower(id), '/databases/'))) \
          {filters}\
          | join kind=leftouter (resources | where type =~ 'microsoft.sql/servers' \
-             | project server = name, fqdn = tostring(properties.fullyQualifiedDomainName)) on server \
-         | project server, database = name, location, resourceGroup, subscriptionId, fqdn \
-         | order by database asc, server asc"
+             | project serverId = tolower(id), fqdn = tostring(properties.fullyQualifiedDomainName)) on serverId \
+         | project id, server, database = name, location, resourceGroup, subscriptionId, fqdn \
+         | order by database asc, server asc, id asc"
     )
 }
 
-/// Run a Resource Graph query through the Azure CLI's signed-in account.
+/// One bounded Resource Graph page for exact resource lookups. Inventory discovery follows continuation tokens.
 pub(crate) async fn resource_graph<T: serde::de::DeserializeOwned>(query: &str) -> Result<Vec<T>> {
-    #[derive(Deserialize)]
-    struct Response<T> {
-        data: Vec<T>,
-    }
-    let body = serde_json::json!({ "query": query, "options": { "$top": MAX_RESULTS } }).to_string();
-    let output = Command::new(az())
-        .args(["rest", "--method", "post", "--url", RESOURCE_GRAPH, "--body", &body, "--output", "json"])
-        .output()
-        .await
-        .map_err(|e| {
-            Error::new(ErrorCode::AuthFailed, format!("Could not run the Azure CLI: {e}"))
-                .with_hint("Install the Azure CLI and run `az login`")
-        })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(Error::new(
-            ErrorCode::QueryFailed,
-            format!("Azure Resource Graph query failed: {}", stderr.trim()),
-        )
-        .with_hint("Run `az login` and retry"));
-    }
-    let response: Response<T> = serde_json::from_slice(&output.stdout)
-        .map_err(|e| Error::internal(format!("Unexpected Resource Graph response: {e}")))?;
-    Ok(response.data)
+    paging::resource_graph(query).await
 }
 
 pub(crate) fn az() -> &'static str {
     if cfg!(windows) { "az.cmd" } else { "az" }
 }
 
-/// Azure SQL databases and PostgreSQL / MySQL flexible-server databases, in one list.
-pub async fn azure(terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
-    validate_terms(terms)?;
-    let (sql, flexible) = tokio::join!(azure_sql(terms), azure_flexible(terms));
-    let mut out = match (sql, flexible) {
-        (Ok(mut a), Ok(b)) => {
-            a.extend(b);
-            a
-        }
-        (Ok(a), Err(_)) => a,
-        (Err(_), Ok(b)) => b,
-        (Err(e), Err(_)) => return Err(e),
-    };
-    out.sort_by(|a, b| a.database.cmp(&b.database).then(a.server.cmp(&b.server)));
-    assign_aliases(&mut out);
-    Ok(out)
-}
-
-pub async fn azure_sql(terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
-    validate_terms(terms)?;
-    let rows: Vec<Row> = resource_graph(&query(terms)).await?;
-    let mut out: Vec<DiscoveredDatabase> = rows
-        .into_iter()
-        .map(|r| {
-            let host = r.fqdn.clone().unwrap_or_else(|| format!("{}.database.windows.net", r.server));
-            DiscoveredDatabase {
-                alias: String::new(),
-                cloud: Cloud::Azure,
-                engine: Engine::Mssql,
-                environment: infer_environment(&format!("{} {}", r.database, r.server)),
-                server: r.server,
-                host,
-                database: r.database,
-                location: r.location,
-                subscription: r.subscription,
-                resource_group: r.resource_group,
-                port: Some(1433),
-                user: None,
-                region: None,
-                auth: AuthKind::Entra,
-                saved_as: None,
-            }
-        })
-        .filter(|d: &DiscoveredDatabase| {
-            terms.iter().all(|t| matches_term(&d.database, t) || matches_term(&d.server, t))
-        })
-        .collect();
-    assign_aliases(&mut out);
-    Ok(out)
+/// Read matching cloud resources a page at a time, retaining at most 20 database entries.
+pub async fn azure(terms: &[String]) -> Result<DiscoveryResult> {
+    paging::azure(terms).await
 }
 
 #[derive(Deserialize)]
@@ -204,7 +145,7 @@ const FLEXIBLE_QUERY: &str = "resources \
          fqdn = tostring(properties.fullyQualifiedDomainName), \
          entra = tostring(properties.authConfig.activeDirectoryAuth), \
          admin = tostring(properties.administratorLogin), state = tostring(properties.state) \
-     | order by name asc";
+     | order by name asc, id asc";
 
 /// Databases that come with every server and hold nothing of the application's.
 fn system_database(engine: Engine, name: &str) -> bool {
@@ -232,108 +173,25 @@ fn flexible_server_url(id: &str, child: &str, engine: Engine) -> Option<String> 
     plain.then(|| format!("{MANAGEMENT}{id}/{child}?api-version={version}"))
 }
 
-/// A Resource Manager token from the Azure CLI. Only ever sent to management.azure.com.
-async fn management_token() -> Result<String> {
-    let output = Command::new(az())
-        .args(["account", "get-access-token", "--resource", "https://management.azure.com/", "--query", "accessToken"])
-        .args(["--output", "tsv"])
-        .output()
-        .await
-        .map_err(|e| Error::new(ErrorCode::AuthFailed, format!("Could not run the Azure CLI: {e}")))?;
-    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if !output.status.success() || token.is_empty() {
-        return Err(Error::new(ErrorCode::AuthFailed, "The Azure CLI could not issue a Resource Manager token"));
+fn flexible_database(server: &FlexibleServer, engine: Engine, database: String, entra: bool) -> DiscoveredDatabase {
+    let suffix = if engine == Engine::Postgres { "postgres.database.azure.com" } else { "mysql.database.azure.com" };
+    DiscoveredDatabase {
+        alias: String::new(),
+        cloud: Cloud::Azure,
+        engine,
+        environment: infer_environment(&format!("{database} {}", server.name)),
+        server: server.name.clone(),
+        host: server.fqdn.clone().filter(|h| !h.is_empty()).unwrap_or_else(|| format!("{}.{suffix}", server.name)),
+        database,
+        location: server.location.clone(),
+        subscription: server.subscription.clone(),
+        resource_group: server.resource_group.clone(),
+        port: Some(if engine == Engine::Postgres { 5432 } else { 3306 }),
+        user: if entra { None } else { server.admin.clone().filter(|a| !a.is_empty()) },
+        region: None,
+        auth: if entra { AuthKind::Entra } else { AuthKind::Password },
+        saved_as: None,
     }
-    Ok(token)
-}
-
-/// Names under a flexible server's `databases` or `administrators`; `None` when they can't be listed.
-async fn list_children(url: String, token: String) -> Option<Vec<String>> {
-    let reply = http::get_bearer(url, token, "Listing Azure databases").await.ok()?;
-    if reply.status != 200 {
-        return None;
-    }
-    let names = reply.json.get("value")?.as_array()?.iter().filter_map(|v| v.get("name")?.as_str().map(str::to_string));
-    Some(names.collect())
-}
-
-/// Azure Database for PostgreSQL and MySQL flexible servers, one row per application database. Servers whose databases
-/// can't be listed (stopped, no permission) get one row for the server.
-pub async fn azure_flexible(terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
-    validate_terms(terms)?;
-    let servers: Vec<FlexibleServer> = resource_graph(FLEXIBLE_QUERY).await?;
-    if servers.is_empty() {
-        return Ok(Vec::new());
-    }
-    let token = management_token().await.ok();
-    let gate = Arc::new(tokio::sync::Semaphore::new(LISTING_CONCURRENCY));
-    let mut tasks = tokio::task::JoinSet::new();
-    for (i, server) in servers.iter().enumerate() {
-        let engine = flexible_engine(&server.kind);
-        let ready = server.state.as_deref().is_none_or(|s| s.eq_ignore_ascii_case("ready"));
-        let (Some(token), Some(engine), true) = (token.clone(), engine, ready) else { continue };
-        let Some(databases) = flexible_server_url(&server.id, "databases", engine) else { continue };
-        let admins =
-            (engine == Engine::Mysql).then(|| flexible_server_url(&server.id, "administrators", engine)).flatten();
-        let gate = gate.clone();
-        tasks.spawn(async move {
-            let _permit = gate.acquire_owned().await.ok()?;
-            let names = list_children(databases, token.clone()).await;
-            let entra = match admins {
-                Some(url) => Some(list_children(url, token).await.is_some_and(|a| !a.is_empty())),
-                None => None,
-            };
-            Some((i, names, entra))
-        });
-    }
-    let mut listed: BTreeMap<usize, (Option<Vec<String>>, Option<bool>)> = BTreeMap::new();
-    while let Some(joined) = tasks.join_next().await {
-        if let Ok(Some((i, names, entra))) = joined {
-            listed.insert(i, (names, entra));
-        }
-    }
-    let mut out = Vec::new();
-    for (i, server) in servers.into_iter().enumerate() {
-        let Some(engine) = flexible_engine(&server.kind) else { continue };
-        let (names, mysql_entra) = listed.remove(&i).unwrap_or((None, None));
-        let entra = match engine {
-            Engine::Postgres => server.entra.as_deref().is_some_and(|e| e.eq_ignore_ascii_case("enabled")),
-            _ => mysql_entra.unwrap_or(false),
-        };
-        let suffix =
-            if engine == Engine::Postgres { "postgres.database.azure.com" } else { "mysql.database.azure.com" };
-        let host = server.fqdn.clone().filter(|h| !h.is_empty()).unwrap_or_else(|| format!("{}.{suffix}", server.name));
-        let mut databases: Vec<String> =
-            names.unwrap_or_default().into_iter().filter(|d| !system_database(engine, d)).collect();
-        if databases.len() > 1 {
-            databases.retain(|d| d != "postgres");
-        }
-        if databases.is_empty() {
-            databases.push(default_database(engine).to_string());
-        }
-        for database in databases {
-            out.push(DiscoveredDatabase {
-                alias: String::new(),
-                cloud: Cloud::Azure,
-                engine,
-                environment: infer_environment(&format!("{database} {}", server.name)),
-                server: server.name.clone(),
-                host: host.clone(),
-                database,
-                location: server.location.clone(),
-                subscription: server.subscription.clone(),
-                resource_group: server.resource_group.clone(),
-                port: Some(if engine == Engine::Postgres { 5432 } else { 3306 }),
-                user: if entra { None } else { server.admin.clone().filter(|a| !a.is_empty()) },
-                region: None,
-                auth: if entra { AuthKind::Entra } else { AuthKind::Password },
-                saved_as: None,
-            });
-        }
-    }
-    out.retain(|d| terms.iter().all(|t| matches_term(&d.database, t) || matches_term(&d.server, t)));
-    assign_aliases(&mut out);
-    Ok(out)
 }
 
 fn flexible_engine(kind: &str) -> Option<Engine> {
@@ -415,85 +273,8 @@ fn assign_aliases(list: &mut [DiscoveredDatabase]) {
 }
 
 /// RDS instances and Aurora clusters the signed-in AWS CLI can see in `regions` (all enabled regions when empty).
-pub async fn aws_rds(regions: &[String], terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
-    validate_terms(terms)?;
-    if let Some(bad) = regions.iter().find(|r| !aws::valid_region(r)) {
-        return Err(Error::invalid(format!("'{bad}' is not an AWS region"))
-            .with_hint("Use region codes like us-east-1 or eu-central-1"));
-    }
-    let identity: serde_json::Value = parse(&aws::run(&["sts", "get-caller-identity", "--output", "json"]).await?)?;
-    let account = identity.get("Account").and_then(|a| a.as_str()).unwrap_or_default().to_string();
-    let regions = if regions.is_empty() { enabled_regions().await? } else { regions.to_vec() };
-
-    let mut tasks = tokio::task::JoinSet::new();
-    for region in regions {
-        tasks.spawn(async move {
-            let instances = aws::run(&["rds", "describe-db-instances", "--region", &region, "--output", "json"]).await;
-            let clusters = aws::run(&["rds", "describe-db-clusters", "--region", &region, "--output", "json"]).await;
-            (region, instances, clusters)
-        });
-    }
-    let mut out = Vec::new();
-    let mut failures: Vec<Error> = Vec::new();
-    let mut succeeded = 0;
-    while let Some(joined) = tasks.join_next().await {
-        let (region, instances, clusters) = joined.map_err(|e| Error::internal(e.to_string()))?;
-        match (instances, clusters) {
-            (Ok(instances), Ok(clusters)) => {
-                succeeded += 1;
-                out.extend(rds_rows(&region, &account, &parse(&instances)?, &parse(&clusters)?));
-            }
-            (Err(e), _) | (_, Err(e)) => failures.push(e),
-        }
-    }
-    if let Some(e) = failures.iter().find(|e| e.code == ErrorCode::AuthFailed) {
-        return Err(e.clone());
-    }
-    if succeeded == 0
-        && let Some(e) = failures.into_iter().next()
-    {
-        return Err(e);
-    }
-    out.retain(|d| terms.iter().all(|t| matches_term(&d.server, t) || matches_term(&d.database, t)));
-    out.sort_by(|a, b| a.server.cmp(&b.server).then(a.location.cmp(&b.location)).then(a.host.cmp(&b.host)));
-    assign_aliases(&mut out);
-    Ok(out)
-}
-
-fn parse(bytes: &[u8]) -> Result<serde_json::Value> {
-    serde_json::from_slice(bytes).map_err(|e| Error::internal(format!("Unexpected AWS CLI output: {e}")))
-}
-
-async fn enabled_regions() -> Result<Vec<String>> {
-    let listed = aws::run(&[
-        "account",
-        "list-regions",
-        "--region-opt-status-contains",
-        "ENABLED",
-        "ENABLED_BY_DEFAULT",
-        "--region",
-        "us-east-1",
-        "--output",
-        "json",
-    ])
-    .await;
-    let value = match listed {
-        Ok(bytes) => parse(&bytes)?,
-        Err(e) if e.code == ErrorCode::AuthFailed => return Err(e),
-        Err(_) => parse(&aws::run(&["ec2", "describe-regions", "--region", "us-east-1", "--output", "json"]).await?)?,
-    };
-    let regions: Vec<String> = value
-        .get("Regions")
-        .and_then(|r| r.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|r| r.get("RegionName").and_then(|n| n.as_str()).map(str::to_string))
-        .filter(|r| aws::valid_region(r))
-        .collect();
-    if regions.is_empty() {
-        return Err(Error::internal("The AWS CLI listed no enabled regions").with_hint("Pass the regions explicitly"));
-    }
-    Ok(regions)
+pub async fn aws_rds(regions: &[String], terms: &[String]) -> Result<DiscoveryResult> {
+    paging::aws_rds(regions, terms).await
 }
 
 fn rds_engine(engine: &str) -> Option<Engine> {
@@ -647,6 +428,17 @@ mod tests {
             auth: AuthKind::Entra,
             saved_as: None,
         }
+    }
+
+    #[test]
+    fn export_discovery_policy() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/src/gen");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("discovery.json"),
+            serde_json::to_string_pretty(&serde_json::json!({"result_limit": DISCOVERY_LIMIT})).unwrap() + "\n",
+        )
+        .unwrap();
     }
 
     #[test]

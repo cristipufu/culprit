@@ -59,6 +59,24 @@ Providers use `ResultBudget` before allocating display values and drain network 
 retention stops, so a late failure cannot become a successful write. Runtime providers follow the same cancellation
 and retention contract; the workspace also clamps the row request before handing it to them.
 
+Cloud discovery uses `discover/paging.rs` and returns `DiscoveryResult` to the CLI and desktop: up to 20 matches,
+a `has_more` indicator and bounded warnings. It retains one source page plus matching rows, stopping after the 21st
+match establishes that more exist. AWS CLI calls use matching `--page-size` / `--max-items` limits of 50 and resume
+through the CLI's opaque `NextToken`; they never aggregate the whole RDS inventory. Azure Resource Graph uses
+`$top: 50`, stable ordering and `$skipToken`. Flexible-server collections follow `nextLink` only within the original
+HTTPS host and collection. Unpaged ARM responses are still bounded by size.
+
+Searches share a two-operation gate, a 60-second deadline and a 256-request budget. CLI subprocesses have a 15-second
+deadline, 2 MiB stdout / 16 KiB stderr limits and use process groups / Windows Job Objects to kill the owned process tree when canceled. ARM inventory bodies have a 2 MiB limit;
+four native HTTP readers retain their permits until they finish, including after an async caller retires. Queued
+native reads check their caller's operation guard before starting. Exhausted budgets, malformed/repeated cursors and
+partial source failures cannot produce a complete empty result. Exact remaining counts are intentionally absent.
+CLI bulk saving refuses incomplete results. Pagination tests use scripted pages and never require a cloud login.
+The generated `app/src/gen/discovery.json` keeps the demo's result limit aligned with the backend.
+
+Pagination contracts: [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-pagination.html),
+[Azure Resource Graph](https://learn.microsoft.com/en-us/azure/governance/resource-graph/concepts/work-with-data).
+
 ## 1. Sources: what a provider reads
 
 A provider (`culprit_core::Provider`, one per engine, chosen in `culprit-engine/src/registry.rs`) collects a snapshot

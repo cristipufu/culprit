@@ -37,6 +37,7 @@ serde_json = { version = "1.0.152", features = ["alloc"] }
 sha2 = "0.11.0"
 thiserror = "2.0.21"
 tiberius = { version = "0.13.0", default-features = false, features = ["tds73", "rustls"] }
+process-wrap = { version = "10.0.1", default-features = false, features = ["tokio1", "kill-on-drop", "process-group", "job-object", "creation-flags"] }
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "time", "process", "sync"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "hooks"] }
 tokio-postgres = "0.7.18"

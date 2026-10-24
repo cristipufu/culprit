@@ -6,8 +6,8 @@ use culprit_core::{
 };
 
 use crate::{
-    ConnectionInfo, DiscoveredDatabase, ImportCandidate, ImportSource, NewConnection, ParsedConnection,
-    ProviderFactory, aws, connstr, discover, entra, import, query_log, registry, reports,
+    ConnectionInfo, DiscoveredDatabase, DiscoveryResult, ImportCandidate, ImportSource, NewConnection,
+    ParsedConnection, ProviderFactory, aws, connstr, discover, entra, import, query_log, registry, reports,
     secrets::SecretStore,
     store::{self, Paths, Store, StoredConnection},
 };
@@ -215,16 +215,16 @@ impl Connections<'_> {
 
     /// Azure SQL and Azure Database for PostgreSQL / MySQL flexible-server databases the signed-in Azure CLI account can see,
     /// marked with the saved connection that already points at each.
-    pub(crate) async fn discover_azure(&self, terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
+    pub(crate) async fn discover_azure(&self, terms: &[String]) -> Result<DiscoveryResult> {
         let mut found = discover::azure(terms).await?;
-        self.mark_saved(&mut found)?;
+        self.mark_saved(&mut found.items)?;
         Ok(found)
     }
 
     /// RDS instances and Aurora clusters the signed-in AWS CLI can see (all enabled regions when `regions` is empty).
-    pub(crate) async fn discover_aws(&self, regions: &[String], terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
+    pub(crate) async fn discover_aws(&self, regions: &[String], terms: &[String]) -> Result<DiscoveryResult> {
         let mut found = discover::aws_rds(regions, terms).await?;
-        self.mark_saved(&mut found)?;
+        self.mark_saved(&mut found.items)?;
         Ok(found)
     }
 

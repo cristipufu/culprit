@@ -4,6 +4,7 @@ pub mod aws;
 pub mod catalog;
 pub mod changes;
 pub mod cloud;
+mod cloud_process;
 mod connection;
 pub mod connstr;
 pub mod deadlocks;
@@ -42,7 +43,7 @@ use ts_rs::TS;
 
 pub use agent::{AgentAccess, ApprovalOutcome, ApprovalRequest, AuditEntry, AuditOutcome};
 pub use culprit_checks::{agent_brief, index_advice};
-pub use discover::{Cloud, DiscoveredDatabase};
+pub use discover::{Cloud, DiscoveredDatabase, DiscoveryResult};
 pub use import::{ImportCandidate, ImportSource};
 pub use marks::Mark;
 pub use operation::run_blocking;
@@ -353,13 +354,15 @@ impl Workspace {
     }
 
     /// Azure SQL and Azure Database for PostgreSQL / MySQL flexible-server databases the signed-in Azure CLI account can see,
-    /// marked with the saved connection that already points at each.
-    pub async fn discover_azure(&self, terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
+    /// marked with the saved connection that already points at each. At most 20 matches are returned;
+    /// `has_more` and `warnings` say when the inventory was not exhausted.
+    pub async fn discover_azure(&self, terms: &[String]) -> Result<DiscoveryResult> {
         self.connection_service().discover_azure(terms).await
     }
 
     /// RDS instances and Aurora clusters the signed-in AWS CLI can see (all enabled regions when `regions` is empty).
-    pub async fn discover_aws(&self, regions: &[String], terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
+    /// Returns at most 20 matches, with completeness metadata, without buffering the whole inventory.
+    pub async fn discover_aws(&self, regions: &[String], terms: &[String]) -> Result<DiscoveryResult> {
         self.connection_service().discover_aws(regions, terms).await
     }
 

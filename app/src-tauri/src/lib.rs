@@ -64,12 +64,12 @@ async fn rename_connection(ws: Ws<'_>, old: String, new: String) -> Result<Conne
 }
 
 #[tauri::command]
-async fn discover_azure(ws: Ws<'_>, terms: Vec<String>) -> Result<Vec<DiscoveredDatabase>> {
+async fn discover_azure(ws: Ws<'_>, terms: Vec<String>) -> Result<culprit_engine::DiscoveryResult> {
     ws.discover_azure(&terms).await
 }
 
 #[tauri::command]
-async fn discover_aws(ws: Ws<'_>, terms: Vec<String>, regions: Vec<String>) -> Result<Vec<DiscoveredDatabase>> {
+async fn discover_aws(ws: Ws<'_>, terms: Vec<String>, regions: Vec<String>) -> Result<culprit_engine::DiscoveryResult> {
     ws.discover_aws(&regions, &terms).await
 }
 

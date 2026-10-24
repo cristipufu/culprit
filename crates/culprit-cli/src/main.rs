@@ -294,10 +294,10 @@ struct DiscoverArgs {
     /// AWS region to search (repeatable). Defaults to every enabled region.
     #[arg(long = "region", value_name = "REGION")]
     regions: Vec<String>,
-    /// Keep databases whose database or server name contains this word. Repeat to narrow down (all must match). Omit to list everything.
+    /// Keep databases whose database or server name contains this word. Repeat to narrow down (all must match). Omit to show the first 20 matches.
     #[arg(long = "match", value_name = "WORD")]
     terms: Vec<String>,
-    /// Save every match that isn't saved yet, under its suggested alias.
+    /// Save unsaved matches under their suggested aliases; requires a complete, narrowed search.
     #[arg(long)]
     save: bool,
     /// Also save production databases (they are listed either way).
@@ -1031,7 +1031,11 @@ async fn conn(ws: &Workspace, command: ConnCommand, out: &Out) -> culprit_core::
             };
             let mut saved = Vec::new();
             if args.save {
-                for d in found.iter().filter(|d| d.saved_as.is_none()) {
+                if found.has_more || !found.warnings.is_empty() {
+                    return Err(Error::invalid("Discovery is incomplete; no connections were saved")
+                        .with_hint("Refine --match or --region until the search is complete, then retry --save"));
+                }
+                for d in found.items.iter().filter(|d| d.saved_as.is_none()) {
                     if d.environment.is_production() && !args.include_production {
                         continue;
                     }

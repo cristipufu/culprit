@@ -30,8 +30,14 @@ fn aws_binary() -> &'static str {
 
 /// Run the AWS CLI and return stdout, turning "not installed" and "not signed in" into actionable errors.
 pub(crate) async fn run(args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new(aws_binary()).args(args).output().await.map_err(|e| {
-        Error::new(ErrorCode::AuthFailed, format!("Could not run the AWS CLI: {e}")).with_hint(INSTALL_HINT)
+    let mut command = Command::new(aws_binary());
+    command.args(args).env("AWS_PAGER", "").env("AWS_CLI_AUTO_PROMPT", "off");
+    let output = crate::cloud_process::output(command).await.map_err(|error| {
+        if error.code == ErrorCode::NotFound {
+            Error::new(ErrorCode::AuthFailed, "Could not run the AWS CLI").with_hint(INSTALL_HINT)
+        } else {
+            error
+        }
     })?;
     if output.status.success() {
         return Ok(output.stdout);

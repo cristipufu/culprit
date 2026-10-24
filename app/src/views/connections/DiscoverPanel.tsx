@@ -6,7 +6,7 @@ import type { ImportCandidate } from "../../gen/ImportCandidate";
 import type { ImportSource } from "../../gen/ImportSource";
 import { api, errorMessage, type ApiError } from "../../lib/api";
 import { engineLabel } from "../../lib/engines";
-import { DISCOVERY_LIMIT, discoveryKey, discoveryPage, preselectedDiscoveries, type DiscoveryPage } from "../../lib/discovery-results";
+import { discoveryKey, preselectedDiscoveries, type DiscoveryPage } from "../../lib/discovery-results";
 import { LatestRequest } from "../../lib/requests";
 import { loadConnections } from "../../lib/store";
 
@@ -75,9 +75,8 @@ export function DiscoverPanel({ cloud, onDone }: { cloud: CloudKind; onDone: () 
     try {
       const client = await api();
       if (!current()) return;
-      const items = cloud === "aws" ? await client.discoverAws(words(terms), words(regions)) : await client.discoverAzure(words(terms));
+      const page = cloud === "aws" ? await client.discoverAws(words(terms), words(regions)) : await client.discoverAzure(words(terms));
       if (!current()) return;
-      const page = discoveryPage(items);
       setDiscover({ status: "done", ...page });
       setPicked(preselectedDiscoveries(page, terms));
     } catch (e) {
@@ -147,12 +146,13 @@ export function DiscoverPanel({ cloud, onDone }: { cloud: CloudKind; onDone: () 
       )}
       {state.status === "done" && (
         <div className="discover-list">
-          {state.items.length === 0 && <div className="muted" style={{ padding: 12 }}>No databases match.</div>}
-          {state.total > DISCOVERY_LIMIT && (
+          {state.items.length === 0 && <div className="muted" style={{ padding: 12 }}>{state.has_more ? "The incomplete search found no matches. Refine the search and retry." : "No databases match."}</div>}
+          {state.has_more && (
             <p className="discover-more muted" role="status">
-              Showing the first {DISCOVERY_LIMIT} matches · +{(state.total - DISCOVERY_LIMIT).toLocaleString()} more. Refine your search to narrow the results.
+              {state.items.length} {state.items.length === 1 ? "match" : "matches"} shown · more may be available. Refine your search to narrow the results.
             </p>
           )}
+          {state.warnings.length > 0 && <div className="notice" role="status"><div>{state.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div></div>}
           {state.items.map((d) => {
             const key = keyOf(d);
             return (

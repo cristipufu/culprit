@@ -11,7 +11,7 @@ use clap::ValueEnum;
 use culprit_core::{
     AuthKind, CheckInfo, Engine, Error, Finding, LockedCheck, QueryStat, Report, ServerInfo, Severity, format,
 };
-use culprit_engine::{ConnectionInfo, DiscoveredDatabase, ImportCandidate};
+use culprit_engine::{ConnectionInfo, DiscoveryResult, ImportCandidate};
 use serde_json::{Value, json};
 
 use crate::TopBy;
@@ -194,12 +194,30 @@ impl Out {
         );
     }
 
-    pub fn discovered(&self, found: &[DiscoveredDatabase], saved: &[ConnectionInfo]) {
+    pub fn discovered(&self, result: &DiscoveryResult, saved: &[ConnectionInfo]) {
+        let found = &result.items;
         if self.format == Format::Json {
-            return self.json(&json!({ "databases": found, "saved": saved }));
+            return self.json(&json!({ "databases": found, "saved": saved, "has_more": result.has_more, "warnings": result.warnings }));
+        }
+        for warning in &result.warnings {
+            println!("{warning}");
+        }
+        if result.has_more {
+            println!(
+                "Showing {} {}; more may be available. Refine --match or --region.",
+                found.len(),
+                if found.len() == 1 { "match" } else { "matches" }
+            );
         }
         if found.is_empty() {
-            println!("No databases match. Try a different --match (or --region for AWS).");
+            println!(
+                "{}",
+                if result.has_more {
+                    "The incomplete search found no matches. Narrow the search and retry."
+                } else {
+                    "No databases match. Try a different --match (or --region for AWS)."
+                }
+            );
             return;
         }
         for d in found {
@@ -227,7 +245,11 @@ impl Out {
                 status
             );
         }
-        if saved.is_empty() && found.iter().any(|d| d.saved_as.is_none()) {
+        if !result.has_more
+            && result.warnings.is_empty()
+            && saved.is_empty()
+            && found.iter().any(|d| d.saved_as.is_none())
+        {
             println!();
             println!(
                 "{}",

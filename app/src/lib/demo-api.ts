@@ -32,6 +32,7 @@ import { demoRows } from "./demo-rows";
 import { signalsSample, withSignals } from "./demo-signals";
 import { can, connectFacts, refusal, sessionActions, waitingState } from "./engines";
 import { sameSamplePlan } from "./plan-samples";
+import { discoveryPage } from "./discovery-results";
 
 /** The capabilities query history comes from (mirrors `Snapshot::no_workload_reason`). */
 /** A scan's window in minutes, also for scans from before windows could be hours. */
@@ -348,9 +349,9 @@ export async function demoApi(): Promise<Api> {
       connections = connections.map((c) => (c.name === old ? renamed : c));
       return renamed;
     },
-    discoverAzure: async (terms) => sampleFor("azure", terms),
+    discoverAzure: async (terms) => discoveryPage(await sampleFor("azure", terms)),
     discoverAws: async (terms, regions) =>
-      (await sampleFor("aws", terms)).filter((d) => regions.length === 0 || regions.includes(d.region ?? "")),
+      discoveryPage((await sampleFor("aws", terms)).filter((d) => regions.length === 0 || regions.includes(d.region ?? ""))),
     setPassword: async (name, password) => {
       const current = connections.find((c) => c.name === name);
       if (!current) return Promise.reject({ code: "not_found", message: `No connection named '${name}'`, hint: null });

@@ -9,7 +9,7 @@ const database = (i: number): DiscoveredDatabase => ({
 });
 const inventory = Array.from({ length: 10_000 }, (_, i) => database(i));
 const page = discoveryPage(inventory);
-check(page.total === 10_000 && page.items.length === DISCOVERY_LIMIT, "Large inventories must retain only the visible result budget");
+check(page.has_more && page.items.length === DISCOVERY_LIMIT, "Large inventories must retain only the visible result budget");
 check(page.items.every((item, i) => item === inventory[i]), "Discovery must preserve the cloud's result order");
 check(Object.keys(preselectedDiscoveries(page, "demo")).length === 0, "A broad search must not preselect a truncated inventory");
 // The only fresh database can be below the display boundary: it must never become a hidden selection.
@@ -21,5 +21,6 @@ const selected = preselectedDiscoveries(refined, "db-9999");
 check(Object.keys(selected).length === 1 && selected[discoveryKey(inventory[9999]!)] === true, "Refined searches should select only fresh non-production matches");
 check(Object.keys(preselectedDiscoveries(refined, " ")).length === 0, "Unfiltered discovery must never preselect connections");
 check(Object.keys(preselectedDiscoveries(discoveryPage(inventory.slice(0, 11)), "demo")).length === 0, "More than ten fresh matches require explicit selection");
-check(discoveryPage([]).total === 0 && discoveryPage([]).items.length === 0, "Empty results must stay empty");
+check(!discoveryPage([]).has_more && discoveryPage([]).items.length === 0, "Empty results must stay empty");
+check(Object.keys(preselectedDiscoveries({ ...refined, warnings: ["One region could not be read"] }, "db-9999")).length === 0, "Partial searches cannot preselect connections");
 console.log("Discovery results: 10,000 matches, bounded retention, refined searches and visible-only selection passed");
