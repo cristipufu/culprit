@@ -2,6 +2,24 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.5.0
+
+### Added
+
+- **YugabyteDB support.** A native YSQL/DocDB provider collects distributed statement counters, DIST plans, sharding and index metadata, retained plan history, sampled activity, unexpected terminations and shared node resources. Live views include native blocking, COPY and index-backfill progress. Hypothetical index testing uses isolated direct backends without creating real indexes. Node, role and retention scope remain explicit.
+- **TimescaleDB support.** The PostgreSQL provider detects the extension automatically and collects logical hypertable sizes, row estimates, managed chunks and compressed storage. Plans and index advice target the owning hypertable, use supported per-chunk build syntax and keep ordinary PostgreSQL tables separate from managed storage.
+
+### Fixes
+
+- **Safer sharing and exports.** YugabyteDB dollar-quoted literals, distributed node identifiers and role scope are redacted. Plan comparisons derive their summaries from redacted plans so parameter values cannot leak through comparison prose.
+- **Reliable provider collection.** Physical partition indexes retain their parent links, later lock rows cannot erase a known blocker, and active-session history uses the shared observation deadline. TimescaleDB collection preserves existing table metadata and tolerates objects disappearing during retention or concurrent schema changes.
+- **Consistent engine advice.** Planning labels, affected-row counts, wait sampling, session-reset guidance and index advice follow declared engine and product capabilities. MySQL and MariaDB keep their own version-specific index syntax; hypertable advice avoids unsupported concurrent DDL.
+- **SQL highlighting.** Punctuation remains visible when SQL text is highlighted.
+
+### Documentation
+
+- Engine parity now provides one comparison and a consistently structured guide for every supported provider, covering connection setup, permissions, workload and plans, live activity, schema and indexes, evidence limits and verified versions. The README and website use the same provider catalog.
+
 ## 0.4.4
 
 ### Fixes
