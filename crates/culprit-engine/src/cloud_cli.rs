@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn gui_paths_find_homebrew_and_linux_user_installs() {
+    fn gui_paths_find_user_installs() {
         for platform in [Platform::Macos, Platform::Linux] {
             let temp = Temp::new();
             let chosen = temp.cli(".local/bin", "aws");
@@ -192,6 +192,11 @@ mod tests {
             let command = build(Cli::Aws, platform, None, &paths);
             assert_eq!(command.as_std().get_program(), chosen);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn macos_locations_include_both_homebrew_install_prefixes() {
         let paths = locations(Cli::Azure, Platform::Macos, None, |_| None);
         assert!(
             paths.contains(&PathBuf::from("/opt/homebrew/bin")) && paths.contains(&PathBuf::from("/usr/local/bin"))
