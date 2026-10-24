@@ -6,8 +6,8 @@ use std::fmt::Write;
 use culprit_core::{ChangeKind, Finding, Metric, Plan, PlanDiff, PlanNode, Report, Verification, VerifyStatus, format};
 
 use super::{
-    ExportNote, ExportOptions, exported_at, kind_label, plan_engine_label, prepared, rows_phrase, rows_text,
-    server_line, share, shares_note, sql_text, stats_line, top_costs, where_,
+    ExportNote, ExportOptions, estimated_cost, exported_at, kind_label, plan_engine_label, prepared, rows_phrase,
+    rows_text, server_line, share, shares_note, sql_text, stats_line, top_costs, where_,
 };
 
 const MAX_STEPS: usize = 40;
@@ -71,7 +71,7 @@ pub fn plan_markdown(plan: &Plan, title: &str, options: &ExportOptions) -> Strin
         plan_engine_label(&plan),
         kind_label(plan.kind).to_lowercase(),
         if count == 1 { "" } else { "s" },
-        cost(plan.total_cost)
+        estimated_cost(&plan)
     );
     redaction_note(&mut out, options);
     plan_body(&mut out, &plan, &options.notes);
@@ -203,10 +203,6 @@ fn label(node: &PlanNode) -> String {
     super::node_label(node)
 }
 
-fn cost(value: f64) -> String {
-    if value < 10.0 { format!("{value:.3}") } else { format::count(value) }
-}
-
 /// Two plans compared: the lead sentence, the numbers side by side, what changed, why the optimizer may have chosen
 /// differently, and each plan's steps.
 pub fn diff_markdown(
@@ -233,7 +229,7 @@ pub fn diff_markdown(
     let _ = writeln!(out, "| | {} | {} |\n|---|---:|---:|", cell(name_a), cell(name_b));
     let _ = writeln!(out, "| Engine | {} | {} |", plan_engine_label(&a), plan_engine_label(&b));
     let _ = writeln!(out, "| Plan | {} | {} |", kind_label(a.kind).to_lowercase(), kind_label(b.kind).to_lowercase());
-    let _ = writeln!(out, "| Estimated cost | {} | {} |", cost(diff.cost_a), cost(diff.cost_b));
+    let _ = writeln!(out, "| Estimated cost | {} | {} |", estimated_cost(&a), estimated_cost(&b));
     if let (Some(ta), Some(tb)) = (diff.time_a_ms, diff.time_b_ms) {
         let _ = writeln!(out, "| Actual time | {} | {} |", format::duration(ta), format::duration(tb));
     }

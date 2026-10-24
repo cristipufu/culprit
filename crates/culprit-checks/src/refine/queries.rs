@@ -48,7 +48,7 @@ impl ReadChange {
             return None;
         }
         let per_run = |id: &str| {
-            let p = q.plans.iter().find(|p| p.id == id)?;
+            let p = q.workload_plans().iter().find(|p| p.id == id)?;
             let reads = p.logical_reads?;
             (p.executions.is_finite() && p.executions > 0.0 && reads.is_finite() && reads >= 0.0)
                 .then_some(reads / p.executions)

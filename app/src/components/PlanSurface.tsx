@@ -62,6 +62,7 @@ export function PlanSurface({ plan, query, focus, look, badge }: { plan: Plan; q
   const [selected, setSelected] = useState<number | null>(null);
   return (
     <div className="plan-surface">
+      {plan.facts?.constants_redacted && <p className="notice">This retained plan redacts its original constants. It describes an estimated plan kept by the database, with no measured operator counters; hidden values cannot establish filter selectivity.</p>}
       {!plan.insights?.note && plan.kind !== "actual" && (plan.props["Generic Plan"] || plan.kind === "generic") && <p className="notice">This plan was obtained without the application's parameter values.{plan.engine === "sqlite" ? " It uses Culprit's SQLite library, which may differ from the application's version and build." : " Connection settings and runtime partition pruning may differ from the application's run."} It does not identify the plan used by historical executions.</p>}
       <PlanInsights plan={plan} selectedNode={selected} onSelectNode={setSelected} />
       <DocdbWork metrics={plan.facts?.docdb} basis="execution" />
@@ -89,7 +90,7 @@ function OperationsPanel({ plan, query, focus, selected, onSelect }: { plan: Pla
         <span className="tag">{plan.kind === "actual" ? "Actual plan" : plan.kind === "generic" ? "Generic plan" : "Estimated plan"}</span>
         <span>
           {nodes.length} operator{nodes.length === 1 ? "" : "s"}
-          {can(plan.engine, "plan_estimates") && ` · cost ${cost(plan.total_cost || plan.root.subtree_cost)}`}
+          {can(plan.engine, "plan_estimates") && ` · cost ${plan.facts?.estimated_cost_unavailable ? "unavailable" : cost(plan.total_cost || plan.root.subtree_cost)}`}
         </span>
         <span className="spacer" />
         <GitBranch size={12} className="muted" />

@@ -928,6 +928,10 @@ pub struct QueryStat {
     /// plan per statement.
     #[serde(default)]
     pub plan_id: Option<String>,
+    // Where retained plan statistics come from when they have a different lifetime from statement statistics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub plan_history: Option<PlanHistory>,
 }
 
 /// How a statement's run times spread. Every engine keeps something different: SQL Server and Postgres the fastest
@@ -1046,7 +1050,7 @@ impl QueryStat {
     /// all its plans says nothing about whether this particular plan runs cheaply.
     pub fn captured_plan_variant(&self) -> Option<&PlanVariant> {
         let id = self.plan_id.as_ref()?;
-        self.plans.iter().find(|p| &p.id == id)
+        self.workload_plans().iter().find(|p| &p.id == id)
     }
 
     /// What its runs took, where an average would hide it: its one run's time, or two runs' times, the longest first,
@@ -1125,4 +1129,37 @@ pub struct PlanVariant {
     pub cpu_time_ms: Option<f64>,
     #[serde(default)]
     pub logical_reads: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug)]
+#[ts(export)]
+pub struct PlanHistory {
+    pub source: String,
+    pub kind: PlanHistoryKind,
+    pub note: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub captured_plan_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub captured_plan: Option<Plan>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export)]
+pub enum PlanHistoryKind {
+    Workload,
+    /// Independent retained cache entries, with their own periods, resets and evictions.
+    Cache,
+}
+
+impl QueryStat {
+    pub fn plan_history_matches_workload(&self) -> bool {
+        self.plan_history.as_ref().is_none_or(|history| history.kind == PlanHistoryKind::Workload)
+    }
+    /// Variants whose periods and counters can be compared with this statement's workload statistics.
+    pub fn workload_plans(&self) -> &[PlanVariant] {
+        if self.plan_history_matches_workload() { &self.plans } else { &[] }
+    }
 }

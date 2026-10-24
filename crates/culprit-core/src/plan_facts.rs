@@ -9,6 +9,13 @@ use crate::model::Properties;
 #[serde(default)]
 #[ts(export)]
 pub struct PlanFacts {
+    // The source removed constants from the stored plan; selectivity cannot be justified by those hidden values.
+    #[serde(default, skip_serializing_if = "is_false")]
+    #[ts(as = "Option<bool>", optional)]
+    pub constants_redacted: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    #[ts(as = "Option<bool>", optional)]
+    pub estimated_cost_unavailable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "nonnegative_number")]
     #[ts(as = "Option<f64>")]
     pub elapsed_ms: Option<f64>,
@@ -105,6 +112,9 @@ pub struct PlanFacts {
 #[serde(default)]
 #[ts(export)]
 pub struct PlanNodeFacts {
+    #[serde(default, skip_serializing_if = "is_false")]
+    #[ts(as = "Option<bool>", optional)]
+    pub estimated_rows_unavailable: bool,
     // Number of threads whose execution counts contribute to this operator's total, not requested parallelism.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "count_number")]
     #[ts(as = "Option<u32>")]
@@ -303,6 +313,8 @@ impl PlanFacts {
         let jit = props.get("JIT").and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
         let triggers = props.get("Triggers").and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
         Self {
+            constants_redacted: false,
+            estimated_cost_unavailable: false,
             docdb: None,
             query_hash: props.get("QueryHash").cloned(),
             query_identifier: props.get("Query Identifier").cloned(),
@@ -383,6 +395,7 @@ impl PlanNodeFacts {
     pub fn from_legacy_properties(props: &Properties) -> Self {
         let number = |key: &str| props.get(key).and_then(|value| value.trim().parse::<f64>().ok());
         Self {
+            estimated_rows_unavailable: false,
             docdb: None,
             table_kind: None,
             estimated_row_bytes: number("AvgRowSize").or_else(|| number("Plan Width")).and_then(nonnegative),
@@ -688,4 +701,8 @@ fn legacy_indexes(value: &str) -> Vec<PlanIndexColumns> {
             })
         })
         .collect()
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }

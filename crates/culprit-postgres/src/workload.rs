@@ -82,6 +82,7 @@ async fn collect_with_base(
     let mut queries: Vec<QueryStat> = rows
         .iter()
         .map(|r| QueryStat {
+            plan_history: None,
             resolved_write_target: None,
             requests: None,
             id: r.string("id"),

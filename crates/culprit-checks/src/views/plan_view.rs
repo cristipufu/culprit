@@ -60,10 +60,10 @@ pub(super) fn with_insights(
             let cost_share = (states_shares && n.self_cost > 0.0 && guess.is_none()).then(|| plan.cost_share(n));
             PlanOperatorView {
                 id: n.id,
-                runs: n.runs(),
-                estimated_rows: n.est_rows_total(),
-                estimated_rows_for_runs: n.est_rows_for_runs(),
-                rows_out: n.act_rows.unwrap_or_else(|| n.est_rows_total()),
+                runs: (n.act_executions.is_some() || !n.facts().estimated_rows_unavailable).then(|| n.runs()),
+                estimated_rows: (!n.facts().estimated_rows_unavailable).then(|| n.est_rows_total()),
+                estimated_rows_for_runs: (!n.facts().estimated_rows_unavailable).then(|| n.est_rows_for_runs()),
+                rows_out: n.act_rows.or_else(|| (!n.facts().estimated_rows_unavailable).then(|| n.est_rows_total())),
                 rows_read: n.rows_read_total(),
                 misestimate: n.misestimate(),
                 guess,

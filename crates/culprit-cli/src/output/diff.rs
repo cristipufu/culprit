@@ -15,7 +15,11 @@ impl Out {
         for headline in &diff.headlines {
             println!("{}", self.paint(BOLD, headline));
         }
-        let cost = |c: f64| if c < 10.0 { format!("{c:.3}") } else { format::count(c) };
+        let cost = |c: Option<f64>| match c {
+            Some(c) if c < 10.0 => format!("{c:.3}"),
+            Some(c) => format::count(c),
+            None => "unavailable".into(),
+        };
         println!(
             "{}",
             self.paint(

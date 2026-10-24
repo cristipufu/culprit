@@ -11,8 +11,9 @@ mod tests;
 mod workload;
 
 pub use workload::{
-    Cadence, CounterScope, CounterSet, PER_DAY_MIN_HOURS, PlanVariant, QueryStat, QueryTrend, RATE_MIN_HOURS, ScanSpan,
-    Spread, StatementActivity, StatementCost, Timeline, TimelineSource, Workload, WorkloadKind, span_when, span_words,
+    Cadence, CounterScope, CounterSet, PER_DAY_MIN_HOURS, PlanHistory, PlanHistoryKind, PlanVariant, QueryStat,
+    QueryTrend, RATE_MIN_HOURS, ScanSpan, Spread, StatementActivity, StatementCost, Timeline, TimelineSource, Workload,
+    WorkloadKind, span_when, span_words,
 };
 
 pub const SNAPSHOT_FORMAT: u32 = 1;

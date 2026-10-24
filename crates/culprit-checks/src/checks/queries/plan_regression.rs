@@ -47,7 +47,7 @@ pub(super) fn plan_span(p: &PlanVariant) -> Option<(f64, f64)> {
 /// the fast plan's last run comes before the slow plan's first, and no other plan ran alongside the slow one (plans
 /// used side by side for different values are parameter sensitivity, not a plan that changed).
 pub(super) fn replaced_plan(q: &QueryStat) -> Option<(&PlanVariant, &PlanVariant)> {
-    let usable: Vec<&PlanVariant> = q.plans.iter().filter(|p| p.executions >= PLAN_MIN_RUNS).collect();
+    let usable: Vec<&PlanVariant> = q.workload_plans().iter().filter(|p| p.executions >= PLAN_MIN_RUNS).collect();
     if usable.len() < 2 {
         return None;
     }

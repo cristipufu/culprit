@@ -110,10 +110,10 @@ impl PlanBaseline {
             return unknown();
         };
         let Some(observed) = crate::format::epoch_seconds(&self.observed_until) else { return unknown() };
-        if !self.mean_ms.is_finite() || self.mean_ms < 0.0 || q.plans.is_empty() {
+        if !self.mean_ms.is_finite() || self.mean_ms < 0.0 || q.workload_plans().is_empty() {
             return unknown();
         }
-        let recovered = q.plans.iter().all(|p| {
+        let recovered = q.workload_plans().iter().all(|p| {
             let span = p
                 .first_seen
                 .as_deref()

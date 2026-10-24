@@ -63,11 +63,22 @@ export const doesRealWork = (plan: Plan): boolean => plan.view?.real_work ?? fal
 export const aboutThePlan = (plan: Plan, check: string): boolean => plan.view?.focus_checks.includes(check) ?? false;
 
 /** Literal counts can still be inspected in an older, unprojected plan; inferred comparisons require Rust's view. */
-export const estRows = (plan: Plan | null | undefined, node: PlanNode): number => operatorView(plan, node)?.estimated_rows ?? node.est_rows * Math.max(1, node.est_executions);
-export const rowsOut = (plan: Plan | null | undefined, node: PlanNode): number => operatorView(plan, node)?.rows_out ?? node.act_rows ?? estRows(plan, node);
-export const estRowsForRuns = (plan: Plan | null | undefined, node: PlanNode): number | null =>
-  operatorView(plan, node)?.estimated_rows_for_runs ?? (node.act_executions == null ? estRows(plan, node) : null);
-export const operatorRuns = (plan: Plan | null | undefined, node: PlanNode): number | null => operatorView(plan, node)?.runs ?? (node.act_executions == null ? Math.max(1, node.est_executions) : null);
+export const estRows = (plan: Plan | null | undefined, node: PlanNode): number | null => {
+  const view = operatorView(plan, node);
+  return view ? view.estimated_rows : node.facts?.estimated_rows_unavailable ? null : node.est_rows * Math.max(1, node.est_executions);
+};
+export const rowsOut = (plan: Plan | null | undefined, node: PlanNode): number | null => {
+  const view = operatorView(plan, node);
+  return view ? view.rows_out : node.act_rows ?? estRows(plan, node);
+};
+export const estRowsForRuns = (plan: Plan | null | undefined, node: PlanNode): number | null => {
+  const view = operatorView(plan, node);
+  return view ? view.estimated_rows_for_runs : node.act_executions == null ? estRows(plan, node) : null;
+};
+export const operatorRuns = (plan: Plan | null | undefined, node: PlanNode): number | null => {
+  const view = operatorView(plan, node);
+  return view ? view.runs : node.facts?.estimated_rows_unavailable ? node.act_executions : node.act_executions == null ? Math.max(1, node.est_executions) : null;
+};
 export const rowsRead = (plan: Plan, node: PlanNode): number | null => operatorView(plan, node)?.rows_read ?? node.rows_read;
 export const misestimate = (plan: Plan | null | undefined, node: PlanNode): number | null => operatorView(plan, node)?.misestimate ?? null;
 

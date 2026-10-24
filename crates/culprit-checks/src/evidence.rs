@@ -336,8 +336,8 @@ fn query(measure: QueryMeasure, s: &Snapshot) -> CheckEvidence {
             let costs = |f: fn(&culprit_core::QueryCosts) -> bool| q.costs.as_ref().is_some_and(f);
             match measure {
                 QueryMeasure::PlanVariants => {
-                    q.plans.len() >= 2
-                        && q.plans.iter().all(|p| {
+                    q.workload_plans().len() >= 2
+                        && q.workload_plans().iter().all(|p| {
                             p.executions >= culprit_core::PLAN_VARIANT_MIN_RUNS
                                 && p.mean_time_ms.is_finite()
                                 && p.first_seen.as_deref().and_then(culprit_core::format::epoch_seconds).is_some()
@@ -345,7 +345,7 @@ fn query(measure: QueryMeasure, s: &Snapshot) -> CheckEvidence {
                         })
                 }
                 QueryMeasure::Variance => q.stddev_time_ms.is_some() && q.max_time_ms.is_some() && q.executions >= 50.0,
-                QueryMeasure::ParameterSpread => !q.plans.is_empty() || q.spread.is_some(),
+                QueryMeasure::ParameterSpread => !q.workload_plans().is_empty() || q.spread.is_some(),
                 QueryMeasure::Failures => costs(|c| c.failed.is_some() || c.aborted.is_some()),
                 QueryMeasure::Planning => costs(|c| c.plan_ms.is_some()),
                 QueryMeasure::Jit => costs(|c| c.jit_ms.is_some()),

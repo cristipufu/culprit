@@ -231,7 +231,7 @@ function PlanRow({ item, active }: { item: LoadedPlan; active: boolean }) {
           {item.name}
         </span>
         <span className="plan-row-meta">
-          {planEngineName(item.plan)} · {KIND[item.plan.kind]} · cost {cost(item.plan.total_cost)}
+          {planEngineName(item.plan)} · {KIND[item.plan.kind]} · cost {item.plan.facts?.estimated_cost_unavailable ? "unavailable" : cost(item.plan.total_cost)}
         </span>
         {item.origin !== item.name && <span className="plan-row-origin">{item.origin}</span>}
       </button>

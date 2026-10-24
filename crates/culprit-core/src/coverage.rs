@@ -48,6 +48,7 @@ pub mod source_id {
     pub const TIMESCALE_INDEXES: &str = "timescale-indexes";
     pub const DOCDB_EPOCHS: &str = "docdb-counter-epochs";
     pub const DOCDB_INDEX_USAGE: &str = "docdb-index-usage";
+    pub const DOCDB_PLAN_HISTORY: &str = "docdb-plan-history";
 
     pub const WORKLOAD: &str = "workload";
     pub const QUERY_STORE: &str = "query_store";
@@ -119,6 +120,7 @@ pub mod source_id {
         TIMESCALE_INDEXES,
         DOCDB_EPOCHS,
         DOCDB_INDEX_USAGE,
+        DOCDB_PLAN_HISTORY,
         WORKLOAD,
         QUERY_STORE,
         QUERY_WAITS,

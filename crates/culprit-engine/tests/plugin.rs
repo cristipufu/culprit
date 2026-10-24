@@ -20,6 +20,54 @@ fn temp_home(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!("culprit-plugin-{tag}-{}", std::process::id()))
 }
 
+#[cfg(feature = "yugabyte")]
+#[tokio::test]
+async fn retained_native_plans_open_offline_without_borrowing_current_catalog_or_measurements() {
+    let home = temp_home("native-cache");
+    let ws = Workspace::open_in(&home).with_provider(
+        Engine::Yugabyte,
+        Arc::new(|_| Err(Error::internal("Opening this saved plan must not resolve a database provider"))),
+    );
+    ws.add_connection(NewConnection {
+        name: "native-cache".into(),
+        input: "yugabyte://reader@unavailable.invalid:5433/demo".into(),
+        auth: Some(AuthKind::None),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut snapshot: Snapshot = serde_json::from_str(include_str!("../../../fixtures/yugabyte-demo.json")).unwrap();
+    snapshot.connection = "native-cache".into();
+    let q = &mut snapshot.workload.as_mut().unwrap().queries[0];
+    let mut cached = culprit_yugabyte::plan::parse(
+        include_str!("../../culprit-yugabyte/tests/data/qpm.json"),
+        culprit_core::PlanKind::Estimated,
+        None,
+    )
+    .unwrap();
+    cached.facts_mut().constants_redacted = true;
+    q.plan_history = Some(culprit_core::PlanHistory {
+        source: "yb_pg_stat_plans".into(),
+        kind: culprit_core::PlanHistoryKind::Cache,
+        note: "Retained cache periods are independent of statement statistics".into(),
+        captured_plan_id: Some("-123".into()),
+        captured_plan: Some(cached),
+    });
+    let query = q.id.clone();
+    let report = culprit_checks::analyze(snapshot);
+    culprit_engine::reports::save(&ws.paths().reports_dir("native-cache"), &report).unwrap();
+    let plan = ws.query_plan_at("native-cache", &query, Some("-123"), Some(&report.snapshot.id)).await.unwrap();
+    assert!(plan.facts().constants_redacted && plan.facts().estimated_cost_unavailable);
+    assert!(plan.nodes().iter().all(|n| n.table_rows.is_none()));
+    let view = plan.view.as_ref().unwrap();
+    assert!(view.query.is_none());
+    assert!(view.nodes.iter().all(|n| n.runs.is_none()
+        && n.estimated_rows.is_none()
+        && n.estimated_rows_for_runs.is_none()
+        && n.rows_out.is_none()));
+    assert!(plan.insights.as_ref().unwrap().items.iter().all(|i| i.fix_sql.is_none()));
+    let _ = std::fs::remove_dir_all(home);
+}
+
 struct Marker;
 
 impl Check for Marker {

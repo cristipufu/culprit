@@ -140,6 +140,12 @@ Native index hash groups remain separate from ordered keys. Distributed workload
 node set and each node's reset epoch through `CounterSet`; partial contributors or unknown epochs cannot establish a
 continuous counter history. Local index zeros cannot establish cluster-wide absence.
 
+Native QPM history has a separate `QueryStat::plan_history` context. Cache entry counts and dates are independent of
+the statement-statistics period; `workload_plans()` exposes only variants that share that period to causal checks,
+charts and runtime weighting. A captured cache body stays separate from the current estimate, reparses without the
+current catalog and opens from the saved report before provider or credential resolution. Missing native estimates
+remain unknown in the shared plan projection, and redacted constants cannot establish filter selectivity.
+
 ### Platforms: where a database runs
 
 A managed service changes how Culprit reads and advises (no superuser, settings in a parameter group, the cloud's own

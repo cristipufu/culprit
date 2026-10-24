@@ -46,7 +46,7 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(workload) = snapshot.workload.as_ref() else { return Vec::new() };
     app_queries(snapshot)
         .filter_map(|q| {
-            if q.plans.len() > 1 {
+            if q.workload_plans().len() > 1 {
                 return None;
             }
             let (stddev, max) = (q.stddev_time_ms?, q.max_time_ms?);
@@ -82,7 +82,7 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
                 format::duration(max)
             );
             // One plan in Query Store backs "same plan"; elsewhere the engine keeps no plan identity per run.
-            let same = if q.plans.len() == 1 { "Same query, same plan" } else { "Same statement" };
+            let same = if q.workload_plans().len() == 1 { "Same query, same plan" } else { "Same statement" };
             // What the engine recorded of its waits says which of the two causes it is, where it recorded any.
             let recorded = RecordedWaits::read(snapshot, q, excess);
             f.summary = if let Some(w) = &waited {

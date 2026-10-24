@@ -394,3 +394,24 @@ fn server_versions_compare_by_number() {
     assert!(version_at_least("", [8, 0, 18]));
     assert!(version_at_least("unknown", [8, 0, 18]));
 }
+#[test]
+fn cached_plan_statistics_never_substitute_for_workload_variants() {
+    let mut s: Snapshot = serde_json::from_str(include_str!("../../../../fixtures/mssql-demo.json")).unwrap();
+    let q = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| !q.plans.is_empty()).unwrap();
+    q.plan_id = Some(q.plans[0].id.clone());
+    assert!(q.captured_plan_variant().is_some());
+    assert!(!q.workload_plans().is_empty());
+    q.plan_history = Some(PlanHistory {
+        source: "native plan cache".into(),
+        kind: PlanHistoryKind::Cache,
+        note: "Independent cache periods".into(),
+        captured_plan_id: None,
+        captured_plan: None,
+    });
+    assert!(q.captured_plan_variant().is_none());
+    assert!(q.workload_plans().is_empty());
+    assert!(!q.plans.is_empty(), "retained entries remain available for inspection");
+    let roundtrip: QueryStat = serde_json::from_value(serde_json::to_value(&*q).unwrap()).unwrap();
+    assert!(!roundtrip.plan_history_matches_workload());
+    assert!(roundtrip.workload_plans().is_empty());
+}

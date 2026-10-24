@@ -20,7 +20,7 @@ pub struct SnapshotOptions {
     pub window_minutes: Option<u32>,
     /// How many of the heaviest queries to keep in the snapshot.
     pub top_queries: u32,
-    /// How many plans to fetch and parse, heaviest queries first.
+    /// How many of the heaviest queries to fetch and parse plans for.
     pub plans: u32,
 }
 

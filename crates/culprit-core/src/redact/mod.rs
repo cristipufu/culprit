@@ -175,6 +175,9 @@ pub fn redact_snapshot(snapshot: &Snapshot) -> Snapshot {
         for q in &mut w.queries {
             q.text = redact_sql(&q.text, engine);
             q.plan = q.plan.as_ref().map(redact_plan);
+            if let Some(history) = &mut q.plan_history {
+                history.captured_plan = history.captured_plan.as_ref().map(redact_plan);
+            }
             for p in &mut q.plans {
                 p.compiled = None;
             }

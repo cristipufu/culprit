@@ -2,6 +2,26 @@ use super::plan::is_measurement;
 use super::*;
 
 #[test]
+fn retained_plan_bodies_are_redacted_with_their_parent_snapshot() {
+    let mut snapshot: Snapshot = serde_json::from_str(include_str!("../../../../fixtures/mssql-demo.json")).unwrap();
+    let q = snapshot.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.plan.is_some()).unwrap();
+    let mut cached = q.plan.clone().unwrap();
+    cached.statement = Some("SELECT 'PLANTED-cache-value'".into());
+    cached.raw = Some("PLANTED-cache-native-text".into());
+    q.plan_history = Some(crate::PlanHistory {
+        source: "native plan cache".into(),
+        kind: crate::PlanHistoryKind::Cache,
+        note: "Independent cache periods".into(),
+        captured_plan_id: Some("-123".into()),
+        captured_plan: Some(cached),
+    });
+    let redacted = redact_snapshot(&snapshot);
+    assert!(!serde_json::to_string(&redacted).unwrap().contains("PLANTED-cache"));
+    let cached = redacted.queries().iter().find_map(|q| q.plan_history.as_ref()?.captured_plan.as_ref()).unwrap();
+    assert!(cached.raw.is_none());
+}
+
+#[test]
 fn a_redacted_snapshot_keeps_no_planted_value() {
     let text = std::fs::read_to_string(format!("{}/../../fixtures/mssql-demo.json", env!("CARGO_MANIFEST_DIR")))
         .expect("fixture");

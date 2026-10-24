@@ -485,9 +485,12 @@ export async function demoApi(): Promise<Api> {
       }
       return idle;
     },
-    queryPlan: async (name, queryId) => {
-      const plan = byConnection(name)?.snapshot.workload?.queries.find((q) => q.id === queryId)?.plan;
-      return plan ?? unsupported();
+    queryPlan: async (name, queryId, planId) => {
+      const query = byConnection(name)?.snapshot.workload?.queries.find((q) => q.id === queryId);
+      const history = query?.plan_history;
+      if (planId && history?.captured_plan_id === planId && history.captured_plan) return history.captured_plan;
+      if (planId && history?.kind === "cache") return unsupported();
+      return query?.plan ?? unsupported();
     },
     dashboard: async (name) => {
       const sample = (await dashboardSample())[reportName(name)];

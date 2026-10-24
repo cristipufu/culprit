@@ -25,7 +25,7 @@ const LOOKUPS_KEEP_AT_MOST: f64 = 0.01;
 
 pub(super) fn seekable_scan<'a>(snapshot: &'a Snapshot, q: &QueryStat, plan_id: &str) -> Option<SeekableScan<'a>> {
     // The captured plan is the one that took the most time: the forced one, once the forcing has taken hold.
-    let dominant = q.plans.iter().max_by(|a, b| a.total_time_ms.total_cmp(&b.total_time_ms))?;
+    let dominant = q.workload_plans().iter().max_by(|a, b| a.total_time_ms.total_cmp(&b.total_time_ms))?;
     if dominant.id != plan_id {
         return None;
     }

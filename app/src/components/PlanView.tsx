@@ -123,7 +123,7 @@ export function PlanView({ plan, query, focus, compact, selectedId, onSelect }: 
         <span className="tag">{plan.kind === "actual" ? "Actual plan" : plan.kind === "generic" ? "Generic plan" : "Estimated plan"}</span>
         <span>
           {nodes.length} operator{nodes.length === 1 ? "" : "s"}
-          {weighed && ` · cost ${(plan.total_cost || plan.root.subtree_cost).toFixed((plan.total_cost || plan.root.subtree_cost) < 10 ? 3 : 1)}`}
+          {weighed && ` · cost ${plan.facts?.estimated_cost_unavailable ? "unavailable" : (plan.total_cost || plan.root.subtree_cost).toFixed((plan.total_cost || plan.root.subtree_cost) < 10 ? 3 : 1)}`}
         </span>
         <span className="spacer" />
         {plan.warnings.length > 0 && (

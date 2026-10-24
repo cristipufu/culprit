@@ -5,8 +5,8 @@
         "8345917977273313509",
         "4357247400045295631",
         "466454478821061062",
-        "-71879613880347319",
-        "-1395695495724611761"
+        "-1395695495724611761",
+        "-71879613880347319"
       ],
       "check": "filtered-scan",
       "reason": null,
@@ -90,8 +90,8 @@
         "8345917977273313509",
         "4357247400045295631",
         "466454478821061062",
-        "-71879613880347319",
-        "-1395695495724611761"
+        "-1395695495724611761",
+        "-71879613880347319"
       ],
       "check": "big-result",
       "reason": null,
@@ -100,8 +100,8 @@
     },
     {
       "check": "untrusted-constraint",
-      "reason": "This scan did not record the required source's collection outcome.",
-      "status": "insufficient-evidence",
+      "reason": null,
+      "status": "assessed",
       "title": "Unvalidated or disabled constraints"
     }
   ],
@@ -119,9 +119,9 @@
       },
       "id": "heavy-query:8345917977273313509",
       "impact": {
-        "db_time_share": 0.4901653118336783,
-        "label": "390 ms of database time over the 1 minute since statistics were reset (49%)",
-        "score": 70.01180699236939,
+        "db_time_share": 0.46978504161943907,
+        "label": "696 ms of database time over the 4 minutes since statistics were reset (47%)",
+        "score": 68.54086675987101,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -131,13 +131,13 @@
           "label": "Share of DB time",
           "text": null,
           "unit": "ratio",
-          "value": 0.4901653118336783
+          "value": 0.46978504161943907
         },
         {
           "label": "Average duration",
           "text": null,
           "unit": "ms",
-          "value": 13.013479299999998
+          "value": 23.20107743333334
         },
         {
           "label": "Rows returned per run",
@@ -158,8 +158,8 @@
         "kind": "query",
         "name": "8345917977273313509"
       },
-      "summary": "390 ms of database time over the 1 minute since statistics were reset (49%). It ran 30 times in 1 minute at 13 ms on average: 49% of all database time in the 1 minute since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.",
-      "title": "A read from orders takes 390 ms of database time over the 1 minute since statistics were reset (49%)",
+      "summary": "696 ms of database time over the 4 minutes since statistics were reset (47%). It ran 30 times in 4 minutes at 23 ms on average: 47% of all database time in the 4 minutes since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.",
+      "title": "A read from orders takes 696 ms of database time over the 4 minutes since statistics were reset (47%)",
       "verification_basis": "rescan",
       "verify": [
         "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
@@ -178,9 +178,9 @@
       },
       "id": "heavy-query:4357247400045295631",
       "impact": {
-        "db_time_share": 0.21175081616474195,
-        "label": "169 ms of database time over the 1 minute since statistics were reset (21%)",
-        "score": 46.01639014142048,
+        "db_time_share": 0.19766091904138572,
+        "label": "293 ms of database time over the 4 minutes since statistics were reset (20%)",
+        "score": 44.45907320687035,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -190,13 +190,13 @@
           "label": "Share of DB time",
           "text": null,
           "unit": "ratio",
-          "value": 0.21175081616474195
+          "value": 0.19766091904138572
         },
         {
           "label": "Average duration",
           "text": null,
           "unit": "ms",
-          "value": 5.621807166666667
+          "value": 9.761797166666666
         },
         {
           "label": "Rows returned per run",
@@ -217,8 +217,8 @@
         "kind": "query",
         "name": "4357247400045295631"
       },
-      "summary": "169 ms of database time over the 1 minute since statistics were reset (21%). It ran 30 times in 1 minute at 5.6 ms on average: 21% of all database time in the 1 minute since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.",
-      "title": "A read from orders takes 169 ms of database time over the 1 minute since statistics were reset (21%)",
+      "summary": "293 ms of database time over the 4 minutes since statistics were reset (20%). It ran 30 times in 4 minutes at 9.8 ms on average: 20% of all database time in the 4 minutes since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.",
+      "title": "A read from orders takes 293 ms of database time over the 4 minutes since statistics were reset (20%)",
       "verification_basis": "rescan",
       "verify": [
         "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
@@ -251,9 +251,9 @@
       },
       "id": "unindexed-fk:public.orders(customer_id)",
       "impact": {
-        "db_time_share": 0.18400823650288362,
-        "label": "18% of DB time",
-        "score": 42.89618124062836,
+        "db_time_share": 0.16917773840374511,
+        "label": "17% of DB time",
+        "score": 41.13122152377013,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -284,7 +284,7 @@
         "kind": "table",
         "name": "public.orders"
       },
-      "summary": "The associated statements used 147 ms of database time over the 1 minute since statistics were reset (18%). Deleting a row from public.customers, or changing its key, makes the database look for matching rows in public.orders (20K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 18% of database time.",
+      "summary": "The associated statements used 251 ms of database time over the 4 minutes since statistics were reset (17%). Deleting a row from public.customers, or changing its key, makes the database look for matching rows in public.orders (20K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 17% of database time.",
       "title": "orders has no index on customer_id, its foreign key to customers",
       "verification_basis": "rescan",
       "verify": [
@@ -304,11 +304,11 @@
         "sql": null,
         "summary": "Find this statement in the application and check whether it reads more rows or columns than it needs."
       },
-      "id": "heavy-query:-71879613880347319",
+      "id": "heavy-query:-1395695495724611761",
       "impact": {
-        "db_time_share": 0.08796723660312906,
-        "label": "70 ms of database time over the 1 minute since statistics were reset (9%)",
-        "score": 29.659271164870027,
+        "db_time_share": 0.08883706122613844,
+        "label": "132 ms of database time over the 4 minutes since statistics were reset (9%)",
+        "score": 29.80554666939334,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -318,13 +318,72 @@
           "label": "Share of DB time",
           "text": null,
           "unit": "ratio",
-          "value": 0.08796723660312906
+          "value": 0.08883706122613844
         },
         {
           "label": "Average duration",
           "text": null,
           "unit": "ms",
-          "value": 7.0063698
+          "value": 4.3873588
+        },
+        {
+          "label": "Rows returned per run",
+          "text": null,
+          "unit": "rows",
+          "value": 1.0
+        }
+      ],
+      "queries": [
+        {
+          "id": "-1395695495724611761",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "low",
+      "subject": {
+        "kind": "query",
+        "name": "-1395695495724611761"
+      },
+      "summary": "132 ms of database time over the 4 minutes since statistics were reset (9%). It ran 30 times in 4 minutes at 4.4 ms on average: 9% of all database time in the 4 minutes since statistics were reset.",
+      "title": "A read from customers takes 132 ms of database time over the 4 minutes since statistics were reset (9%)",
+      "verification_basis": "rescan",
+      "verify": [
+        "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
+      ]
+    },
+    {
+      "actionability": "optional-improvement",
+      "category": "queries",
+      "caveats": [],
+      "check": "heavy-query",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Find this statement in the application and check whether it reads more rows or columns than it needs."
+      },
+      "id": "heavy-query:-71879613880347319",
+      "impact": {
+        "db_time_share": 0.07453923970929172,
+        "label": "110 ms of database time over the 4 minutes since statistics were reset (7%)",
+        "score": 27.30187534022008,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Share of DB time",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.07453923970929172
+        },
+        {
+          "label": "Average duration",
+          "text": null,
+          "unit": "ms",
+          "value": 11.043714800000002
         },
         {
           "label": "Rows returned per run",
@@ -345,8 +404,8 @@
         "kind": "query",
         "name": "-71879613880347319"
       },
-      "summary": "70 ms of database time over the 1 minute since statistics were reset (9%). It ran 10 times in 1 minute at 7 ms on average: 9% of all database time in the 1 minute since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.",
-      "title": "A read from orders takes 70 ms of database time over the 1 minute since statistics were reset (9%)",
+      "summary": "110 ms of database time over the 4 minutes since statistics were reset (7%). It ran 10 times in 4 minutes at 11 ms on average: 7% of all database time in the 4 minutes since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.",
+      "title": "A read from orders takes 110 ms of database time over the 4 minutes since statistics were reset (7%)",
       "verification_basis": "rescan",
       "verify": [
         "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
@@ -379,9 +438,9 @@
       },
       "id": "filtered-scan:public.orders(customer_id)",
       "impact": {
-        "db_time_share": 0.18400823650288362,
-        "label": "147 ms of database time over the 1 minute since statistics were reset (18%)",
-        "score": 42.89618124062836,
+        "db_time_share": 0.16917773840374511,
+        "label": "251 ms of database time over the 4 minutes since statistics were reset (17%)",
+        "score": 41.13122152377013,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -391,7 +450,7 @@
           "label": "Share of DB time",
           "text": null,
           "unit": "ratio",
-          "value": 0.18400823650288362
+          "value": 0.16917773840374511
         },
         {
           "label": "Captured scan size basis",
@@ -418,7 +477,7 @@
         "kind": "table",
         "name": "public.orders"
       },
-      "summary": "147 ms of database time over the 1 minute since statistics were reset (18%). One query plans to read public.orders and keep only those matching `(orders.customer_id = $1)`. The captured scan uses 20K rows as its size basis; this scan's catalog reports 20K rows in the table. Captured estimates can predate the current table size. No index starts with customer_id, so the database has no faster way in. It accounts for 18% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.",
+      "summary": "251 ms of database time over the 4 minutes since statistics were reset (17%). One query plans to read public.orders and keep only those matching `(orders.customer_id = $1)`. The captured scan uses 20K rows as its size basis; this scan's catalog reports 20K rows in the table. Captured estimates can predate the current table size. No index starts with customer_id, so the database has no faster way in. It accounts for 17% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.",
       "title": "orders is read in full to find rows by customer_id",
       "verification_basis": "rescan",
       "verify": [
@@ -518,6 +577,26 @@
           "revision": null,
           "version": "0.4.4"
         },
+        "query": "8345917977273313509"
+      },
+      {
+        "engine": "yugabyte",
+        "outcome": "reparsed",
+        "parser": {
+          "component": "culprit-yugabyte",
+          "revision": null,
+          "version": "0.4.4"
+        },
+        "query": "4357247400045295631"
+      },
+      {
+        "engine": "yugabyte",
+        "outcome": "reparsed",
+        "parser": {
+          "component": "culprit-yugabyte",
+          "revision": null,
+          "version": "0.4.4"
+        },
         "query": "4357247400045295631"
       },
       {
@@ -538,7 +617,7 @@
           "revision": null,
           "version": "0.4.4"
         },
-        "query": "-71879613880347319"
+        "query": "466454478821061062"
       },
       {
         "engine": "yugabyte",
@@ -549,6 +628,36 @@
           "version": "0.4.4"
         },
         "query": "-1395695495724611761"
+      },
+      {
+        "engine": "yugabyte",
+        "outcome": "reparsed",
+        "parser": {
+          "component": "culprit-yugabyte",
+          "revision": null,
+          "version": "0.4.4"
+        },
+        "query": "-1395695495724611761"
+      },
+      {
+        "engine": "yugabyte",
+        "outcome": "reparsed",
+        "parser": {
+          "component": "culprit-yugabyte",
+          "revision": null,
+          "version": "0.4.4"
+        },
+        "query": "-71879613880347319"
+      },
+      {
+        "engine": "yugabyte",
+        "outcome": "reparsed",
+        "parser": {
+          "component": "culprit-yugabyte",
+          "revision": null,
+          "version": "0.4.4"
+        },
+        "query": "-71879613880347319"
       }
     ],
     "pipeline": {
@@ -715,6 +824,18 @@
       "tables": []
     },
     {
+      "finding": "heavy-query:-1395695495724611761",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": null
+      },
+      "queries": [
+        "-1395695495724611761"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
       "finding": "heavy-query:-71879613880347319",
       "outcome": {
         "kind": "last-execution",
@@ -782,6 +903,18 @@
       },
       "queries": [
         "4357247400045295631"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:-1395695495724611761",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "-1395695495724611761"
       ],
       "rule": "absolute-query-cost",
       "tables": []
@@ -896,7 +1029,7 @@
     "constraints": [],
     "contention_before": null,
     "deadlocks": null,
-    "duration_ms": 4590.887624999999,
+    "duration_ms": 2401.312291,
     "environment": "local",
     "escalations_before": null,
     "evictions_before": null,
@@ -917,7 +1050,7 @@
     ],
     "format": 1,
     "histograms": null,
-    "id": "20261024T010108.861346Z",
+    "id": "20261024T035004.638867Z",
     "identity": {
       "database": "culprit_yugabyte",
       "engine": "yugabyte",
@@ -2520,6 +2653,11 @@
       },
       {
         "reason": null,
+        "source": "constraints",
+        "state": "empty"
+      },
+      {
+        "reason": null,
         "source": "docdb-counter-epochs",
         "state": "collected"
       },
@@ -2547,6 +2685,11 @@
         "reason": "Node-local index counters cannot prove cluster-wide use or absence. Configured, enabled global views are required.",
         "source": "docdb-index-usage",
         "state": "unavailable"
+      },
+      {
+        "reason": null,
+        "source": "docdb-plan-history",
+        "state": "collected"
       }
     ],
     "statistics": [
@@ -2661,14 +2804,14 @@
         "xid_age": null
       }
     ],
-    "taken_at": "2026-10-24T01:01:08.861346Z",
+    "taken_at": "2026-10-24T03:50:04.638867Z",
     "tuning": null,
     "waits": [],
     "workload": {
       "counter_set": {
         "complete": true,
         "members": {
-          "3d2d9e10555b4ae2a683a8402505e416": "2026-10-24T01:01:01.010747Z"
+          "3d2d9e10555b4ae2a683a8402505e416": "2026-10-24T03:46:26.745937Z"
         },
         "scope": "node"
       },
@@ -2688,13 +2831,13 @@
           }
         },
         "period": {
-          "hours": 0.002180721958478292,
+          "hours": 0.06052581383122338,
           "kind": "cumulative",
-          "observed_at": "2026-10-24T01:01:08.861346Z"
+          "observed_at": "2026-10-24T03:50:04.638867Z"
         },
         "reset": {
           "kind": "generation",
-          "value": "244ead446f07d534c0d7d0f07cc17c894371cd5357986ad8563e21b2abdbe177"
+          "value": "88513ff26659708dcd88ab0fedd28490b217d90ce958fbade92700a482a6d4d0"
         },
         "scope": "database",
         "source": {
@@ -2710,12 +2853,12 @@
             "aborted_mean_ms": null,
             "compile_history": null,
             "docdb": {
-              "catalog_ms": 51.047044,
+              "catalog_ms": 93.446859,
               "conflict_retries": 0.0,
               "nexts": 600182.0,
               "obsolete_rows_scanned": 0.0,
               "prevs": 0.0,
-              "read_ms": 215.28299999999996,
+              "read_ms": 277.38999999999993,
               "read_operations": 210.0,
               "read_requests": 210.0,
               "read_restarts": 0.0,
@@ -2723,7 +2866,7 @@
               "rows_returned": 211230.0,
               "rows_scanned": 600000.0,
               "seeks": 212.0,
-              "wait_ms": 281.8461659999999,
+              "wait_ms": 530.2277560000001,
               "write_ms": 0.0,
               "write_operations": 0.0,
               "write_requests": 0.0
@@ -2746,8 +2889,8 @@
           "id": "8345917977273313509",
           "last_seen": null,
           "logical_reads": null,
-          "max_time_ms": 22.457015,
-          "mean_time_ms": 13.013479299999998,
+          "max_time_ms": 35.547706,
+          "mean_time_ms": 23.20107743333334,
           "object_name": null,
           "parameters": null,
           "physical_reads": null,
@@ -3020,8 +3163,266 @@
             },
             "warnings": []
           },
+          "plan_history": {
+            "captured_plan": {
+              "engine": "yugabyte",
+              "facts": {
+                "changed_columns": [],
+                "constants_redacted": true,
+                "conversions": [],
+                "estimated_cost_unavailable": true,
+                "trigger_timings": []
+              },
+              "index_hints": [],
+              "insights": {
+                "items": [],
+                "note": "Retained plan-cache entries have their own first/last-use dates, resets and evictions. Their calls and timings are independent of this statement's statistics window; a cache entry's first use does not prove when its plan was introduced."
+              },
+              "kind": "estimated",
+              "props": {},
+              "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Limit\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Plans\": [\n        {\n          \"Node Type\": \"Sort\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Sort Key\": [\"created_at\"],\n          \"Plans\": [\n            {\n              \"Node Type\": \"Seq Scan\",\n              \"Parent Relationship\": \"Outer\",\n              \"Parallel Aware\": false,\n              \"Async Capable\": false,\n              \"Relation Name\": \"orders\",\n              \"Alias\": \"orders\",\n              \"Storage Filter\": \"(created_at >= '?'::timestamp with time zone)\"\n            }\n          ]\n        }\n      ]\n    }\n  }\n]",
+              "root": {
+                "act_executions": null,
+                "act_rows": null,
+                "act_time_ms": null,
+                "children": [
+                  {
+                    "act_executions": null,
+                    "act_rows": null,
+                    "act_time_ms": null,
+                    "children": [
+                      {
+                        "act_executions": null,
+                        "act_rows": null,
+                        "act_time_ms": null,
+                        "children": [],
+                        "detail": null,
+                        "est_executions": 1.0,
+                        "est_rows": 0.0,
+                        "facts": {
+                          "columns_without_statistics": [],
+                          "conditions": [
+                            "(created_at >= '?'::timestamp with time zone)"
+                          ],
+                          "conversions": [],
+                          "estimated_rows_unavailable": true,
+                          "expression_cache": false,
+                          "parent_relationship": {
+                            "kind": "outer"
+                          },
+                          "possible_index_names": [],
+                          "selectivity_guess": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.",
+                          "table_alias": "orders",
+                          "user_functions": []
+                        },
+                        "id": 2,
+                        "index": null,
+                        "kind": "scan",
+                        "object": "orders",
+                        "op": "Seq Scan",
+                        "predicate": "(created_at >= '?'::timestamp with time zone)",
+                        "props": {
+                          "Alias": "orders",
+                          "Async Capable": "false",
+                          "Parallel Aware": "false",
+                          "Parent Relationship": "Outer",
+                          "Selectivity": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.",
+                          "Storage Filter": "(created_at >= '?'::timestamp with time zone)"
+                        },
+                        "rows_read": null,
+                        "runtime": null,
+                        "seek_predicate": null,
+                        "self_cost": 0.0,
+                        "subtree_cost": 0.0,
+                        "table_rows": null,
+                        "warnings": []
+                      }
+                    ],
+                    "detail": "sort key: created_at",
+                    "est_executions": 1.0,
+                    "est_rows": 0.0,
+                    "facts": {
+                      "columns_without_statistics": [],
+                      "conditions": [],
+                      "conversions": [],
+                      "estimated_rows_unavailable": true,
+                      "expression_cache": false,
+                      "parent_relationship": {
+                        "kind": "outer"
+                      },
+                      "possible_index_names": [],
+                      "user_functions": []
+                    },
+                    "id": 1,
+                    "index": null,
+                    "kind": "sort",
+                    "object": null,
+                    "op": "Sort",
+                    "predicate": null,
+                    "props": {
+                      "Async Capable": "false",
+                      "Parallel Aware": "false",
+                      "Parent Relationship": "Outer",
+                      "Sort Key": "created_at"
+                    },
+                    "rows_read": null,
+                    "runtime": null,
+                    "seek_predicate": null,
+                    "self_cost": 0.0,
+                    "subtree_cost": 0.0,
+                    "table_rows": null,
+                    "warnings": []
+                  }
+                ],
+                "detail": null,
+                "est_executions": 1.0,
+                "est_rows": 0.0,
+                "facts": {
+                  "columns_without_statistics": [],
+                  "conditions": [],
+                  "conversions": [],
+                  "estimated_rows_unavailable": true,
+                  "expression_cache": false,
+                  "possible_index_names": [],
+                  "user_functions": []
+                },
+                "id": 0,
+                "index": null,
+                "kind": "other",
+                "object": null,
+                "op": "Limit",
+                "predicate": null,
+                "props": {
+                  "Async Capable": "false",
+                  "Parallel Aware": "false"
+                },
+                "rows_read": null,
+                "runtime": null,
+                "seek_predicate": null,
+                "self_cost": 0.0,
+                "subtree_cost": 0.0,
+                "table_rows": null,
+                "warnings": []
+              },
+              "statement": null,
+              "total_cost": 0.0,
+              "view": {
+                "actual": null,
+                "cost_basis": 1.0,
+                "cost_note": null,
+                "focus_checks": [
+                  "heavy-query",
+                  "regression",
+                  "plan-regression",
+                  "parameter-sensitive",
+                  "plan-warnings",
+                  "temp-spill",
+                  "memory-grant",
+                  "missing-index",
+                  "filtered-scan",
+                  "scan-heavy",
+                  "missing-histogram",
+                  "tuning-advice"
+                ],
+                "hottest_cost": null,
+                "hottest_time": null,
+                "insights": [],
+                "kind": "estimated",
+                "nodes": [
+                  {
+                    "cost_share": null,
+                    "estimated_rows": null,
+                    "estimated_rows_for_runs": null,
+                    "finding_no_share_reason": null,
+                    "guess": "rows",
+                    "id": 0,
+                    "layout_own_share": 0.0,
+                    "layout_subtree_share": 0.0,
+                    "misestimate": null,
+                    "no_share_reason": null,
+                    "own_ms": null,
+                    "rows_out": null,
+                    "rows_read": null,
+                    "runs": null,
+                    "subtree_cost_share": null,
+                    "subtree_time_share": null,
+                    "time_share": null,
+                    "uncosted": false
+                  },
+                  {
+                    "cost_share": null,
+                    "estimated_rows": null,
+                    "estimated_rows_for_runs": null,
+                    "finding_no_share_reason": null,
+                    "guess": "rows",
+                    "id": 1,
+                    "layout_own_share": 0.0,
+                    "layout_subtree_share": 0.0,
+                    "misestimate": null,
+                    "no_share_reason": null,
+                    "own_ms": null,
+                    "rows_out": null,
+                    "rows_read": null,
+                    "runs": null,
+                    "subtree_cost_share": null,
+                    "subtree_time_share": null,
+                    "time_share": null,
+                    "uncosted": false
+                  },
+                  {
+                    "cost_share": null,
+                    "estimated_rows": null,
+                    "estimated_rows_for_runs": null,
+                    "finding_no_share_reason": null,
+                    "guess": "rows",
+                    "id": 2,
+                    "layout_own_share": 0.0,
+                    "layout_subtree_share": 0.0,
+                    "misestimate": null,
+                    "no_share_reason": null,
+                    "own_ms": null,
+                    "rows_out": null,
+                    "rows_read": null,
+                    "runs": null,
+                    "subtree_cost_share": null,
+                    "subtree_time_share": null,
+                    "time_share": null,
+                    "uncosted": false
+                  }
+                ],
+                "query": null,
+                "real_work": false,
+                "states_shares": false,
+                "time_note": null,
+                "timed_total_ms": null,
+                "weighed": false
+              },
+              "warnings": []
+            },
+            "captured_plan_id": "-235985156820883037",
+            "kind": "cache",
+            "note": "Retained plan-cache entries have their own first/last-use dates, resets and evictions. Their calls and timings are independent of this statement's statistics window; a cache entry's first use does not prove when its plan was introduced.",
+            "source": "yb_pg_stat_plans (node 3d2d9e10555b4ae2a683a8402505e416)"
+          },
           "plan_id": null,
-          "plans": [],
+          "plans": [
+            {
+              "compiled": null,
+              "cpu_time_ms": null,
+              "executions": 120.0,
+              "first_seen": "2026-10-23T23:01:53.392791Z",
+              "id": "-235985156820883037",
+              "is_forced": false,
+              "last_seen": "2026-10-24T03:46:28.346798Z",
+              "logical_reads": null,
+              "max_time_ms": 35.547706,
+              "mean_time_ms": 16.072642050000006,
+              "min_time_ms": null,
+              "stddev_time_ms": null,
+              "total_time_ms": 1928.717046000001,
+              "variant_query": null
+            }
+          ],
           "query_hash": null,
           "requests": null,
           "resolved_write_target": null,
@@ -3030,15 +3431,15 @@
           "spread": {
             "histogram": [],
             "lock_ms": null,
-            "min_ms": 7.464255,
+            "min_ms": 10.699599,
             "p50_ms": null,
             "p95_ms": null,
             "p99_ms": null
           },
-          "stddev_time_ms": 3.978544455437089,
+          "stddev_time_ms": 5.988233844825464,
           "temp_writes": null,
           "text": "SELECT id,total FROM public.orders WHERE created_at >= $1::timestamptz ORDER BY created_at LIMIT $2",
-          "total_time_ms": 390.4043789999999,
+          "total_time_ms": 696.0323230000001,
           "trend": null,
           "waits": []
         },
@@ -3048,12 +3449,12 @@
             "aborted_mean_ms": null,
             "compile_history": null,
             "docdb": {
-              "catalog_ms": 7.738046,
+              "catalog_ms": 18.653747,
               "conflict_retries": 0.0,
               "nexts": 600000.0,
               "obsolete_rows_scanned": 0.0,
               "prevs": 0.0,
-              "read_ms": 139.524,
+              "read_ms": 180.487,
               "read_operations": 30.0,
               "read_requests": 30.0,
               "read_restarts": 0.0,
@@ -3061,7 +3462,7 @@
               "rows_returned": 30.0,
               "rows_scanned": 600000.0,
               "seeks": 30.0,
-              "wait_ms": 163.826446,
+              "wait_ms": 287.9957989999999,
               "write_ms": 0.0,
               "write_operations": 0.0,
               "write_requests": 0.0
@@ -3084,8 +3485,8 @@
           "id": "4357247400045295631",
           "last_seen": null,
           "logical_reads": null,
-          "max_time_ms": 12.022566,
-          "mean_time_ms": 5.621807166666667,
+          "max_time_ms": 18.65358,
+          "mean_time_ms": 9.761797166666666,
           "object_name": null,
           "parameters": null,
           "physical_reads": null,
@@ -3297,8 +3698,209 @@
             },
             "warnings": []
           },
+          "plan_history": {
+            "captured_plan": {
+              "engine": "yugabyte",
+              "facts": {
+                "changed_columns": [],
+                "constants_redacted": true,
+                "conversions": [],
+                "estimated_cost_unavailable": true,
+                "trigger_timings": []
+              },
+              "index_hints": [],
+              "insights": {
+                "items": [],
+                "note": "Retained plan-cache entries have their own first/last-use dates, resets and evictions. Their calls and timings are independent of this statement's statistics window; a cache entry's first use does not prove when its plan was introduced."
+              },
+              "kind": "estimated",
+              "props": {},
+              "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Aggregate\",\n      \"Strategy\": \"Plain\",\n      \"Partial Mode\": \"Finalize\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Plans\": [\n        {\n          \"Node Type\": \"Seq Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Relation Name\": \"orders\",\n          \"Alias\": \"orders\",\n          \"Storage Filter\": \"(status = '?'::text)\",\n          \"Partial Aggregate\": true\n        }\n      ]\n    }\n  }\n]",
+              "root": {
+                "act_executions": null,
+                "act_rows": null,
+                "act_time_ms": null,
+                "children": [
+                  {
+                    "act_executions": null,
+                    "act_rows": null,
+                    "act_time_ms": null,
+                    "children": [],
+                    "detail": null,
+                    "est_executions": 1.0,
+                    "est_rows": 0.0,
+                    "facts": {
+                      "columns_without_statistics": [],
+                      "conditions": [
+                        "(status = '?'::text)"
+                      ],
+                      "conversions": [],
+                      "estimated_rows_unavailable": true,
+                      "expression_cache": false,
+                      "parent_relationship": {
+                        "kind": "outer"
+                      },
+                      "possible_index_names": [],
+                      "selectivity_guess": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.",
+                      "table_alias": "orders",
+                      "user_functions": []
+                    },
+                    "id": 1,
+                    "index": null,
+                    "kind": "scan",
+                    "object": "orders",
+                    "op": "Seq Scan",
+                    "predicate": "(status = '?'::text)",
+                    "props": {
+                      "Alias": "orders",
+                      "Async Capable": "false",
+                      "Parallel Aware": "false",
+                      "Parent Relationship": "Outer",
+                      "Partial Aggregate": "true",
+                      "Selectivity": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.",
+                      "Storage Filter": "(status = '?'::text)"
+                    },
+                    "rows_read": null,
+                    "runtime": null,
+                    "seek_predicate": null,
+                    "self_cost": 0.0,
+                    "subtree_cost": 0.0,
+                    "table_rows": null,
+                    "warnings": []
+                  }
+                ],
+                "detail": null,
+                "est_executions": 1.0,
+                "est_rows": 0.0,
+                "facts": {
+                  "aggregate_strategy": "Plain",
+                  "columns_without_statistics": [],
+                  "conditions": [],
+                  "conversions": [],
+                  "estimated_rows_unavailable": true,
+                  "expression_cache": false,
+                  "possible_index_names": [],
+                  "user_functions": []
+                },
+                "id": 0,
+                "index": null,
+                "kind": "aggregate",
+                "object": null,
+                "op": "Aggregate",
+                "predicate": null,
+                "props": {
+                  "Async Capable": "false",
+                  "Parallel Aware": "false",
+                  "Partial Mode": "Finalize",
+                  "Strategy": "Plain"
+                },
+                "rows_read": null,
+                "runtime": null,
+                "seek_predicate": null,
+                "self_cost": 0.0,
+                "subtree_cost": 0.0,
+                "table_rows": null,
+                "warnings": []
+              },
+              "statement": null,
+              "total_cost": 0.0,
+              "view": {
+                "actual": null,
+                "cost_basis": 1.0,
+                "cost_note": null,
+                "focus_checks": [
+                  "heavy-query",
+                  "regression",
+                  "plan-regression",
+                  "parameter-sensitive",
+                  "plan-warnings",
+                  "temp-spill",
+                  "memory-grant",
+                  "missing-index",
+                  "filtered-scan",
+                  "scan-heavy",
+                  "missing-histogram",
+                  "tuning-advice"
+                ],
+                "hottest_cost": null,
+                "hottest_time": null,
+                "insights": [],
+                "kind": "estimated",
+                "nodes": [
+                  {
+                    "cost_share": null,
+                    "estimated_rows": null,
+                    "estimated_rows_for_runs": null,
+                    "finding_no_share_reason": null,
+                    "guess": "rows",
+                    "id": 0,
+                    "layout_own_share": 0.0,
+                    "layout_subtree_share": 0.0,
+                    "misestimate": null,
+                    "no_share_reason": null,
+                    "own_ms": null,
+                    "rows_out": null,
+                    "rows_read": null,
+                    "runs": null,
+                    "subtree_cost_share": null,
+                    "subtree_time_share": null,
+                    "time_share": null,
+                    "uncosted": false
+                  },
+                  {
+                    "cost_share": null,
+                    "estimated_rows": null,
+                    "estimated_rows_for_runs": null,
+                    "finding_no_share_reason": null,
+                    "guess": "rows",
+                    "id": 1,
+                    "layout_own_share": 0.0,
+                    "layout_subtree_share": 0.0,
+                    "misestimate": null,
+                    "no_share_reason": null,
+                    "own_ms": null,
+                    "rows_out": null,
+                    "rows_read": null,
+                    "runs": null,
+                    "subtree_cost_share": null,
+                    "subtree_time_share": null,
+                    "time_share": null,
+                    "uncosted": false
+                  }
+                ],
+                "query": null,
+                "real_work": false,
+                "states_shares": false,
+                "time_note": null,
+                "timed_total_ms": null,
+                "weighed": false
+              },
+              "warnings": []
+            },
+            "captured_plan_id": "1037543280030318267",
+            "kind": "cache",
+            "note": "Retained plan-cache entries have their own first/last-use dates, resets and evictions. Their calls and timings are independent of this statement's statistics window; a cache entry's first use does not prove when its plan was introduced.",
+            "source": "yb_pg_stat_plans (node 3d2d9e10555b4ae2a683a8402505e416)"
+          },
           "plan_id": null,
-          "plans": [],
+          "plans": [
+            {
+              "compiled": null,
+              "cpu_time_ms": null,
+              "executions": 120.0,
+              "first_seen": "2026-10-23T23:01:53.023248Z",
+              "id": "1037543280030318267",
+              "is_forced": false,
+              "last_seen": "2026-10-24T03:46:27.523934Z",
+              "logical_reads": null,
+              "max_time_ms": 39.601789,
+              "mean_time_ms": 7.626736466666668,
+              "min_time_ms": null,
+              "stddev_time_ms": null,
+              "total_time_ms": 915.2083760000002,
+              "variant_query": null
+            }
+          ],
           "query_hash": null,
           "requests": null,
           "resolved_write_target": null,
@@ -3307,15 +3909,15 @@
           "spread": {
             "histogram": [],
             "lock_ms": null,
-            "min_ms": 3.586774,
+            "min_ms": 4.322572,
             "p50_ms": null,
             "p95_ms": null,
             "p99_ms": null
           },
-          "stddev_time_ms": 2.3080068109073673,
+          "stddev_time_ms": 4.028604503850948,
           "temp_writes": null,
           "text": "SELECT count(*) FROM public.orders WHERE status = $1",
-          "total_time_ms": 168.654215,
+          "total_time_ms": 292.853915,
           "trend": null,
           "waits": []
         },
@@ -3325,12 +3927,12 @@
             "aborted_mean_ms": null,
             "compile_history": null,
             "docdb": {
-              "catalog_ms": 13.605304,
+              "catalog_ms": 115.459301,
               "conflict_retries": 0.0,
               "nexts": 600000.0,
               "obsolete_rows_scanned": 0.0,
               "prevs": 0.0,
-              "read_ms": 118.63499999999998,
+              "read_ms": 172.82600000000002,
               "read_operations": 30.0,
               "read_requests": 30.0,
               "read_restarts": 0.0,
@@ -3338,7 +3940,7 @@
               "rows_returned": 300.0,
               "rows_scanned": 600000.0,
               "seeks": 30.0,
-              "wait_ms": 129.87961199999998,
+              "wait_ms": 245.800282,
               "write_ms": 0.0,
               "write_operations": 0.0,
               "write_requests": 0.0
@@ -3361,8 +3963,8 @@
           "id": "466454478821061062",
           "last_seen": null,
           "logical_reads": null,
-          "max_time_ms": 12.385815,
-          "mean_time_ms": 4.885264866666668,
+          "max_time_ms": 15.214296,
+          "mean_time_ms": 8.355110233333333,
           "object_name": null,
           "parameters": null,
           "physical_reads": null,
@@ -3594,8 +4196,205 @@
             },
             "warnings": []
           },
+          "plan_history": {
+            "captured_plan": {
+              "engine": "yugabyte",
+              "facts": {
+                "changed_columns": [],
+                "constants_redacted": true,
+                "conversions": [],
+                "estimated_cost_unavailable": true,
+                "trigger_timings": []
+              },
+              "index_hints": [],
+              "insights": {
+                "items": [],
+                "note": "Retained plan-cache entries have their own first/last-use dates, resets and evictions. Their calls and timings are independent of this statement's statistics window; a cache entry's first use does not prove when its plan was introduced."
+              },
+              "kind": "estimated",
+              "props": {},
+              "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Limit\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Plans\": [\n        {\n          \"Node Type\": \"Seq Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Relation Name\": \"orders\",\n          \"Alias\": \"orders\",\n          \"Storage Filter\": \"(customer_id = ?)\"\n        }\n      ]\n    }\n  }\n]",
+              "root": {
+                "act_executions": null,
+                "act_rows": null,
+                "act_time_ms": null,
+                "children": [
+                  {
+                    "act_executions": null,
+                    "act_rows": null,
+                    "act_time_ms": null,
+                    "children": [],
+                    "detail": null,
+                    "est_executions": 1.0,
+                    "est_rows": 0.0,
+                    "facts": {
+                      "columns_without_statistics": [],
+                      "conditions": [
+                        "(customer_id = ?)"
+                      ],
+                      "conversions": [],
+                      "estimated_rows_unavailable": true,
+                      "expression_cache": false,
+                      "parent_relationship": {
+                        "kind": "outer"
+                      },
+                      "possible_index_names": [],
+                      "selectivity_guess": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.",
+                      "table_alias": "orders",
+                      "user_functions": []
+                    },
+                    "id": 1,
+                    "index": null,
+                    "kind": "scan",
+                    "object": "orders",
+                    "op": "Seq Scan",
+                    "predicate": "(customer_id = ?)",
+                    "props": {
+                      "Alias": "orders",
+                      "Async Capable": "false",
+                      "Parallel Aware": "false",
+                      "Parent Relationship": "Outer",
+                      "Selectivity": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.",
+                      "Storage Filter": "(customer_id = ?)"
+                    },
+                    "rows_read": null,
+                    "runtime": null,
+                    "seek_predicate": null,
+                    "self_cost": 0.0,
+                    "subtree_cost": 0.0,
+                    "table_rows": null,
+                    "warnings": []
+                  }
+                ],
+                "detail": null,
+                "est_executions": 1.0,
+                "est_rows": 0.0,
+                "facts": {
+                  "columns_without_statistics": [],
+                  "conditions": [],
+                  "conversions": [],
+                  "estimated_rows_unavailable": true,
+                  "expression_cache": false,
+                  "possible_index_names": [],
+                  "user_functions": []
+                },
+                "id": 0,
+                "index": null,
+                "kind": "other",
+                "object": null,
+                "op": "Limit",
+                "predicate": null,
+                "props": {
+                  "Async Capable": "false",
+                  "Parallel Aware": "false"
+                },
+                "rows_read": null,
+                "runtime": null,
+                "seek_predicate": null,
+                "self_cost": 0.0,
+                "subtree_cost": 0.0,
+                "table_rows": null,
+                "warnings": []
+              },
+              "statement": null,
+              "total_cost": 0.0,
+              "view": {
+                "actual": null,
+                "cost_basis": 1.0,
+                "cost_note": null,
+                "focus_checks": [
+                  "heavy-query",
+                  "regression",
+                  "plan-regression",
+                  "parameter-sensitive",
+                  "plan-warnings",
+                  "temp-spill",
+                  "memory-grant",
+                  "missing-index",
+                  "filtered-scan",
+                  "scan-heavy",
+                  "missing-histogram",
+                  "tuning-advice"
+                ],
+                "hottest_cost": null,
+                "hottest_time": null,
+                "insights": [],
+                "kind": "estimated",
+                "nodes": [
+                  {
+                    "cost_share": null,
+                    "estimated_rows": null,
+                    "estimated_rows_for_runs": null,
+                    "finding_no_share_reason": null,
+                    "guess": "rows",
+                    "id": 0,
+                    "layout_own_share": 0.0,
+                    "layout_subtree_share": 0.0,
+                    "misestimate": null,
+                    "no_share_reason": null,
+                    "own_ms": null,
+                    "rows_out": null,
+                    "rows_read": null,
+                    "runs": null,
+                    "subtree_cost_share": null,
+                    "subtree_time_share": null,
+                    "time_share": null,
+                    "uncosted": false
+                  },
+                  {
+                    "cost_share": null,
+                    "estimated_rows": null,
+                    "estimated_rows_for_runs": null,
+                    "finding_no_share_reason": null,
+                    "guess": "rows",
+                    "id": 1,
+                    "layout_own_share": 0.0,
+                    "layout_subtree_share": 0.0,
+                    "misestimate": null,
+                    "no_share_reason": null,
+                    "own_ms": null,
+                    "rows_out": null,
+                    "rows_read": null,
+                    "runs": null,
+                    "subtree_cost_share": null,
+                    "subtree_time_share": null,
+                    "time_share": null,
+                    "uncosted": false
+                  }
+                ],
+                "query": null,
+                "real_work": false,
+                "states_shares": false,
+                "time_note": null,
+                "timed_total_ms": null,
+                "weighed": false
+              },
+              "warnings": []
+            },
+            "captured_plan_id": "-3627985068787917270",
+            "kind": "cache",
+            "note": "Retained plan-cache entries have their own first/last-use dates, resets and evictions. Their calls and timings are independent of this statement's statistics window; a cache entry's first use does not prove when its plan was introduced.",
+            "source": "yb_pg_stat_plans (node 3d2d9e10555b4ae2a683a8402505e416)"
+          },
           "plan_id": null,
-          "plans": [],
+          "plans": [
+            {
+              "compiled": null,
+              "cpu_time_ms": null,
+              "executions": 120.0,
+              "first_seen": "2026-10-23T23:01:52.726135Z",
+              "id": "-3627985068787917270",
+              "is_forced": false,
+              "last_seen": "2026-10-24T03:46:27.183627Z",
+              "logical_reads": null,
+              "max_time_ms": 26.410165,
+              "mean_time_ms": 6.455296875000001,
+              "min_time_ms": null,
+              "stddev_time_ms": null,
+              "total_time_ms": 774.6356250000001,
+              "variant_query": null
+            }
+          ],
           "query_hash": null,
           "requests": null,
           "resolved_write_target": null,
@@ -3604,15 +4403,15 @@
           "spread": {
             "histogram": [],
             "lock_ms": null,
-            "min_ms": 3.063901,
+            "min_ms": 4.151698,
             "p50_ms": null,
             "p95_ms": null,
             "p99_ms": null
           },
-          "stddev_time_ms": 2.2397893587230877,
+          "stddev_time_ms": 2.6038732611886313,
           "temp_writes": null,
           "text": "SELECT id,status,total FROM public.orders WHERE customer_id = $1 LIMIT $2",
-          "total_time_ms": 146.55794600000002,
+          "total_time_ms": 250.653307,
           "trend": null,
           "waits": []
         },
@@ -3622,12 +4421,359 @@
             "aborted_mean_ms": null,
             "compile_history": null,
             "docdb": {
-              "catalog_ms": 23.941049,
+              "catalog_ms": 22.835363,
+              "conflict_retries": 0.0,
+              "nexts": 2029.0,
+              "obsolete_rows_scanned": 0.0,
+              "prevs": 0.0,
+              "read_ms": 4.337,
+              "read_operations": 30.0,
+              "read_requests": 30.0,
+              "read_restarts": 0.0,
+              "retries": 0.0,
+              "rows_returned": 30.0,
+              "rows_scanned": 2029.0,
+              "seeks": 30.0,
+              "wait_ms": 127.06569400000002,
+              "write_ms": 0.0,
+              "write_operations": 0.0,
+              "write_requests": 0.0
+            },
+            "failed": null,
+            "jit_functions": null,
+            "jit_ms": null,
+            "log_bytes": null,
+            "log_full_pages": null,
+            "log_share": null,
+            "plan_ms": null,
+            "plans": null,
+            "row_bytes": 13.0,
+            "top_error": null,
+            "warnings": null
+          },
+          "cpu_time_ms": null,
+          "executions": 30.0,
+          "first_seen": null,
+          "id": "-1395695495724611761",
+          "last_seen": null,
+          "logical_reads": null,
+          "max_time_ms": 12.030971,
+          "mean_time_ms": 4.3873588,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": null,
+          "plan": {
+            "engine": "yugabyte",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "query_identifier": "-4782642729174849964",
+              "trigger_timings": []
+            },
+            "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
+            },
+            "kind": "generic",
+            "props": {
+              "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "Query Identifier": "-4782642729174849964"
+            },
+            "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Index Scan\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Scan Direction\": \"NoMovement\",\n      \"Index Name\": \"customers_pkey\",\n      \"Relation Name\": \"customers\",\n      \"Schema\": \"public\",\n      \"Alias\": \"customers\",\n      \"Startup Cost\": 21.08,\n      \"Total Cost\": 21.19,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 13,\n      \"Output\": [\"name\"],\n      \"Index Cond\": \"(customers.id = $1)\"\n    },\n    \"Query Identifier\": -4782642729174849964\n  }\n]",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [
+                  "(customers.id = $1)"
+                ],
+                "conversions": [],
+                "estimated_row_bytes": 13.0,
+                "expression_cache": false,
+                "index_method": "lsm",
+                "possible_index_names": [],
+                "table_alias": "customers",
+                "table_kind": "docdb",
+                "user_functions": []
+              },
+              "id": 0,
+              "index": "customers_pkey",
+              "kind": "seek",
+              "object": "public.customers",
+              "op": "Index Scan",
+              "predicate": null,
+              "props": {
+                "Alias": "customers",
+                "Async Capable": "false",
+                "Index Cond": "(customers.id = $1)",
+                "Index Kind": "lsm",
+                "Parallel Aware": "false",
+                "Plan Width": "13",
+                "Scan Direction": "NoMovement",
+                "Startup Cost": "21.08"
+              },
+              "rows_read": null,
+              "runtime": null,
+              "seek_predicate": "(customers.id = $1)",
+              "self_cost": 21.19,
+              "subtree_cost": 21.19,
+              "table_rows": 2000.0,
+              "warnings": []
+            },
+            "statement": "SELECT name FROM public.customers WHERE id = $1",
+            "total_cost": 21.19,
+            "view": {
+              "actual": null,
+              "cost_basis": 21.19,
+              "cost_note": "The optimizer's cost scale has no calibrated work threshold here, so this estimate establishes neither a cheap run nor a share of statement time. Compare measured operator work and elapsed time.",
+              "focus_checks": [
+                "heavy-query",
+                "regression",
+                "plan-regression",
+                "parameter-sensitive",
+                "plan-warnings",
+                "temp-spill",
+                "memory-grant",
+                "missing-index",
+                "filtered-scan",
+                "scan-heavy",
+                "missing-histogram",
+                "tuning-advice"
+              ],
+              "hottest_cost": null,
+              "hottest_time": null,
+              "insights": [],
+              "kind": "generic",
+              "nodes": [
+                {
+                  "cost_share": null,
+                  "estimated_rows": 1.0,
+                  "estimated_rows_for_runs": 1.0,
+                  "finding_no_share_reason": "The optimizer's cost scale has no calibrated work threshold here, so this estimate establishes neither a cheap run nor a share of statement time. Compare measured operator work and elapsed time.",
+                  "guess": null,
+                  "id": 0,
+                  "layout_own_share": 1.0,
+                  "layout_subtree_share": 1.0,
+                  "misestimate": null,
+                  "no_share_reason": "The optimizer's cost scale has no calibrated work threshold here, so this estimate establishes neither a cheap run nor a share of statement time. Compare measured operator work and elapsed time.",
+                  "own_ms": null,
+                  "rows_out": 1.0,
+                  "rows_read": null,
+                  "runs": 1.0,
+                  "subtree_cost_share": null,
+                  "subtree_time_share": null,
+                  "time_share": null,
+                  "uncosted": false
+                }
+              ],
+              "query": {
+                "plan_id": null,
+                "query_id": "-1395695495724611761"
+              },
+              "real_work": false,
+              "states_shares": false,
+              "time_note": null,
+              "timed_total_ms": null,
+              "weighed": true
+            },
+            "warnings": []
+          },
+          "plan_history": {
+            "captured_plan": {
+              "engine": "yugabyte",
+              "facts": {
+                "changed_columns": [],
+                "constants_redacted": true,
+                "conversions": [],
+                "estimated_cost_unavailable": true,
+                "trigger_timings": []
+              },
+              "index_hints": [],
+              "insights": {
+                "items": [],
+                "note": "Retained plan-cache entries have their own first/last-use dates, resets and evictions. Their calls and timings are independent of this statement's statistics window; a cache entry's first use does not prove when its plan was introduced."
+              },
+              "kind": "estimated",
+              "props": {},
+              "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Index Scan\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Scan Direction\": \"NoMovement\",\n      \"Index Name\": \"customers_pkey\",\n      \"Relation Name\": \"customers\",\n      \"Alias\": \"customers\",\n      \"Index Cond\": \"(id = ?)\"\n    }\n  }\n]",
+              "root": {
+                "act_executions": null,
+                "act_rows": null,
+                "act_time_ms": null,
+                "children": [],
+                "detail": null,
+                "est_executions": 1.0,
+                "est_rows": 0.0,
+                "facts": {
+                  "columns_without_statistics": [],
+                  "conditions": [
+                    "(id = ?)"
+                  ],
+                  "conversions": [],
+                  "estimated_rows_unavailable": true,
+                  "expression_cache": false,
+                  "possible_index_names": [],
+                  "selectivity_guess": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.",
+                  "table_alias": "customers",
+                  "user_functions": []
+                },
+                "id": 0,
+                "index": "customers_pkey",
+                "kind": "seek",
+                "object": "customers",
+                "op": "Index Scan",
+                "predicate": null,
+                "props": {
+                  "Alias": "customers",
+                  "Async Capable": "false",
+                  "Index Cond": "(id = ?)",
+                  "Parallel Aware": "false",
+                  "Scan Direction": "NoMovement",
+                  "Selectivity": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity."
+                },
+                "rows_read": null,
+                "runtime": null,
+                "seek_predicate": "(id = ?)",
+                "self_cost": 0.0,
+                "subtree_cost": 0.0,
+                "table_rows": null,
+                "warnings": []
+              },
+              "statement": null,
+              "total_cost": 0.0,
+              "view": {
+                "actual": null,
+                "cost_basis": 1.0,
+                "cost_note": null,
+                "focus_checks": [
+                  "heavy-query",
+                  "regression",
+                  "plan-regression",
+                  "parameter-sensitive",
+                  "plan-warnings",
+                  "temp-spill",
+                  "memory-grant",
+                  "missing-index",
+                  "filtered-scan",
+                  "scan-heavy",
+                  "missing-histogram",
+                  "tuning-advice"
+                ],
+                "hottest_cost": null,
+                "hottest_time": null,
+                "insights": [],
+                "kind": "estimated",
+                "nodes": [
+                  {
+                    "cost_share": null,
+                    "estimated_rows": null,
+                    "estimated_rows_for_runs": null,
+                    "finding_no_share_reason": null,
+                    "guess": "rows",
+                    "id": 0,
+                    "layout_own_share": 0.0,
+                    "layout_subtree_share": 0.0,
+                    "misestimate": null,
+                    "no_share_reason": null,
+                    "own_ms": null,
+                    "rows_out": null,
+                    "rows_read": null,
+                    "runs": null,
+                    "subtree_cost_share": null,
+                    "subtree_time_share": null,
+                    "time_share": null,
+                    "uncosted": false
+                  }
+                ],
+                "query": null,
+                "real_work": false,
+                "states_shares": false,
+                "time_note": null,
+                "timed_total_ms": null,
+                "weighed": false
+              },
+              "warnings": []
+            },
+            "captured_plan_id": "1767271698225980175",
+            "kind": "cache",
+            "note": "Retained plan-cache entries have their own first/last-use dates, resets and evictions. Their calls and timings are independent of this statement's statistics window; a cache entry's first use does not prove when its plan was introduced.",
+            "source": "yb_pg_stat_plans (node 3d2d9e10555b4ae2a683a8402505e416)"
+          },
+          "plan_id": null,
+          "plans": [
+            {
+              "compiled": null,
+              "cpu_time_ms": null,
+              "executions": 120.0,
+              "first_seen": "2026-10-23T21:59:38.239502Z",
+              "id": "1767271698225980175",
+              "is_forced": false,
+              "last_seen": "2026-10-24T03:46:28.521428Z",
+              "logical_reads": null,
+              "max_time_ms": 12.030971,
+              "mean_time_ms": 1.6343561583333337,
+              "min_time_ms": null,
+              "stddev_time_ms": null,
+              "total_time_ms": 196.12273900000005,
+              "variant_query": null
+            },
+            {
+              "compiled": null,
+              "cpu_time_ms": null,
+              "executions": 1.0,
+              "first_seen": "2026-10-24T03:46:28.531066Z",
+              "id": "6828047944719173985",
+              "is_forced": false,
+              "last_seen": "2026-10-24T03:46:28.531066Z",
+              "logical_reads": null,
+              "max_time_ms": 9.148353,
+              "mean_time_ms": 9.148353,
+              "min_time_ms": null,
+              "stddev_time_ms": null,
+              "total_time_ms": 9.148353,
+              "variant_query": null
+            }
+          ],
+          "query_hash": null,
+          "requests": null,
+          "resolved_write_target": null,
+          "rows": 30.0,
+          "rows_affected": null,
+          "spread": {
+            "histogram": [],
+            "lock_ms": null,
+            "min_ms": 1.272163,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "stddev_time_ms": 3.1211725286229552,
+          "temp_writes": null,
+          "text": "SELECT name FROM public.customers WHERE id = $1",
+          "total_time_ms": 131.620764,
+          "trend": null,
+          "waits": []
+        },
+        {
+          "costs": {
+            "aborted": null,
+            "aborted_mean_ms": null,
+            "compile_history": null,
+            "docdb": {
+              "catalog_ms": 95.593935,
               "conflict_retries": 0.0,
               "nexts": 200562.0,
               "obsolete_rows_scanned": 0.0,
               "prevs": 0.0,
-              "read_ms": 42.918,
+              "read_ms": 56.75599999999999,
               "read_operations": 20.0,
               "read_requests": 20.0,
               "read_restarts": 0.0,
@@ -3635,7 +4781,7 @@
               "rows_returned": 400.0,
               "rows_scanned": 200200.0,
               "seeks": 202.0,
-              "wait_ms": 65.81943000000001,
+              "wait_ms": 99.69680300000002,
               "write_ms": 0.0,
               "write_operations": 0.0,
               "write_requests": 0.0
@@ -3658,8 +4804,8 @@
           "id": "-71879613880347319",
           "last_seen": null,
           "logical_reads": null,
-          "max_time_ms": 13.22831,
-          "mean_time_ms": 7.0063698,
+          "max_time_ms": 21.425948,
+          "mean_time_ms": 11.043714800000002,
           "object_name": null,
           "parameters": null,
           "physical_reads": null,
@@ -4012,8 +5158,280 @@
             },
             "warnings": []
           },
+          "plan_history": {
+            "captured_plan": {
+              "engine": "yugabyte",
+              "facts": {
+                "changed_columns": [],
+                "constants_redacted": true,
+                "conversions": [],
+                "estimated_cost_unavailable": true,
+                "trigger_timings": []
+              },
+              "index_hints": [],
+              "insights": {
+                "items": [],
+                "note": "Retained plan-cache entries have their own first/last-use dates, resets and evictions. Their calls and timings are independent of this statement's statistics window; a cache entry's first use does not prove when its plan was introduced."
+              },
+              "kind": "estimated",
+              "props": {},
+              "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"YB Batched Nested Loop\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Join Type\": \"Inner\",\n      \"Inner Unique\": true,\n      \"Join Filter\": \"(o.customer_id = c.id)\",\n      \"Plans\": [\n        {\n          \"Node Type\": \"Seq Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Relation Name\": \"orders\",\n          \"Alias\": \"o\",\n          \"Storage Filter\": \"(id < ?)\"\n        },\n        {\n          \"Node Type\": \"Index Scan\",\n          \"Parent Relationship\": \"Inner\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Scan Direction\": \"NoMovement\",\n          \"Index Name\": \"customers_pkey\",\n          \"Relation Name\": \"customers\",\n          \"Alias\": \"c\",\n          \"Index Cond\": \"(id = ANY (ARRAY[o.customer_id, $1, $2, ..., $1023]))\"\n        }\n      ]\n    }\n  }\n]",
+              "root": {
+                "act_executions": null,
+                "act_rows": null,
+                "act_time_ms": null,
+                "children": [
+                  {
+                    "act_executions": null,
+                    "act_rows": null,
+                    "act_time_ms": null,
+                    "children": [],
+                    "detail": null,
+                    "est_executions": 1.0,
+                    "est_rows": 0.0,
+                    "facts": {
+                      "columns_without_statistics": [],
+                      "conditions": [
+                        "(id < ?)"
+                      ],
+                      "conversions": [],
+                      "estimated_rows_unavailable": true,
+                      "expression_cache": false,
+                      "parent_relationship": {
+                        "kind": "outer"
+                      },
+                      "possible_index_names": [],
+                      "selectivity_guess": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.",
+                      "table_alias": "o",
+                      "user_functions": []
+                    },
+                    "id": 1,
+                    "index": null,
+                    "kind": "scan",
+                    "object": "orders",
+                    "op": "Seq Scan",
+                    "predicate": "(id < ?)",
+                    "props": {
+                      "Alias": "o",
+                      "Async Capable": "false",
+                      "Parallel Aware": "false",
+                      "Parent Relationship": "Outer",
+                      "Selectivity": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.",
+                      "Storage Filter": "(id < ?)"
+                    },
+                    "rows_read": null,
+                    "runtime": null,
+                    "seek_predicate": null,
+                    "self_cost": 0.0,
+                    "subtree_cost": 0.0,
+                    "table_rows": null,
+                    "warnings": []
+                  },
+                  {
+                    "act_executions": null,
+                    "act_rows": null,
+                    "act_time_ms": null,
+                    "children": [],
+                    "detail": null,
+                    "est_executions": 1.0,
+                    "est_rows": 0.0,
+                    "facts": {
+                      "columns_without_statistics": [],
+                      "conditions": [
+                        "(id = ANY (ARRAY[o.customer_id, $1, $2, ..., $1023]))"
+                      ],
+                      "conversions": [],
+                      "estimated_rows_unavailable": true,
+                      "expression_cache": false,
+                      "parent_relationship": {
+                        "kind": "inner"
+                      },
+                      "possible_index_names": [],
+                      "selectivity_guess": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.",
+                      "table_alias": "c",
+                      "user_functions": []
+                    },
+                    "id": 2,
+                    "index": "customers_pkey",
+                    "kind": "seek",
+                    "object": "customers",
+                    "op": "Index Scan",
+                    "predicate": null,
+                    "props": {
+                      "Alias": "c",
+                      "Async Capable": "false",
+                      "Index Cond": "(id = ANY (ARRAY[o.customer_id, $1, $2, ..., $1023]))",
+                      "Parallel Aware": "false",
+                      "Parent Relationship": "Inner",
+                      "Scan Direction": "NoMovement",
+                      "Selectivity": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity."
+                    },
+                    "rows_read": null,
+                    "runtime": null,
+                    "seek_predicate": "(id = ANY (ARRAY[o.customer_id, $1, $2, ..., $1023]))",
+                    "self_cost": 0.0,
+                    "subtree_cost": 0.0,
+                    "table_rows": null,
+                    "warnings": []
+                  }
+                ],
+                "detail": "Inner join",
+                "est_executions": 1.0,
+                "est_rows": 0.0,
+                "facts": {
+                  "columns_without_statistics": [],
+                  "conditions": [
+                    "(o.customer_id = c.id)"
+                  ],
+                  "conversions": [],
+                  "estimated_rows_unavailable": true,
+                  "expression_cache": false,
+                  "join_filter": "(o.customer_id = c.id)",
+                  "possible_index_names": [],
+                  "selectivity_guess": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.",
+                  "user_functions": []
+                },
+                "id": 0,
+                "index": null,
+                "kind": "other",
+                "object": null,
+                "op": "YB Batched Nested Loop",
+                "predicate": "(o.customer_id = c.id)",
+                "props": {
+                  "Async Capable": "false",
+                  "Inner Unique": "true",
+                  "Join Filter": "(o.customer_id = c.id)",
+                  "Join Type": "Inner",
+                  "Parallel Aware": "false",
+                  "Selectivity": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity."
+                },
+                "rows_read": null,
+                "runtime": null,
+                "seek_predicate": null,
+                "self_cost": 0.0,
+                "subtree_cost": 0.0,
+                "table_rows": null,
+                "warnings": []
+              },
+              "statement": null,
+              "total_cost": 0.0,
+              "view": {
+                "actual": null,
+                "cost_basis": 1.0,
+                "cost_note": null,
+                "focus_checks": [
+                  "heavy-query",
+                  "regression",
+                  "plan-regression",
+                  "parameter-sensitive",
+                  "plan-warnings",
+                  "temp-spill",
+                  "memory-grant",
+                  "missing-index",
+                  "filtered-scan",
+                  "scan-heavy",
+                  "missing-histogram",
+                  "tuning-advice"
+                ],
+                "hottest_cost": null,
+                "hottest_time": null,
+                "insights": [],
+                "kind": "estimated",
+                "nodes": [
+                  {
+                    "cost_share": null,
+                    "estimated_rows": null,
+                    "estimated_rows_for_runs": null,
+                    "finding_no_share_reason": null,
+                    "guess": "rows",
+                    "id": 0,
+                    "layout_own_share": 0.0,
+                    "layout_subtree_share": 0.0,
+                    "misestimate": null,
+                    "no_share_reason": null,
+                    "own_ms": null,
+                    "rows_out": null,
+                    "rows_read": null,
+                    "runs": null,
+                    "subtree_cost_share": null,
+                    "subtree_time_share": null,
+                    "time_share": null,
+                    "uncosted": false
+                  },
+                  {
+                    "cost_share": null,
+                    "estimated_rows": null,
+                    "estimated_rows_for_runs": null,
+                    "finding_no_share_reason": null,
+                    "guess": "rows",
+                    "id": 1,
+                    "layout_own_share": 0.0,
+                    "layout_subtree_share": 0.0,
+                    "misestimate": null,
+                    "no_share_reason": null,
+                    "own_ms": null,
+                    "rows_out": null,
+                    "rows_read": null,
+                    "runs": null,
+                    "subtree_cost_share": null,
+                    "subtree_time_share": null,
+                    "time_share": null,
+                    "uncosted": false
+                  },
+                  {
+                    "cost_share": null,
+                    "estimated_rows": null,
+                    "estimated_rows_for_runs": null,
+                    "finding_no_share_reason": null,
+                    "guess": "rows",
+                    "id": 2,
+                    "layout_own_share": 0.0,
+                    "layout_subtree_share": 0.0,
+                    "misestimate": null,
+                    "no_share_reason": null,
+                    "own_ms": null,
+                    "rows_out": null,
+                    "rows_read": null,
+                    "runs": null,
+                    "subtree_cost_share": null,
+                    "subtree_time_share": null,
+                    "time_share": null,
+                    "uncosted": false
+                  }
+                ],
+                "query": null,
+                "real_work": false,
+                "states_shares": false,
+                "time_note": null,
+                "timed_total_ms": null,
+                "weighed": false
+              },
+              "warnings": []
+            },
+            "captured_plan_id": "-8345723963170102064",
+            "kind": "cache",
+            "note": "Retained plan-cache entries have their own first/last-use dates, resets and evictions. Their calls and timings are independent of this statement's statistics window; a cache entry's first use does not prove when its plan was introduced.",
+            "source": "yb_pg_stat_plans (node 3d2d9e10555b4ae2a683a8402505e416)"
+          },
           "plan_id": null,
-          "plans": [],
+          "plans": [
+            {
+              "compiled": null,
+              "cpu_time_ms": null,
+              "executions": 40.0,
+              "first_seen": "2026-10-23T23:01:53.821498Z",
+              "id": "-8345723963170102064",
+              "is_forced": false,
+              "last_seen": "2026-10-24T03:46:28.749950Z",
+              "logical_reads": null,
+              "max_time_ms": 21.425948,
+              "mean_time_ms": 8.22135795,
+              "min_time_ms": null,
+              "stddev_time_ms": null,
+              "total_time_ms": 328.854318,
+              "variant_query": null
+            }
+          ],
           "query_hash": null,
           "requests": null,
           "resolved_write_target": null,
@@ -4022,208 +5440,15 @@
           "spread": {
             "histogram": [],
             "lock_ms": null,
-            "min_ms": 4.357978999999999,
+            "min_ms": 6.242026,
             "p50_ms": null,
             "p95_ms": null,
             "p99_ms": null
           },
-          "stddev_time_ms": 2.40390933648392,
+          "stddev_time_ms": 4.447742428109607,
           "temp_writes": null,
           "text": "SELECT o.id,c.name FROM public.orders o JOIN public.customers c ON c.id=o.customer_id WHERE o.id < $1",
-          "total_time_ms": 70.063698,
-          "trend": null,
-          "waits": []
-        },
-        {
-          "costs": {
-            "aborted": null,
-            "aborted_mean_ms": null,
-            "compile_history": null,
-            "docdb": {
-              "catalog_ms": 7.530673,
-              "conflict_retries": 0.0,
-              "nexts": 30.0,
-              "obsolete_rows_scanned": 0.0,
-              "prevs": 0.0,
-              "read_ms": 0.4830000000000001,
-              "read_operations": 30.0,
-              "read_requests": 30.0,
-              "read_restarts": 0.0,
-              "retries": 0.0,
-              "rows_returned": 30.0,
-              "rows_scanned": 30.0,
-              "seeks": 30.0,
-              "wait_ms": 18.650073,
-              "write_ms": 0.0,
-              "write_operations": 0.0,
-              "write_requests": 0.0
-            },
-            "failed": null,
-            "jit_functions": null,
-            "jit_ms": null,
-            "log_bytes": null,
-            "log_full_pages": null,
-            "log_share": null,
-            "plan_ms": null,
-            "plans": null,
-            "row_bytes": 13.0,
-            "top_error": null,
-            "warnings": null
-          },
-          "cpu_time_ms": null,
-          "executions": 30.0,
-          "first_seen": null,
-          "id": "-1395695495724611761",
-          "last_seen": null,
-          "logical_reads": null,
-          "max_time_ms": 2.33203,
-          "mean_time_ms": 0.6931561666666667,
-          "object_name": null,
-          "parameters": null,
-          "physical_reads": null,
-          "plan": {
-            "engine": "yugabyte",
-            "facts": {
-              "changed_columns": [],
-              "conversions": [],
-              "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
-              "query_identifier": "-4782642729174849964",
-              "trigger_timings": []
-            },
-            "index_hints": [],
-            "insights": {
-              "items": [],
-              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
-            },
-            "kind": "generic",
-            "props": {
-              "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
-              "Query Identifier": "-4782642729174849964"
-            },
-            "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Index Scan\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Scan Direction\": \"NoMovement\",\n      \"Index Name\": \"customers_pkey\",\n      \"Relation Name\": \"customers\",\n      \"Schema\": \"public\",\n      \"Alias\": \"customers\",\n      \"Startup Cost\": 21.08,\n      \"Total Cost\": 21.19,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 13,\n      \"Output\": [\"name\"],\n      \"Index Cond\": \"(customers.id = $1)\"\n    },\n    \"Query Identifier\": -4782642729174849964\n  }\n]",
-            "root": {
-              "act_executions": null,
-              "act_rows": null,
-              "act_time_ms": null,
-              "children": [],
-              "detail": null,
-              "est_executions": 1.0,
-              "est_rows": 1.0,
-              "facts": {
-                "columns_without_statistics": [],
-                "conditions": [
-                  "(customers.id = $1)"
-                ],
-                "conversions": [],
-                "estimated_row_bytes": 13.0,
-                "expression_cache": false,
-                "index_method": "lsm",
-                "possible_index_names": [],
-                "table_alias": "customers",
-                "table_kind": "docdb",
-                "user_functions": []
-              },
-              "id": 0,
-              "index": "customers_pkey",
-              "kind": "seek",
-              "object": "public.customers",
-              "op": "Index Scan",
-              "predicate": null,
-              "props": {
-                "Alias": "customers",
-                "Async Capable": "false",
-                "Index Cond": "(customers.id = $1)",
-                "Index Kind": "lsm",
-                "Parallel Aware": "false",
-                "Plan Width": "13",
-                "Scan Direction": "NoMovement",
-                "Startup Cost": "21.08"
-              },
-              "rows_read": null,
-              "runtime": null,
-              "seek_predicate": "(customers.id = $1)",
-              "self_cost": 21.19,
-              "subtree_cost": 21.19,
-              "table_rows": 2000.0,
-              "warnings": []
-            },
-            "statement": "SELECT name FROM public.customers WHERE id = $1",
-            "total_cost": 21.19,
-            "view": {
-              "actual": null,
-              "cost_basis": 21.19,
-              "cost_note": "The optimizer's cost scale has no calibrated work threshold here, so this estimate establishes neither a cheap run nor a share of statement time. Compare measured operator work and elapsed time.",
-              "focus_checks": [
-                "heavy-query",
-                "regression",
-                "plan-regression",
-                "parameter-sensitive",
-                "plan-warnings",
-                "temp-spill",
-                "memory-grant",
-                "missing-index",
-                "filtered-scan",
-                "scan-heavy",
-                "missing-histogram",
-                "tuning-advice"
-              ],
-              "hottest_cost": null,
-              "hottest_time": null,
-              "insights": [],
-              "kind": "generic",
-              "nodes": [
-                {
-                  "cost_share": null,
-                  "estimated_rows": 1.0,
-                  "estimated_rows_for_runs": 1.0,
-                  "finding_no_share_reason": "The optimizer's cost scale has no calibrated work threshold here, so this estimate establishes neither a cheap run nor a share of statement time. Compare measured operator work and elapsed time.",
-                  "guess": null,
-                  "id": 0,
-                  "layout_own_share": 1.0,
-                  "layout_subtree_share": 1.0,
-                  "misestimate": null,
-                  "no_share_reason": "The optimizer's cost scale has no calibrated work threshold here, so this estimate establishes neither a cheap run nor a share of statement time. Compare measured operator work and elapsed time.",
-                  "own_ms": null,
-                  "rows_out": 1.0,
-                  "rows_read": null,
-                  "runs": 1.0,
-                  "subtree_cost_share": null,
-                  "subtree_time_share": null,
-                  "time_share": null,
-                  "uncosted": false
-                }
-              ],
-              "query": {
-                "plan_id": null,
-                "query_id": "-1395695495724611761"
-              },
-              "real_work": false,
-              "states_shares": false,
-              "time_note": null,
-              "timed_total_ms": null,
-              "weighed": true
-            },
-            "warnings": []
-          },
-          "plan_id": null,
-          "plans": [],
-          "query_hash": null,
-          "requests": null,
-          "resolved_write_target": null,
-          "rows": 30.0,
-          "rows_affected": null,
-          "spread": {
-            "histogram": [],
-            "lock_ms": null,
-            "min_ms": 0.129999,
-            "p50_ms": null,
-            "p95_ms": null,
-            "p99_ms": null
-          },
-          "stddev_time_ms": 0.5166465768475961,
-          "temp_writes": null,
-          "text": "SELECT name FROM public.customers WHERE id = $1",
-          "total_time_ms": 20.794685,
+          "total_time_ms": 110.43714800000002,
           "trend": null,
           "waits": []
         }
@@ -4233,11 +5458,11 @@
       "timeline": null,
       "total_cpu_ms": null,
       "total_executions": 130.0,
-      "total_time_ms": 796.474923,
+      "total_time_ms": 1481.597457,
       "untracked_time_ms": null,
-      "window_end": "2026-10-24T01:01:08.861346Z",
-      "window_hours": 0.002180721958478292,
-      "window_start": "2026-10-24T01:01:01.010747Z",
+      "window_end": "2026-10-24T03:50:04.638867Z",
+      "window_hours": 0.06052581383122338,
+      "window_start": "2026-10-24T03:46:26.745937Z",
       "windowed": false
     }
   },
@@ -4249,20 +5474,20 @@
       },
       {
         "category": "queries",
-        "count": 3
+        "count": 4
       }
     ],
     "by_severity": [
       {
-        "count": 4,
+        "count": 5,
         "severity": "low"
       }
     ],
-    "headline": "4 opportunities. The top ones touch 706 ms of database time over the 1 minute since statistics were reset (89%).",
+    "headline": "5 opportunities. The top ones touch 1.2 s of database time over the 4 minutes since statistics were reset (84%).",
     "no_workload": null,
-    "opportunities": 4,
+    "opportunities": 5,
     "over_scans": [],
     "runs_said": [],
-    "top_share": 0.885924364501304
+    "top_share": 0.8366236990645699
   }
 }

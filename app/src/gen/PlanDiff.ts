@@ -5,37 +5,9 @@ import type { PlanRegion } from "./PlanRegion";
 import type { PlanWarning } from "./PlanWarning";
 import type { Scenario } from "./Scenario";
 
-export type PlanDiff = { 
 /**
- * One to three plain-language sentences, most important first.
+ * Plan structure, measured timings and known optimizer costs. Missing costs are `None`; matching engine cost
+ * scales (`comparable`) do not establish that either plan recorded a cost. `matches` pairs corresponding operators,
+ * `regions` groups identical parts, and `scenarios` explains conditions that may account for structural differences.
  */
-headlines: Array<string>, cost_a: number, cost_b: number, 
-/**
- * `cost_b / cost_a` when both plans come from the same engine and have a cost.
- */
-cost_ratio: number | null, 
-/**
- * Both root operators' actual time, when both plans were executed.
- */
-time_a_ms: number | null, time_b_ms: number | null, 
-/**
- * Costs are only comparable within one engine.
- */
-comparable: boolean, 
-/**
- * Every operator matched with the same operator, object and index.
- */
-same_shape: boolean, changes: Array<PlanChange>, 
-/**
- * Operators that correspond across the two plans.
- */
-matches: Array<NodeMatch>, only_a: Array<number>, only_b: Array<number>, warnings_added: Array<PlanWarning>, warnings_removed: Array<PlanWarning>, 
-/**
- * Identical parts of the two plans, largest first.
- */
-regions: Array<PlanRegion>, 
-/**
- * Conditions that differ between the plans (estimator, parameter values, statistics, memory, parallelism), each in
- * plain language: why the optimizer may have chosen differently.
- */
-scenarios: Array<Scenario>, };
+export type PlanDiff = { headlines: Array<string>, cost_a: number | null, cost_b: number | null, cost_ratio: number | null, time_a_ms: number | null, time_b_ms: number | null, comparable: boolean, same_shape: boolean, changes: Array<PlanChange>, matches: Array<NodeMatch>, only_a: Array<number>, only_b: Array<number>, warnings_added: Array<PlanWarning>, warnings_removed: Array<PlanWarning>, regions: Array<PlanRegion>, scenarios: Array<Scenario>, };

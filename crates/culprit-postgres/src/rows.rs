@@ -70,7 +70,9 @@ pub async fn query_one(client: &Client, sql: &str) -> Result<Option<Row>> {
 }
 
 pub fn tagged(sql: &str) -> String {
-    format!("{sql}\n{TAG}")
+    // YSQL's QPM has its own supported opt-out; comments are inert on PostgreSQL. Keep TAG unchanged so reads also
+    // exclude collector statements recorded by earlier Culprit versions.
+    format!("{sql}\n{TAG} /* __YB_STAT_PLANS_SKIP */")
 }
 
 pub fn rows_of(messages: Vec<SimpleQueryMessage>) -> Vec<Row> {

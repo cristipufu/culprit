@@ -75,34 +75,37 @@ pub struct PlanRegion {
     pub b: Vec<u32>,
 }
 
+/// Plan structure, measured timings and known optimizer costs. Missing costs are `None`; matching engine cost
+/// scales (`comparable`) do not establish that either plan recorded a cost. `matches` pairs corresponding operators,
+/// `regions` groups identical parts, and `scenarios` explains conditions that may account for structural differences.
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
 #[ts(export)]
 pub struct PlanDiff {
-    /// One to three plain-language sentences, most important first.
+    // One to three plain-language sentences, most important first.
     pub headlines: Vec<String>,
-    pub cost_a: f64,
-    pub cost_b: f64,
-    /// `cost_b / cost_a` when both plans come from the same engine and have a cost.
+    pub cost_a: Option<f64>,
+    pub cost_b: Option<f64>,
+    // `cost_b / cost_a` when both plans come from the same engine and have a cost.
     pub cost_ratio: Option<f64>,
-    /// Both root operators' actual time, when both plans were executed.
+    // Both root operators' actual time, when both plans were executed.
     pub time_a_ms: Option<f64>,
     pub time_b_ms: Option<f64>,
-    /// Costs are only comparable within one engine.
+    // Costs are only comparable within one engine.
     pub comparable: bool,
-    /// Every operator matched with the same operator, object and index.
+    // Every operator matched with the same operator, object and index.
     pub same_shape: bool,
     pub changes: Vec<PlanChange>,
-    /// Operators that correspond across the two plans.
+    // Operators that correspond across the two plans.
     pub matches: Vec<NodeMatch>,
     pub only_a: Vec<u32>,
     pub only_b: Vec<u32>,
     pub warnings_added: Vec<PlanWarning>,
     pub warnings_removed: Vec<PlanWarning>,
-    /// Identical parts of the two plans, largest first.
+    // Identical parts of the two plans, largest first.
     #[serde(default)]
     pub regions: Vec<PlanRegion>,
-    /// Conditions that differ between the plans (estimator, parameter values, statistics, memory, parallelism), each in
-    /// plain language: why the optimizer may have chosen differently.
+    // Conditions that differ between the plans (estimator, parameter values, statistics, memory, parallelism), each in
+    // plain language: why the optimizer may have chosen differently.
     #[serde(default)]
     pub scenarios: Vec<Scenario>,
 }
@@ -129,6 +132,7 @@ pub fn plan_diff_in(a: &Plan, name_a: &str, b: &Plan, name_b: &str, context: &Co
     match_top_down(&fa, &fb, &mut m);
 
     let comparable = a.engine == b.engine;
+    let comparable_costs = comparable && !a.facts().estimated_cost_unavailable && !b.facts().estimated_cost_unavailable;
     let mut changes = Vec::new();
     let mut same_shape = true;
     for (i, j) in m.a.iter().enumerate().filter_map(|(i, j)| j.map(|j| (i, j))) {
@@ -137,8 +141,8 @@ pub fn plan_diff_in(a: &Plan, name_a: &str, b: &Plan, name_b: &str, context: &Co
         let reshaped = na.op != nb.op || !same_name(na.index.as_deref(), nb.index.as_deref());
         if reshaped {
             same_shape = false;
-            changes.push(reshape_change(na, nb, sa, sb, comparable));
-        } else if comparable && (sb - sa).abs() >= SHARE_SHIFT {
+            changes.push(reshape_change(na, nb, sa, sb, comparable_costs));
+        } else if comparable_costs && (sb - sa).abs() >= SHARE_SHIFT {
             changes.push(PlanChange {
                 kind: ChangeKind::Cost,
                 a: Some(na.id),
@@ -196,12 +200,13 @@ pub fn plan_diff_in(a: &Plan, name_a: &str, b: &Plan, name_b: &str, context: &Co
     }
     changes.sort_by(|x, y| y.weight.total_cmp(&x.weight).then(rank(x.kind).cmp(&rank(y.kind))));
 
-    let cost_ratio = (comparable && a.total_cost > 0.0 && b.total_cost > 0.0).then(|| b.total_cost / a.total_cost);
+    let cost_ratio =
+        (comparable_costs && a.total_cost > 0.0 && b.total_cost > 0.0).then(|| b.total_cost / a.total_cost);
     let (time_a_ms, time_b_ms) = (a.root.act_time_ms, b.root.act_time_ms);
     let mut diff = PlanDiff {
         headlines: Vec::new(),
-        cost_a: a.total_cost,
-        cost_b: b.total_cost,
+        cost_a: (!a.facts().estimated_cost_unavailable).then_some(a.total_cost),
+        cost_b: (!b.facts().estimated_cost_unavailable).then_some(b.total_cost),
         cost_ratio,
         time_a_ms,
         time_b_ms,
@@ -459,7 +464,11 @@ fn reshape_change(na: &PlanNode, nb: &PlanNode, sa: f64, sb: f64, comparable: bo
 
 fn rows_change(changes: &mut Vec<PlanChange>, na: &PlanNode, nb: &PlanNode, share: f64) {
     let (ea, eb) = (na.est_rows_total(), nb.est_rows_total());
-    if ea.max(eb) >= ROWS_MIN && ratio(ea, eb) >= ROWS_FACTOR {
+    if !na.facts().estimated_rows_unavailable
+        && !nb.facts().estimated_rows_unavailable
+        && ea.max(eb) >= ROWS_MIN
+        && ratio(ea, eb) >= ROWS_FACTOR
+    {
         changes.push(PlanChange {
             kind: ChangeKind::Rows,
             a: Some(na.id),
@@ -698,7 +707,7 @@ fn magnitude_of(diff: &PlanDiff) -> Option<Magnitude> {
     Some(Magnitude {
         b_worse: r > 1.0,
         phrase: format!("is estimated {} {word}", times(factor)),
-        numbers: format!("(cost {} → {})", cost(diff.cost_a), cost(diff.cost_b)),
+        numbers: format!("(cost {} → {})", cost(diff.cost_a?), cost(diff.cost_b?)),
     })
 }
 
@@ -963,6 +972,29 @@ mod tests {
         let diff = plan_diff(&seek_plan(), &pg);
         assert!(!diff.comparable && diff.cost_ratio.is_none());
         assert!(diff.headlines[0].starts_with("These plans come from different engines (SQL Server and PostgreSQL)"));
+    }
+
+    #[test]
+    fn missing_retained_estimates_do_not_become_zero_row_or_cost_regressions() {
+        let mut cached = plan(
+            Engine::Yugabyte,
+            node("Index Scan", NodeKind::Seek, Some("public.orders"), Some("orders_pkey"), 0.0, vec![]),
+        );
+        cached.root.est_rows = 0.0;
+        cached.root.facts_mut().estimated_rows_unavailable = true;
+        cached.facts_mut().estimated_cost_unavailable = true;
+        let mut current = cached.clone();
+        current.root.est_rows = 5_000.0;
+        current.root.facts_mut().estimated_rows_unavailable = false;
+        current.facts_mut().estimated_cost_unavailable = false;
+        current.root.self_cost = 100.0;
+        current.root.subtree_cost = 100.0;
+        current.total_cost = 100.0;
+        let diff = plan_diff(&cached, &current);
+        assert!(diff.same_shape && diff.comparable && diff.cost_ratio.is_none());
+        assert!(diff.cost_a.is_none() && diff.cost_b == Some(100.0));
+        assert!(diff.changes.is_empty(), "{:?}", diff.changes);
+        assert!(diff.scenarios.iter().all(|s| s.kind != crate::plan_compare::ScenarioKind::Estimates));
     }
 
     #[test]

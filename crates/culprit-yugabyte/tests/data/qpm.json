@@ -1,0 +1,14 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Index Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Scan Direction": "NoMovement",
+      "Index Name": "customers_pkey",
+      "Relation Name": "customers",
+      "Alias": "customers",
+      "Index Cond": "(id = ?)"
+    }
+  }
+]

@@ -79,7 +79,7 @@ pub(crate) async fn snapshot(
         })
         .collect();
     if let Some(w) = &mut snapshot.workload {
-        capture_plans(provider, &session.client, &probe, w, options.plans, &mut coverage).await;
+        capture_plans(provider, &session, &probe, w, options.plans, &mut coverage).await;
     }
     coverage.note("DocDB measurements","PostgreSQL heap pages, buffer ratios, vacuum/dead tuples and XID ages do not describe DocDB. These fields are unknown; YSQL statistics and native DocDB metrics retain their own units.");
     coverage.append_to(&mut snapshot);
@@ -96,9 +96,9 @@ pub(crate) async fn snapshot(
     Ok(snapshot)
 }
 
-async fn capture_plans(
+pub(crate) async fn capture_plans(
     provider: &YugabyteProvider,
-    client: &tokio_postgres::Client,
+    session: &culprit_postgres::wire::ObservedSession,
     probe: &probe::Probe,
     workload: &mut culprit_core::Workload,
     requested: u32,
@@ -106,24 +106,45 @@ async fn capture_plans(
 ) {
     use culprit_postgres::wire::{elevated_login, own_ysql_text};
     use tokio::time::{Instant, timeout_at};
-    if requested == 0 || workload.queries.is_empty() {
+    if workload.queries.is_empty() {
         return;
     }
     // One budget for the phase, including ownership checks and connection setup, rather than 1,000 timeouts.
     let deadline = Instant::now() + COLLECTOR.statement_timeout;
+    if timeout_at(deadline, crate::history::collect(session, probe, workload, coverage)).await.is_err() {
+        coverage
+            .partial(&sources::PLAN_HISTORY, "Native plan history reached the shared plan phase's 20-second deadline.");
+        return;
+    }
+    if requested == 0 {
+        return;
+    }
+    let mut retained = culprit_core::limits::ResultBudget::new(requested.min(1000) as usize * 2);
+    if timeout_at(
+        deadline,
+        crate::history::capture(session, probe, workload, requested.min(1000) as usize, &mut retained, coverage),
+    )
+    .await
+    .is_err()
+    {
+        coverage.partial(&sources::PLAN_HISTORY, "Retained plan capture reached the shared 20-second deadline.");
+    }
+    let client = &session.client;
     let elevated = match timeout_at(deadline, elevated_login(client)).await {
-        Ok(Ok(value)) => value,
+        Ok(Ok(value)) => Some(value),
         _ => {
             coverage.note("YSQL plans", "Plan capture could not establish this login's planning permissions.");
-            return;
+            None
         }
     };
     let mut failed = false;
     let mut foreign = false;
-    let mut retained = culprit_core::limits::ResultBudget::new(requested.min(1000) as usize);
     for q in workload.queries.iter_mut().take(requested.min(1000) as usize) {
+        if retained.truncated() {
+            break;
+        }
         let capture = async {
-            let text = if elevated {
+            let text = if elevated.ok_or_else(culprit_postgres::wire::foreign_statement)? {
                 own_ysql_text(client, &q.id, probe.cluster)
                     .await?
                     .ok_or_else(culprit_postgres::wire::foreign_statement)?
@@ -168,7 +189,11 @@ async fn capture_plans(
     if foreign {
         coverage.note("YSQL plans", "An elevated login plans only its own recorded statements; other roles' text is not planned with its privileges.");
     }
-    if workload.queries.iter().any(|q| q.plan.is_some()) {
+    if workload
+        .queries
+        .iter()
+        .any(|q| q.plan.is_some() || q.plan_history.as_ref().is_some_and(|h| h.captured_plan.is_some()))
+    {
         coverage.delivered(Capability::Showplan);
         coverage.delivered(Capability::QueryPlans);
     }

@@ -202,7 +202,7 @@ fn regression_finding(snapshot: &Snapshot, timeline: &Timeline, q: &QueryStat, s
             format::duration(change.old.mean_time_ms)
         )),
         // Several plans, none new around the step: it didn't come with a plan change, which isn't "the plan never changed".
-        None if q.plans.len() > 1 => summary.push_str(" No new plan started when it got slower, so look at what else changed then: a deploy that changed this statement or its parameters, a jump in data volume, a statistics update, or new blocking."),
+        None if q.workload_plans().len() > 1 => summary.push_str(" No new plan started when it got slower, so look at what else changed then: a deploy that changed this statement or its parameters, a jump in data volume, a statistics update, or new blocking."),
         None => summary.push_str(" This scan does not establish which plan the earlier and later runs used, so a plan change remains possible. Compare plans and parameter values, and check for changed data volume, statistics, blocking or application code around that time."),
     }
     f.summary = summary;
@@ -260,7 +260,7 @@ struct PlanChange<'a> {
 
 /// A plan that first ran around the start of the slow period and is slower than an earlier one.
 fn plan_change<'a>(timeline: &Timeline, q: &'a QueryStat, s: &Shift) -> Option<PlanChange<'a>> {
-    if q.plans.len() < 2 {
+    if q.workload_plans().len() < 2 {
         return None;
     }
     let (start, end) = timeline.bounds(s.start);

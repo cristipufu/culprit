@@ -258,6 +258,7 @@ fn digest(r: &Rec, has_cpu: bool) -> Digest {
     let digest = r.string("digest");
     Digest {
         stat: QueryStat {
+            plan_history: None,
             resolved_write_target: None,
             requests: None,
             id: digest.chars().take(16).collect(),
@@ -661,6 +662,7 @@ mod tests {
     fn digest(id: &str, time: f64, calls: f64, examined: f64) -> Digest {
         Digest {
             stat: QueryStat {
+                plan_history: None,
                 resolved_write_target: None,
                 requests: None,
                 id: id.into(),

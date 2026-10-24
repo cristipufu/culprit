@@ -188,8 +188,18 @@ pub fn shares_note(plan: &Plan, q: Option<&culprit_core::QueryStat>) -> Option<S
 }
 
 /// Rows flowing out of an operator: actual when the plan ran, else the estimate across executions.
-pub(crate) fn rows_out(node: &PlanNode) -> f64 {
-    node.act_rows.unwrap_or_else(|| node.est_rows_total())
+pub(crate) fn rows_out(node: &PlanNode) -> Option<f64> {
+    node.act_rows.or_else(|| (!node.facts().estimated_rows_unavailable).then(|| node.est_rows_total()))
+}
+
+pub(crate) fn estimated_cost(plan: &Plan) -> String {
+    if plan.facts().estimated_cost_unavailable {
+        "unavailable".into()
+    } else if plan.total_cost < 10.0 {
+        format!("{:.3}", plan.total_cost)
+    } else {
+        culprit_core::format::count(plan.total_cost)
+    }
 }
 
 pub(crate) fn table(node: &PlanNode) -> Option<String> {
@@ -207,6 +217,11 @@ pub(crate) fn where_(node: &PlanNode) -> String {
 }
 
 pub(crate) fn rows_text(node: &PlanNode) -> String {
+    if node.facts().estimated_rows_unavailable {
+        return node
+            .act_rows
+            .map_or_else(|| "unavailable".into(), |act| format!("unavailable → {}", culprit_core::format::count(act)));
+    }
     let est = node.est_rows_total();
     match node.act_rows {
         Some(act) => format!("{} → {}", culprit_core::format::count(est), culprit_core::format::count(act)),
@@ -216,7 +231,7 @@ pub(crate) fn rows_text(node: &PlanNode) -> String {
 
 /// `rows_text` with its noun: "1 row", "12 rows", "12 → 1 row" (the noun follows the last number).
 pub(crate) fn rows_phrase(node: &PlanNode) -> String {
-    let last = node.act_rows.unwrap_or_else(|| node.est_rows_total());
+    let Some(last) = rows_out(node) else { return "row count unavailable".into() };
     format!("{} {}", rows_text(node), if last.round() == 1.0 { "row" } else { "rows" })
 }
 

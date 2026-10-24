@@ -233,11 +233,13 @@ fn share_snapshots<'a>(snapshots: impl IntoIterator<Item = &'a mut culprit_core:
     let mut texts: HashSet<Arc<str>> = HashSet::new();
     let mut share = |snapshot: &mut culprit_core::Snapshot| {
         for q in snapshot.workload.iter_mut().flat_map(|w| &mut w.queries) {
-            if let Some(raw) = q.plan.as_mut().and_then(|p| p.raw.as_mut()) {
-                if let Some(shared) = texts.get(raw.as_ref()) {
-                    *raw = shared.clone();
-                } else {
-                    texts.insert(raw.clone());
+            for plan in q.plan.iter_mut().chain(q.plan_history.iter_mut().flat_map(|h| h.captured_plan.iter_mut())) {
+                if let Some(raw) = plan.raw.as_mut() {
+                    if let Some(shared) = texts.get(raw.as_ref()) {
+                        *raw = shared.clone();
+                    } else {
+                        texts.insert(raw.clone());
+                    }
                 }
             }
         }

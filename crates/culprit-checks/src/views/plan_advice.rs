@@ -24,8 +24,24 @@ pub fn annotate_plans(snapshot: &mut Snapshot) {
                 p.insights = Some(insights);
                 p.view = Some(view);
             }
+            if let Some(history) = &mut q.plan_history
+                && let Some(plan) = &mut history.captured_plan
+            {
+                present_retained_plan(plan, &history.note);
+            }
         }
     }
+}
+
+/// A retained cache plan has no operator measurements from the statement's selected workload period.
+pub fn present_retained_plan(plan: &mut Plan, note: &str) {
+    let mut items = culprit_core::insights::insights(plan);
+    for item in &mut items {
+        item.severity = Severity::Low;
+        item.fix_sql = None;
+    }
+    plan.insights = Some(PlanInsights { items, note: Some(note.into()) });
+    super::plan_view::present_plan(plan, None);
 }
 
 /// Read a captured or fetched plan in the context of the selected scan. Structural concerns remain useful for

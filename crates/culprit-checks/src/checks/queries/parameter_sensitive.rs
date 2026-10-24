@@ -57,11 +57,14 @@ const QUIET_INTERVALS: f64 = 20.0;
 
 fn plans_shape<'a>(snapshot: &Snapshot, q: &'a QueryStat) -> Option<Shape<'a>> {
     // A forced plan already decides for every call; what it does is tuning-advice's to say.
-    if q.plans.iter().any(|p| p.is_forced) {
+    if q.workload_plans().iter().any(|p| p.is_forced) {
         return None;
     }
-    let busy: Vec<&PlanVariant> =
-        q.plans.iter().filter(|p| p.executions >= 10.0 && p.executions >= q.executions * MIN_PLAN_SHARE).collect();
+    let busy: Vec<&PlanVariant> = q
+        .workload_plans()
+        .iter()
+        .filter(|p| p.executions >= 10.0 && p.executions >= q.executions * MIN_PLAN_SHARE)
+        .collect();
     // The slow plan: the slowest still in use. One that stopped is behind the query, but a slower one may still run.
     let slow = busy
         .iter()
@@ -178,7 +181,7 @@ pub fn parameter_sensitive(snapshot: &Snapshot) -> Vec<Finding> {
 
 fn compiled(plan: &PlanVariant, q: &QueryStat) -> Option<String> {
     let raw = plan.compiled.clone().or_else(|| {
-        let dominant = q.plans.first()?;
+        let dominant = q.workload_plans().first()?;
         (dominant.id == plan.id).then(|| q.plan.as_ref()?.facts().compiled_parameters.clone()).flatten()
     })?;
     let tidy = tidy_parameters(&raw);
@@ -260,7 +263,11 @@ fn finding_for(snapshot: &Snapshot, q: &QueryStat, shape: &Shape, share: f64) ->
             };
             f.summary = format!(
                 "SQL Server runs this statement with {} plans side by side. {fast_side}; plan {} averages {}{} and handled {} calls. A plan is compiled for the parameter values of the call that happened to compile it, then reused for every other value, so values that need a different strategy get the wrong one.",
-                if q.plans.len() == 2 { "two".to_string() } else { format::count(q.plans.len() as f64) },
+                if q.workload_plans().len() == 2 {
+                    "two".to_string()
+                } else {
+                    format::count(q.workload_plans().len() as f64)
+                },
                 slow.id,
                 run(slow.mean_time_ms),
                 compiled_for(slow),

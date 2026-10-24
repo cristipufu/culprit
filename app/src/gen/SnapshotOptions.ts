@@ -16,6 +16,6 @@ window_minutes?: number,
  */
 top_queries: number, 
 /**
- * How many plans to fetch and parse, heaviest queries first.
+ * How many of the heaviest queries to fetch and parse plans for.
  */
 plans: number, };

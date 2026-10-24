@@ -31,6 +31,11 @@ pub const COSTS: Source = Source {
     reads: "native statement metrics with collection settings verified on every contributing node",
     delivers: &[],
 };
+pub const PLAN_HISTORY: Source = Source {
+    name: source_id::DOCDB_PLAN_HISTORY,
+    reads: "retained native QPM plan counts and timings, independently of statement-statistics epochs",
+    delivers: &[],
+};
 pub const EPOCHS: Source = Source {
     name: source_id::DOCDB_EPOCHS,
     reads: "statement reset epochs for every contributing YB-TServer",
@@ -53,6 +58,7 @@ pub const ALL: &[Source] = &[
     CONSTRAINTS,
     WORKLOAD,
     COSTS,
+    PLAN_HISTORY,
     EPOCHS,
     SETTINGS,
     INDEX_USAGE,

@@ -242,7 +242,7 @@ function QueryDetail({ report, query }: { report: Report; query: QueryStat }) {
   const related = report.findings.filter((f) => f.queries.some((r) => r.id === query.id));
   const focus = related.flatMap((f) => f.queries.filter((r) => r.id === query.id).map((r) => r.plan_node)).find((n) => n != null) ?? null;
   const [tab, setTab] = useState<DetailTab>(rememberedTab);
-  const [planId, setPlanId] = useState<string | null>(query.plan_id ?? query.plans[0]?.id ?? null);
+  const [planId, setPlanId] = useState<string | null>(query.plan_history?.kind === "cache" ? null : query.plan_id ?? query.plans[0]?.id ?? null);
   const insights = query.plan?.insights?.items ?? [];
   const worst = insights.find((i) => i.severity === "high") ? "high" : insights.find((i) => i.severity === "medium") ? "medium" : insights.length ? "low" : null;
 
@@ -385,7 +385,7 @@ function Metric({ value, label }: { value: string; label: string }) {
 /** The plans the engine kept for this query, best first by average time, and when each was used. */
 function PlanHistory({ query, planId, onOpen }: { query: QueryStat; planId: string | null; onOpen: (id: string) => void }) {
   if (query.plans.length === 0) {
-    return <div className="empty" style={{ padding: 30 }}>This engine doesn't keep plan history for a query; the Plan tab shows its current plan.</div>;
+    return <div className="empty" style={{ padding: 30 }}>{query.plan_history ? `No retained plan entries were collected for this query. ${query.plan_history.note}` : "This engine doesn't keep plan history for a query; the Plan tab shows its current plan."}</div>;
   }
   const best = Math.min(...query.plans.map((v) => v.mean_time_ms));
   return (
@@ -393,6 +393,7 @@ function PlanHistory({ query, planId, onOpen }: { query: QueryStat; planId: stri
       <h3>
         Plans this query used <span className="muted">{query.plans.length}</span>
       </h3>
+      {query.plan_history && <p className="muted">{query.plan_history.source}. {query.plan_history.note}</p>}
       <table className="grid history-table">
         <thead>
           <tr>
@@ -408,11 +409,11 @@ function PlanHistory({ query, planId, onOpen }: { query: QueryStat; planId: stri
           {query.plans.map((v, i) => (
             <tr key={v.id} className={`row ${planId === v.id ? "selected" : ""}`} onClick={() => onOpen(v.id)}>
               <td>
-                <b>Plan {v.id}</b>
-                {i === 0 && <span className="tag" style={{ marginLeft: 6 }}>most time</span>}
+                <b style={query.plan_history?.kind === "cache" ? { display: "block" } : undefined}>Plan {v.id}</b>
+                {i === 0 && <span className="tag" style={{ marginLeft: query.plan_history?.kind === "cache" ? 0 : 6 }}>{query.plan_history?.kind === "cache" ? "most retained time" : "most time"}</span>}
                 {v.is_forced && <span className="tag medium" style={{ marginLeft: 6 }}>forced</span>}
               </td>
-              <td className={`r ${query.plans.length > 1 && v.mean_time_ms > best * 2 ? "slow" : ""}`}>{duration(v.mean_time_ms)}</td>
+              <td className={`r ${query.plan_history?.kind !== "cache" && query.plans.length > 1 && v.mean_time_ms > best * 2 ? "slow" : ""}`}>{duration(v.mean_time_ms)}</td>
               <td className="r">{count(v.executions)}</td>
               <td className="muted" title={v.first_seen ? seenAt(v.first_seen).full : undefined}>
                 {v.first_seen ? seenAt(v.first_seen).short : "—"}
@@ -437,21 +438,25 @@ type PlanState = { status: "idle" } | { status: "loading" } | { status: "ready";
 function QueryPlans(props: { report: Report; query: QueryStat; focus: number | null; planId: string | null; setPlanId: (id: string | null) => void }) {
   const { report, query, focus, planId, setPlanId } = props;
   const variants = query.plans;
+  const cachedHistory = query.plan_history?.kind === "cache";
+  const planQuery = cachedHistory && planId !== null ? undefined : query;
   const dominant = variants[0]?.id ?? null;
-  const capturedId = query.plan_id ?? (variants.length === 1 ? dominant : null);
+  const capturedId = query.plan_id ?? (query.plan_history?.kind !== "cache" && variants.length === 1 ? dominant : null);
   const [look, setLook] = useState<PlanLook>(rememberedLook);
   const [source, setSource] = useState<PlanSource>("plan");
   const connection = report.snapshot.connection;
   const selection = JSON.stringify([connection, report.snapshot.id, query.id, planId]);
-  const captured = query.plan && (planId === capturedId || (planId === null && variants.length === 0));
-  const initial: PlanState = captured ? { status: "ready", plan: query.plan! } : { status: "loading" };
+  const capturedPlan = planId != null && query.plan_history?.captured_plan_id === planId && query.plan_history.captured_plan
+    ? query.plan_history.captured_plan
+    : query.plan && (planId === capturedId || (planId === null && (variants.length === 0 || cachedHistory))) ? query.plan : null;
+  const initial: PlanState = capturedPlan ? { status: "ready", plan: capturedPlan } : { status: "loading" };
   const [loaded, setLoaded] = useState<{ selection: string; state: PlanState }>({ selection, state: initial });
   const state = loaded.selection === selection ? loaded.state : initial;
 
   useEffect(() => {
     const setPlan = (state: PlanState) => setLoaded({ selection, state });
-    if (captured) {
-      setPlan({ status: "ready", plan: query.plan! });
+    if (capturedPlan) {
+      setPlan({ status: "ready", plan: capturedPlan });
       return;
     }
     let cancelled = false;
@@ -463,7 +468,7 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
     return () => {
       cancelled = true;
     };
-  }, [planId, query, capturedId, connection, variants.length, report.snapshot.id, selection, captured]);
+  }, [planId, query, capturedId, connection, variants.length, report.snapshot.id, selection, capturedPlan]);
 
   const chooseLook = (next: PlanLook) => {
     setLook(next);
@@ -487,13 +492,13 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
     try {
       const client = await api();
       const load = (id: string) =>
-        id === capturedId && query.plan ? Promise.resolve(query.plan) : state.status === "ready" && id === planId ? Promise.resolve(state.plan) : client.queryPlan(connection, query.id, id, report.snapshot.id);
+        id === query.plan_history?.captured_plan_id && query.plan_history.captured_plan ? Promise.resolve(query.plan_history.captured_plan) : id === capturedId && query.plan ? Promise.resolve(query.plan) : state.status === "ready" && id === planId ? Promise.resolve(state.plan) : client.queryPlan(connection, query.id, id, report.snapshot.id);
       const [first, second] = await Promise.all([load(dominant), load(other)]);
       if (!mounted.current) return;
       // The faster plan is the baseline, so the comparison reads "the slow plan does X where the fast one does Y".
       const speed = (id: string) => variants.find((v) => v.id === id)?.mean_time_ms ?? 0;
-      const a = { plan: first, name: nameOf(dominant), origin, source: { connection, queryId: query.id, planId: dominant }, query: { ...query, plan_id: dominant } };
-      const b = { plan: second, name: nameOf(other), origin, source: { connection, queryId: query.id, planId: other }, query: { ...query, plan_id: other } };
+      const a = { plan: first, name: nameOf(dominant), origin, source: { connection, queryId: query.id, planId: dominant }, query: query.plan_history?.kind === "cache" ? undefined : { ...query, plan_id: dominant } };
+      const b = { plan: second, name: nameOf(other), origin, source: { connection, queryId: query.id, planId: other }, query: query.plan_history?.kind === "cache" ? undefined : { ...query, plan_id: other } };
       if (speed(dominant) <= speed(other)) compare(a, b);
       else compare(b, a);
     } catch (e) {
@@ -520,7 +525,7 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
             </button>
           )}
           {state.status === "ready" && (
-            <button className="btn ghost" title="Open this plan in Plans to save it or compare it with another" onClick={() => addPlan(state.plan, nameOf(planId), origin, { source: { connection, queryId: query.id, planId }, query: { ...query, plan_id: planId } })}>
+            <button className="btn ghost" title="Open this plan in Plans to save it or compare it with another" onClick={() => addPlan(state.plan, nameOf(planId), origin, { source: { connection, queryId: query.id, planId }, query: planQuery ? { ...planQuery, plan_id: planId } : undefined })}>
               <SquareArrowOutUpRight size={13} /> Open in Plans
             </button>
           )}
@@ -528,17 +533,22 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
           <LookToggle look={look} onChange={chooseLook} />
         </span>
       </h3>
-      {variants.length > 1 && (
+      {cachedHistory && <p className="muted">{query.plan_history!.source}. {query.plan_history!.note}</p>}
+      {(variants.length > 1 || (cachedHistory && variants.length > 0)) && (
         <div className="plan-variants">
+          {cachedHistory && <button className={`variant ${planId === null ? "on" : ""}`} onClick={() => setPlanId(null)}>
+            <span className="v-name">Current estimate</span>
+            <span className="v-stats">Estimated independently of retained history</span>
+          </button>}
           {variants.map((v, i) => (
             <button key={v.id} className={`variant ${planId === v.id ? "on" : ""}`} onClick={() => setPlanId(v.id)}>
               <span className="v-name">
                 Plan {v.id}
-                {i === 0 && <span className="tag" style={{ marginLeft: 6 }}>most time</span>}
+                {i === 0 && <span className="tag" style={{ marginLeft: 6 }}>{cachedHistory ? "most retained time" : "most time"}</span>}
                 {v.is_forced && <span className="tag medium" style={{ marginLeft: 6 }}>forced</span>}
               </span>
               <span className="v-stats">
-                <b className={best != null && v.mean_time_ms > best * 2 ? "slow" : ""}>{duration(v.mean_time_ms)}</b> avg · {count(v.executions)} runs
+                <b className={!cachedHistory && best != null && v.mean_time_ms > best * 2 ? "slow" : ""}>{duration(v.mean_time_ms)}</b> avg · {count(v.executions)} runs
                 {v.last_seen && (
                   <span className="muted" title={seenAt(v.last_seen).full}>
                     {" "}
@@ -565,7 +575,7 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
           </div>
         </div>
       )}
-      {source === "plan" && state.status === "ready" && <PlanSurface key={`${query.id}-${planId}`} plan={state.plan} query={{ ...query, plan_id: planId }} focus={planId === capturedId ? focus : null} look={look} />}
+      {source === "plan" && state.status === "ready" && <PlanSurface key={`${query.id}-${planId}`} plan={state.plan} query={planQuery ? { ...planQuery, plan_id: planId } : undefined} focus={planId === capturedId ? focus : null} look={look} />}
     </section>
   );
 }

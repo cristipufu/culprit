@@ -293,6 +293,9 @@ fn estimate_scenarios(
     let mut found: Vec<(f64, Scenario)> = Vec::new();
     // Between the plans: the same step expecting very different row counts.
     for (x, y) in pairs {
+        if x.facts().estimated_rows_unavailable || y.facts().estimated_rows_unavailable {
+            continue;
+        }
         let (ta, tb) = (x.est_rows_total(), y.est_rows_total());
         // A step run once per outer row (a nested loop's inner side) is estimated per execution: two seeks that each
         // expect one row differ only in how often they run, which their outer sides' own estimates say. And a seek

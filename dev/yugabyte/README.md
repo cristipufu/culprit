@@ -46,6 +46,19 @@ own sleeping backend and its full node/PID/start identity:
 CULPRIT_YSQL_TEST_PORT=55434 cargo test --locked -p culprit-engine --test all services::live_native_workspace_session_progress_and_cancel -- --ignored
 ```
 
+Verify native QPM history with two engine-selected plans for a synthetic statement:
+
+```sh
+CULPRIT_YSQL_TEST_PORT=55434 cargo test --locked -p culprit-yugabyte --lib live_qpm_history_retains_independent_periods_and_redacted_plans -- --ignored
+cargo test --locked -p culprit-engine --test all plugin::retained_native_plans_open_offline_without_borrowing_current_catalog_or_measurements
+```
+
+The live case verifies independent cache periods, signed plan IDs, redacted cached JSON, current-versus-retained
+capture, collector opt-out and one-node global-view counts. It also verifies that unprivileged and `NOINHERIT`
+logins are refused before reading the native cache, while an inherited `pg_read_all_stats` grant permits access.
+Temporary roles are removed afterward. The offline case uses a provider factory that fails if opened, and checks
+that no current catalog, statement runtime or fabricated zero row/execution estimates enter the retained tree.
+
 ## Cluster-view verification
 
 [Cluster-wide views](https://docs.yugabyte.com/stable/launch-and-manage/monitor-and-alert/cluster-wide-db-views/) are a disabled-by-default preview in 2026.1.2. Their `server_uuid` identifies each contributing node, and warnings can indicate skipped nodes. A successful SQL response alone does not establish complete cluster coverage.

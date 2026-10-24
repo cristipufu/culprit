@@ -141,7 +141,7 @@ pub fn diagram(plan: &Plan, marks: &HashMap<u32, Mark>, focus: Option<u32>, labe
         }
         _ => HashSet::new(),
     };
-    let max_rows = placed.iter().map(|p| rows_out(p.node)).fold(1.0, f64::max);
+    let max_rows = placed.iter().filter_map(|p| rows_out(p.node)).fold(1.0, f64::max);
     let stroke = |rows: f64| 1.5 + 5.0 * ((rows + 1.0).log10() / (max_rows + 1.0).log10()).clamp(0.0, 1.0);
 
     let mut svg = String::new();
@@ -164,7 +164,8 @@ pub fn diagram(plan: &Plan, marks: &HashMap<u32, Mark>, focus: Option<u32>, labe
             let (x1, y1) = (px(child.x) + W / 2.0, py(child.depth));
             let (x2, y2) = (px(p.x) + W / 2.0, py(p.depth) + H);
             let mid = (y1 + y2) / 2.0;
-            let rows = rows_out(c);
+            let known_rows = rows_out(c);
+            let rows = known_rows.unwrap_or(0.0);
             let class = if hot.contains(&c.id) && hot.contains(&p.node.id) { "edge hot" } else { "edge" };
             let _ = write!(
                 svg,
@@ -178,7 +179,7 @@ pub fn diagram(plan: &Plan, marks: &HashMap<u32, Mark>, focus: Option<u32>, labe
                 r#"<text class="edge-label" x="{:.1}" y="{:.1}">{}</text>"#,
                 x1 + stroke(rows) / 2.0 + 7.0,
                 y1 - 9.0,
-                escape(&rows_word(rows))
+                escape(&known_rows.map_or_else(|| "rows unavailable".into(), rows_word))
             );
         }
     }
@@ -270,17 +271,21 @@ pub fn diagram(plan: &Plan, marks: &HashMap<u32, Mark>, focus: Option<u32>, labe
             escape(&fit(&object, W - 24.0, MONO))
         );
         let est = n.est_rows_total();
-        let rows = match n.act_rows {
-            Some(act) => {
-                let off = act.max(1.0) / est.max(1.0);
-                let warn = if !(0.1..10.0).contains(&off) {
-                    format!("  ×{} off", format::count(if off >= 1.0 { off } else { 1.0 / off }))
-                } else {
-                    String::new()
-                };
-                format!("{} → {}{warn}", format::count(est), rows_word(act))
+        let rows = if n.facts().estimated_rows_unavailable {
+            n.act_rows.map_or_else(|| "Row estimate unavailable".into(), rows_word)
+        } else {
+            match n.act_rows {
+                Some(act) => {
+                    let off = act.max(1.0) / est.max(1.0);
+                    let warn = if !(0.1..10.0).contains(&off) {
+                        format!("  ×{} off", format::count(if off >= 1.0 { off } else { 1.0 / off }))
+                    } else {
+                        String::new()
+                    };
+                    format!("{} → {}{warn}", format::count(est), rows_word(act))
+                }
+                None => format!("{} est.", rows_word(est)),
             }
-            None => format!("{} est.", rows_word(est)),
         };
         let time = n.act_time_ms.map(|t| format!(" · {}", format::duration(t))).unwrap_or_default();
         let warn = if n.warnings.is_empty() { "" } else { "  ⚠" };

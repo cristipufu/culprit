@@ -5,6 +5,107 @@ use culprit_postgres::wire::{INTERACTIVE, query_one, tagged};
 // serialize fixture mutations instead of adding production retries for an artificial cross-test race.
 static LIVE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+#[tokio::test]
+async fn invalid_retained_plan_identifiers_are_rejected_before_connecting() {
+    let provider = YugabyteProvider::new(&ConnectionSpec {
+        engine: Some(Engine::Yugabyte),
+        host: "invalid.example".into(),
+        ..Default::default()
+    })
+    .unwrap();
+    for (query, plan) in [("1; SELECT 1", "2"), ("1", ""), ("1", "9223372036854775808")] {
+        assert_eq!(provider.stored_plan(query, plan).await.unwrap_err().code, culprit_core::ErrorCode::InvalidInput);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dev/yugabyte and CULPRIT_YSQL_TEST_PORT"]
+async fn live_qpm_history_retains_independent_periods_and_redacted_plans() {
+    let _fixture = LIVE.lock().await;
+    let provider = YugabyteProvider::new(&local_spec()).unwrap();
+    let admin = provider.connector.connect(INTERACTIVE).await.unwrap();
+    let statement = "SELECT sum(total),max(id) FROM public.orders WHERE id=42 /* native_plan_history_test */";
+    // Synthetic application reads intentionally carry no collector tag, so the native engine records both plans.
+    admin.simple_query(statement).await.unwrap();
+    for sql in ["SET enable_indexscan=off", "SET enable_bitmapscan=off"] {
+        admin.batch_execute(&tagged(sql)).await.unwrap();
+    }
+    admin.simple_query(statement).await.unwrap();
+    for sql in ["RESET enable_indexscan", "RESET enable_bitmapscan"] {
+        admin.batch_execute(&tagged(sql)).await.unwrap();
+    }
+    let snapshot = provider
+        .snapshot("native-qpm-test", &SnapshotOptions { top_queries: 1000, plans: 0, ..Default::default() })
+        .await
+        .unwrap();
+    let q = snapshot.queries().iter().find(|q| q.text.contains("native_plan_history_test")).unwrap();
+    assert!(q.plans.len() >= 2, "two engine-selected plans should be retained: {:?}", snapshot.notes);
+    let history = q.plan_history.as_ref().unwrap();
+    assert_eq!(history.kind, culprit_core::PlanHistoryKind::Cache);
+    assert!(history.captured_plan.is_none() && q.plan.is_none(), "plans=0 retains metadata without fetching bodies");
+    assert!(q.workload_plans().is_empty());
+    assert!(q.plans.iter().all(|p| p.executions > 0.0 && p.first_seen.is_some() && p.last_seen.is_some()));
+    for variant in &q.plans {
+        let plan = provider.stored_plan(&q.id, &variant.id).await.unwrap().unwrap();
+        assert_eq!(plan.engine, Engine::Yugabyte);
+        assert_eq!(plan.kind, culprit_core::PlanKind::Estimated);
+        assert!(plan.facts().constants_redacted);
+        assert!(plan.nodes().iter().all(|n| n.act_rows.is_none() && n.act_time_ms.is_none()));
+        assert!(crate::plan::reparse(&plan).unwrap().facts().constants_redacted);
+    }
+    assert!(provider.stored_plan(&q.id, "-9223372036854775808").await.is_ok(), "signed ids reach the native lookup");
+    admin.batch_execute(&tagged("SET default_transaction_read_only=off")).await.unwrap();
+    let pid = query_one(&admin, "SELECT pg_backend_pid()::text AS pid").await.unwrap().unwrap().string("pid");
+    let role = format!("culprit_qpm_reader_{pid}");
+    admin.batch_execute(&tagged(&format!("CREATE ROLE {role} LOGIN NOINHERIT"))).await.unwrap();
+    let mut limited_spec = local_spec();
+    limited_spec.user = Some(role.clone());
+    let limited = YugabyteProvider::new(&limited_spec).unwrap();
+    let hidden = limited.stored_plan(&q.id, &q.plans[0].id).await;
+    admin.batch_execute(&tagged(&format!("GRANT pg_read_all_stats TO {role}"))).await.unwrap();
+    let unprivileged_member = limited.stored_plan(&q.id, &q.plans[0].id).await;
+    admin.batch_execute(&tagged(&format!("ALTER ROLE {role} INHERIT"))).await.unwrap();
+    let visible = limited.stored_plan(&q.id, &q.plans[0].id).await;
+    admin.batch_execute(&tagged(&format!("DROP ROLE {role}"))).await.unwrap();
+    assert_eq!(hidden.unwrap_err().code, culprit_core::ErrorCode::PermissionDenied);
+    assert_eq!(unprivileged_member.unwrap_err().code, culprit_core::ErrorCode::PermissionDenied);
+    assert!(
+        visible.unwrap().unwrap().facts().constants_redacted,
+        "the monitoring grant permits safe cache reads without superuser"
+    );
+    // Collector statements opt out of QPM without changing the server's tracking configuration.
+    let collector =
+        "SELECT sum(id)+count(*)+max(customer_id) FROM public.orders WHERE customer_id=72 /* native_qpm_skip_test */";
+    admin.simple_query(&tagged(collector)).await.unwrap();
+    let tracked = query_one(
+        &admin,
+        "SELECT count(*)::text AS count FROM yb_pg_stat_plans p JOIN pg_stat_statements s
+        ON p.queryid=s.queryid AND p.dbid=s.dbid AND p.userid=s.userid
+        WHERE s.query LIKE '%native_qpm_skip_test%' AND s.query NOT LIKE '%SELECT count(*)::text AS count%'",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(tracked.string("count"), "0");
+    let session = provider.connector.connect_observed(culprit_postgres::wire::COLLECTOR).await.unwrap();
+    let probe = crate::probe::read(&session.client).await.unwrap();
+    let mut workload = snapshot.workload.clone().unwrap();
+    workload.queries.retain(|entry| entry.id == q.id);
+    let mut coverage = culprit_core::Coverage::default();
+    crate::collect::capture_plans(&provider, &session, &probe, &mut workload, 1, &mut coverage).await;
+    let captured = workload.queries[0].plan_history.as_ref().unwrap();
+    assert!(captured.captured_plan.is_some(), "a retained body should be captured alongside the current estimate");
+    assert!(workload.queries[0].plan.is_some());
+    session.client.batch_execute(&tagged("SET yb_enable_global_views=on")).await.unwrap();
+    let global_probe = crate::probe::read(&session.client).await.unwrap();
+    crate::history::collect(&session, &global_probe, &mut workload, &mut coverage).await;
+    assert!(workload.queries[0].plan_history.as_ref().unwrap().source.contains("cluster"));
+    let local: std::collections::BTreeMap<_, _> = q.plans.iter().map(|p| (&p.id, p.executions)).collect();
+    let global: std::collections::BTreeMap<_, _> =
+        workload.queries[0].plans.iter().map(|p| (&p.id, p.executions)).collect();
+    assert_eq!(local, global, "one-node global views retain the same cache counts");
+}
+
 fn local_spec() -> ConnectionSpec {
     let mut spec = ConnectionSpec {
         engine: Some(Engine::Yugabyte),
@@ -224,6 +325,8 @@ async fn live_limited_login_aggregates_its_own_visible_role_without_hidden_query
         admin.batch_execute(&tagged(&sql)).await.unwrap();
     }
     let snapshot = observed.unwrap();
+    assert!(snapshot.sources.iter().any(|source| source.source == culprit_core::source_id::DOCDB_PLAN_HISTORY
+        && source.state == culprit_core::SourceState::Unavailable));
     let workload = snapshot.workload.unwrap();
     assert!(workload.source.contains("role ") && workload.source.ends_with(" only"));
     assert!(!workload.queries.is_empty());

@@ -192,7 +192,7 @@ export function NodeDetails({
           <dl>
             <dt>This operator</dt>
             <dd>
-              {share != null ? percent(share) : "no share"} <span className="muted">· {cost(node.self_cost)} units</span>
+              {share != null ? percent(share) : "no share"} <span className="muted">· {plan?.facts?.estimated_cost_unavailable ? "cost unavailable" : `${cost(node.self_cost)} units`}</span>
             </dd>
             {subtreeShare != null && (
               <>

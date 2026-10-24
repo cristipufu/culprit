@@ -2,6 +2,7 @@
 mod catalog;
 mod collect;
 mod global;
+mod history;
 mod index_usage;
 pub mod plan;
 mod probe;
@@ -107,6 +108,18 @@ impl Provider for YugabyteProvider {
                 sql.into()
             };
             self.explain(&text, ExplainMode::Estimated).await
+        })
+        .await
+    }
+    async fn stored_plan(&self, query_id: &str, plan_id: &str) -> Result<Option<Plan>> {
+        // Validate untrusted ids before opening a session; signed 64-bit ids are native QPM hashes.
+        if query_id.parse::<i64>().is_err() || plan_id.parse::<i64>().is_err() {
+            return Err(Error::invalid("YSQL query and plan identifiers must be signed 64-bit integers"));
+        }
+        deadline(OBSERVE_TIMEOUT, async {
+            let session = self.connector.connect_observed(COLLECTOR).await?;
+            let probe = probe::read(&session.client).await?;
+            history::stored(&session, &probe, query_id, plan_id).await
         })
         .await
     }

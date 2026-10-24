@@ -324,6 +324,7 @@ impl Aggregator {
                         most_calls: s.requests.values().copied().max().unwrap_or(0),
                         sample_truncated: s.requests_truncated,
                     }),
+                    plan_history: None,
                     resolved_write_target: None,
                     id: id(&key),
                     query_hash: None,

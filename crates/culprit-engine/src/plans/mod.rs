@@ -146,6 +146,23 @@ pub(crate) fn reparse_saved_traced(snapshot: &mut culprit_core::Snapshot) -> Vec
     // A pg_stat_statements entry's plan is planned from the text it keeps; a log's statement is the application's.
     let statement_stats = workload.kind() == Some(culprit_core::WorkloadKind::StatementStats);
     for q in workload.queries.iter_mut() {
+        if let Some(history) = &mut q.plan_history
+            && let Some(saved) = &history.captured_plan
+        {
+            // Historical cache plans retain their own evidence. Reparse with no current catalog or statement
+            // measurements, which cannot describe the database when this cached plan was compiled.
+            let empty = Catalog { database: &database, tables: &[], indexes: &[] };
+            let engine = saved.engine;
+            let mut outcome =
+                if saved.raw.is_some() { PlanParsingOutcome::Retained } else { PlanParsingOutcome::NoNativeText };
+            if let Some((fresh, native)) = reparse(saved, None, &empty) {
+                if native {
+                    outcome = PlanParsingOutcome::Reparsed;
+                }
+                history.captured_plan = Some(fresh);
+            }
+            trace.push(PlanParsingProvenance { query: q.id.clone(), engine, parser: parser_version(engine), outcome });
+        }
         let Some(saved) = q.plan.as_ref() else { continue };
         let entry = statement_stats.then_some(q.id.as_str());
         let raw = saved.raw.is_some();

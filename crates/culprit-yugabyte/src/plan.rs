@@ -33,6 +33,7 @@ fn metrics(v: &Value, node: bool) -> Option<DocdbMetrics> {
 }
 
 fn enrich(node: &mut PlanNode, v: &Value) {
+    node.facts_mut().estimated_rows_unavailable = number(v, "Plan Rows").is_none();
     node.facts_mut().docdb = metrics(v, true);
     // DIST node counters are per-loop averages. The normalized PlanNode row fields are totals across executions.
     if let Some(rows) = node.facts().docdb.as_ref().and_then(|m| m.rows_scanned) {
@@ -79,6 +80,7 @@ pub fn from_value(value: &Value, kind: PlanKind, statement: Option<&str>) -> Res
     let mut plan = culprit_postgres::plan_json::from_value(value, kind, statement)?;
     let top = value.as_array().and_then(|v| v.first()).unwrap_or(value);
     plan.engine = Engine::Yugabyte;
+    plan.facts_mut().estimated_cost_unavailable = number(&top["Plan"], "Total Cost").is_none();
     plan.facts_mut().docdb = metrics(top, false);
     enrich(&mut plan.root, &top["Plan"]);
     if kind == PlanKind::Generic {
@@ -92,13 +94,48 @@ pub(crate) fn native(plan: Plan) -> Result<Plan> {
     parse(raw, plan.kind, plan.statement.as_deref())
 }
 
+pub(crate) fn redacted_constants(plan: &mut Plan) {
+    fn mark(node: &mut PlanNode) {
+        if node.predicate.is_some() || node.seek_predicate.is_some() {
+            let reason =
+                "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.";
+            node.facts_mut().selectivity_guess = Some(reason.into());
+            node.props.insert(culprit_core::GUESSED_SELECTIVITY.into(), reason.into());
+        }
+        for child in &mut node.children {
+            mark(child);
+        }
+    }
+    plan.facts_mut().constants_redacted = true;
+    mark(&mut plan.root);
+}
+
 pub fn reparse(saved: &Plan) -> Option<Plan> {
-    parse(saved.raw.as_deref()?, saved.kind, saved.statement.as_deref()).ok()
+    let mut plan = parse(saved.raw.as_deref()?, saved.kind, saved.statement.as_deref()).ok()?;
+    if saved.facts().constants_redacted {
+        redacted_constants(&mut plan);
+    }
+    Some(plan)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_qpm_plans_keep_redaction_and_missing_estimates_when_reparsed() {
+        let mut plan = parse(include_str!("../tests/data/qpm.json"), PlanKind::Estimated, None).unwrap();
+        redacted_constants(&mut plan);
+        assert!(plan.facts().constants_redacted && plan.facts().estimated_cost_unavailable);
+        assert!(plan.nodes().iter().all(|n| n.facts().estimated_rows_unavailable));
+        assert!(plan.root.facts().selectivity_guess.is_some());
+        assert!(plan.root.kept_share().is_none());
+        assert!(plan.root.act_rows.is_none() && plan.root.act_time_ms.is_none());
+        let replay = reparse(&plan).unwrap();
+        assert!(replay.facts().constants_redacted);
+        assert!(replay.root.facts().selectivity_guess.is_some());
+        assert_eq!(replay.kind, PlanKind::Estimated);
+    }
 
     #[test]
     fn native_storage_filters_and_counters_survive_replay_without_heap_measurements() {

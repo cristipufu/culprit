@@ -350,7 +350,7 @@ struct ScanArgs {
     /// How many of the heaviest queries to keep.
     #[arg(long, default_value_t = 60)]
     top: u32,
-    /// How many plans to fetch and analyze.
+    /// How many of the heaviest queries to collect plans for.
     #[arg(long, default_value_t = 25)]
     plans: u32,
     /// Exit with code 3 if any finding is at least this severe (for CI).

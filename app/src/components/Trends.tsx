@@ -46,7 +46,7 @@ export function trendNote(workload: Workload): string | null {
 export function planFlags(workload: Workload, onSince?: (at: number) => void): Flag[] {
   const total = workload.total_time_ms || 1;
   return workload.queries
-    .filter((q) => q.plans.length >= 2 && q.total_time_ms / total >= 0.02)
+    .filter((q) => q.plan_history?.kind !== "cache" && q.plans.length >= 2 && q.total_time_ms / total >= 0.02)
     .flatMap((q) => {
       const first = Math.min(...q.plans.map((p) => (p.first_seen ? Date.parse(p.first_seen) : Infinity)));
       return q.plans
@@ -247,7 +247,7 @@ export function QueryTrend({ query, timeline, onSince }: { query: QueryStat; tim
   const runs = b.map((_, i) => statementBucket(timeline, query, i)?.[1] ?? null);
   const maxMean = Math.max(...known);
   const maxRuns = Math.max(...runs.map((r) => r ?? 0), 1e-9);
-  const ordered = [...query.plans].sort((a, c) => (a.first_seen ?? "").localeCompare(c.first_seen ?? ""));
+  const ordered = (query.plan_history?.kind === "cache" ? [] : [...query.plans]).sort((a, c) => (a.first_seen ?? "").localeCompare(c.first_seen ?? ""));
   const firstPlan = ordered[0]?.first_seen ? Date.parse(ordered[0].first_seen) : -Infinity;
   const flags: Flag[] = ordered
     .map((p) => ({ p, color: planColor(query.plans.indexOf(p)) }))
@@ -263,7 +263,7 @@ export function QueryTrend({ query, timeline, onSince }: { query: QueryStat; tim
   return (
     <section>
       <h3>Over time</h3>
-      {query.plans.length > 1 && (
+      {query.plan_history?.kind !== "cache" && query.plans.length > 1 && (
         <div className="plan-keys">
           {query.plans.map((p, i) => (
             <span key={p.id} className="plan-key">

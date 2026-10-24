@@ -356,7 +356,8 @@ function HotNode({ plan, query, focus, weighed, aboutThePlan }: { plan: Plan; qu
   const read = rowsRead(plan, node);
   // Counted only by an actual plan whose engine reported it; otherwise the optimizer's estimate or the table's size.
   const counted = plan.kind === "actual" && node.rows_read != null;
-  const returned = node.act_rows != null ? count(node.act_rows) : `~${count(Math.max(1, Math.round(rowsOut(plan, node))))}`;
+  const projectedRows = rowsOut(plan, node);
+  const returned = node.act_rows != null ? count(node.act_rows) : projectedRows == null ? "an unrecorded number of rows" : `~${count(Math.max(1, Math.round(projectedRows)))}`;
   return (
     <div className="hotnode">
       <Flame size={16} color="var(--heat-4)" style={{ marginTop: 1, flexShrink: 0 }} />

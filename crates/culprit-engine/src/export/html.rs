@@ -11,8 +11,9 @@ use culprit_core::{
 use super::markdown::metric_text;
 use super::svg::{Mark, diagram, escape, heat_class};
 use super::{
-    ExportNote, ExportOptions, environment_label, exported_at, kind_label, node_label, plan_engine_label, prepared,
-    report_engine_label, rows_phrase, rows_text, share, shares_note, sql_text, stats_line, top_costs, where_,
+    ExportNote, ExportOptions, environment_label, estimated_cost, exported_at, kind_label, node_label,
+    plan_engine_label, prepared, report_engine_label, rows_phrase, rows_text, share, shares_note, sql_text, stats_line,
+    top_costs, where_,
 };
 
 const STYLE: &str = r#"
@@ -252,11 +253,11 @@ fn notes_html(notes: &[ExportNote], plan: &Plan) -> String {
 
 fn plan_figures(plan: &Plan) -> String {
     let mut out = String::from(r#"<div class="figures">"#);
-    if plan.weighed() {
+    if plan.weighed() || plan.facts().estimated_cost_unavailable {
         let _ = write!(
             out,
             r#"<div class="fig"><div class="v">{}</div><div class="l">estimated cost</div></div>"#,
-            cost(plan.total_cost)
+            estimated_cost(plan)
         );
     }
     let _ = write!(
@@ -281,10 +282,6 @@ fn plan_figures(plan: &Plan) -> String {
     }
     out.push_str("</div>");
     out
-}
-
-fn cost(value: f64) -> String {
-    if value < 10.0 { format!("{value:.3}") } else { format::count(value) }
 }
 
 /// One plan: its numbers, where the cost goes, the diagram, every step, notes and the statement.
@@ -402,13 +399,13 @@ pub fn diff_html(a: &Plan, b: &Plan, diff: &PlanDiff, name_a: &str, name_b: &str
     let _ = write!(
         body,
         r#"<div class="fig"><div class="v">{}</div><div class="l">cost · {}</div></div>"#,
-        cost(diff.cost_a),
+        estimated_cost(&a),
         escape(name_a)
     );
     let _ = write!(
         body,
         r#"<div class="fig"><div class="v">{}</div><div class="l">cost · {}</div></div>"#,
-        cost(diff.cost_b),
+        estimated_cost(&b),
         escape(name_b)
     );
     if let (Some(ta), Some(tb)) = (diff.time_a_ms, diff.time_b_ms) {
@@ -467,7 +464,7 @@ pub fn diff_html(a: &Plan, b: &Plan, diff: &PlanDiff, name_a: &str, name_b: &str
             escape(name),
             escape(plan_engine_label(plan)),
             kind_label(plan.kind).to_lowercase(),
-            cost(plan.total_cost),
+            estimated_cost(plan),
             diagram(plan, marks, None, name, id)
         );
     }

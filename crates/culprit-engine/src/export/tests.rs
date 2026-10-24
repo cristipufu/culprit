@@ -38,6 +38,32 @@ fn redaction_is_on_unless_asked() {
     assert!(parsed.redact && parsed.notes.is_empty());
 }
 
+#[cfg(feature = "yugabyte")]
+#[test]
+fn retained_native_exports_preserve_missing_costs_and_row_estimates() {
+    let mut plan = culprit_yugabyte::plan::parse(
+        include_str!("../../../culprit-yugabyte/tests/data/qpm.json"),
+        culprit_core::PlanKind::Estimated,
+        None,
+    )
+    .unwrap();
+    culprit_checks::present_retained_plan(&mut plan, "Independent native plan-cache period");
+    let options = ExportOptions::default();
+    let markdown = plan_markdown(&plan, "Retained plan", &options);
+    let html = plan_html(&plan, "Retained plan", &options);
+    assert!(markdown.contains("estimated cost unavailable") && markdown.contains("| unavailable |"));
+    assert!(
+        html.contains("Row estimate unavailable") && html.contains("unavailable</div><div class=\"l\">estimated cost")
+    );
+    assert!(!html.contains("0 rows") && !html.contains("0.000"));
+    let diff = culprit_core::plan_diff(&plan, &plan);
+    assert!(
+        diff_markdown(&plan, &plan, &diff, "A", "B", &options)
+            .contains("| Estimated cost | unavailable | unavailable |")
+    );
+    assert!(!diff_html(&plan, &plan, &diff, "A", "B", &options).contains("0.000"));
+}
+
 #[test]
 fn a_plan_file_never_puts_markup_into_an_html_page() {
     let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/plans/mariadb-index.json")).unwrap();

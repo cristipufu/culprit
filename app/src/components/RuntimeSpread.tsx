@@ -40,7 +40,7 @@ function tidy(compiled?: string | null): string | null {
 
 function lanes(q: QueryStat): Lane[] {
   const spread = q.spread;
-  if (q.plans.length > 0) {
+  if (q.plans.length > 0 && q.plan_history?.kind !== "cache") {
     return q.plans
       .filter((p) => p.executions > 0)
       .map((p, i) => ({

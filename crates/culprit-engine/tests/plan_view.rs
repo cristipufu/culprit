@@ -173,11 +173,11 @@ fn projected_runs_keep_zero_and_parallel_execution_semantics() {
     let mut plan = inputs::cases().remove(0).plan;
     plan.root.act_executions = Some(0.0);
     let view = culprit_checks::plan_view(&plan, None);
-    assert_eq!((view.nodes[0].runs, view.nodes[0].estimated_rows_for_runs), (0.0, 0.0));
+    assert_eq!((view.nodes[0].runs, view.nodes[0].estimated_rows_for_runs), (Some(0.0), Some(0.0)));
     plan.root.act_executions = Some(4.0);
     plan.root.props.insert(culprit_core::plan::PARALLEL_THREADS.into(), "4".into());
     let view = culprit_checks::plan_view(&plan, None);
-    assert_eq!((view.nodes[0].runs, view.nodes[0].estimated_rows_for_runs), (1.0, plan.root.est_rows));
+    assert_eq!((view.nodes[0].runs, view.nodes[0].estimated_rows_for_runs), (Some(1.0), Some(plan.root.est_rows)));
 }
 
 #[test]

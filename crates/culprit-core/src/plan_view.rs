@@ -34,10 +34,10 @@ pub struct PlanMeasurementRef {
 #[ts(export)]
 pub struct PlanOperatorView {
     pub id: u32,
-    pub runs: f64,
-    pub estimated_rows: f64,
-    pub estimated_rows_for_runs: f64,
-    pub rows_out: f64,
+    pub runs: Option<f64>,
+    pub estimated_rows: Option<f64>,
+    pub estimated_rows_for_runs: Option<f64>,
+    pub rows_out: Option<f64>,
     pub rows_read: Option<f64>,
     pub misestimate: Option<f64>,
     pub guess: Option<Guess>,

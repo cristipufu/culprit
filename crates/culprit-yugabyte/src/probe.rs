@@ -66,7 +66,7 @@ pub(crate) async fn read(client: &Client) -> Result<Probe> {
         current_setting('yb_enable_pg_stat_statements_rpc_stats',true) AS rpc_metrics,
         (SELECT oid::text FROM pg_roles WHERE rolname=current_user) AS role_oid,
         (EXISTS(SELECT 1 FROM pg_roles WHERE rolname=current_user AND rolsuper)
-          OR pg_has_role(current_user,'pg_read_all_stats','MEMBER')) AS all_stats",
+          OR pg_has_role(current_user,'pg_read_all_stats','USAGE')) AS all_stats",
             timestamp("clock_timestamp()"),
             timestamp("pg_postmaster_start_time()")
         ),

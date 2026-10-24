@@ -204,6 +204,9 @@ impl PlanNode {
             return (!crate::insights::mysql_guessed_filtered(filtered, conditions))
                 .then_some((filtered / 100.0).clamp(0.0, 1.0));
         }
+        if self.act_rows.is_none() && self.facts().estimated_rows_unavailable {
+            return None;
+        }
         let kept = self.act_rows.unwrap_or_else(|| self.est_rows_total());
         let read = self.rows_read_total()?;
         (read > 0.0).then(|| (kept / read).min(1.0))
@@ -246,6 +249,9 @@ impl PlanNode {
     ///
     /// A bitmap scan of a BRIN index reports page ranges' worth of rows, not rows: no measurement either.
     pub fn misestimate(&self) -> Option<f64> {
+        if self.facts().estimated_rows_unavailable {
+            return None;
+        }
         let actual = self.act_rows?;
         if self.act_executions.is_some_and(|runs| runs <= 0.0)
             || matches!(self.op.as_str(), "BitmapAnd" | "BitmapOr")

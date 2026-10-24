@@ -202,10 +202,22 @@ impl Execution<'_> {
         plan_id: Option<&str>,
     ) -> Plan {
         if let Some(snapshot) = snapshot {
+            if let Some(history) = snapshot
+                .queries()
+                .iter()
+                .find(|q| q.id == query_id)
+                .and_then(|q| q.plan_history.as_ref())
+                .filter(|h| h.kind == culprit_core::PlanHistoryKind::Cache && plan_id.is_some())
+            {
+                culprit_checks::present_retained_plan(&mut plan, &history.note);
+                return plan;
+            }
             culprit_core::insights::mark_plan(&mut plan, snapshot);
             if let Some(q) = snapshot.queries().iter().find(|q| q.id == query_id) {
                 culprit_core::insights::mark_query(&mut plan, &q.text);
-                if plan_id.is_none_or(|id| q.plan_id.as_deref() == Some(id) || q.plans.iter().any(|p| p.id == id)) {
+                if (plan_id.is_none() || q.plan_history_matches_workload())
+                    && plan_id.is_none_or(|id| q.plan_id.as_deref() == Some(id) || q.plans.iter().any(|p| p.id == id))
+                {
                     let mut measured = q.clone();
                     if let Some(id) = plan_id {
                         measured.plan_id = Some(id.into());
@@ -221,7 +233,12 @@ impl Execution<'_> {
             i.severity = culprit_core::Severity::Low;
             i.fix_sql = None;
         }
-        plan.insights = Some(culprit_core::insights::PlanInsights { items, note: Some("No matching measurements for this plan were identified in the selected workload. Structural observations remain useful for growth planning; current urgency and an index change require workload and catalog evidence.".into()) });
+        let note = if plan.facts().constants_redacted {
+            "This retained plan and its cache statistics cover periods independent of the selected statement statistics. No measured operator counters or matching workload measurements are attached. Structural observations remain useful for growth planning; current urgency and an index change require workload and catalog evidence."
+        } else {
+            "No matching measurements for this plan were identified in the selected workload. Structural observations remain useful for growth planning; current urgency and an index change require workload and catalog evidence."
+        };
+        plan.insights = Some(culprit_core::insights::PlanInsights { items, note: Some(note.into()) });
         culprit_checks::present_plan(&mut plan, None);
         plan
     }
@@ -233,6 +250,15 @@ impl Execution<'_> {
         plan_id: Option<&str>,
         report: Option<&Report>,
     ) -> Result<Plan> {
+        if let Some(id) = plan_id
+            && let Some(history) = report
+                .and_then(|r| r.snapshot.queries().iter().find(|q| q.id == query_id))
+                .and_then(|q| q.plan_history.as_ref())
+            && history.captured_plan_id.as_deref() == Some(id)
+            && let Some(plan) = &history.captured_plan
+        {
+            return Ok(plan.clone());
+        }
         let provider = self.connections.provider(name).await?;
         crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, async {
         if let Some(plan_id) = plan_id {
@@ -249,7 +275,7 @@ impl Execution<'_> {
             .and_then(|w| w.query(query_id))
             .ok_or_else(|| Error::not_found(format!("No query {query_id} in the selected report for {name}")))?;
         if let Some(plan_id) = query.plan_id.as_ref().or_else(|| query.plans.first().map(|p| &p.id))
-            && plan_id.chars().all(|c| c.is_ascii_digit())
+            && query.plan_history_matches_workload()
             && let Some(plan) = provider.stored_plan(query_id, plan_id).await?
         {
             return Ok(plan);

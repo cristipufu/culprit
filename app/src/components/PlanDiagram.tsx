@@ -7,7 +7,7 @@ import type { QueryStat } from "../gen/QueryStat";
 import { planShares } from "../lib/actual";
 import { duration, percent } from "../lib/format";
 import { can, serverName } from "../lib/engines";
-import { allNodes, costBasis as basis, cost, estRowsForRuns, findingNoShareReason, insightsByNode, isWrapper, misestimate, noShareReason, rows, rowsOut, uncostedSteps } from "../lib/plan-format";
+import { allNodes, costBasis as basis, cost, estRows, estRowsForRuns, findingNoShareReason, insightsByNode, isWrapper, misestimate, noShareReason, rows, rowsOut, uncostedSteps } from "../lib/plan-format";
 import { ActualSummary } from "./ActualSummary";
 import { NodeDetails } from "./NodeDetails";
 import { OpIcon } from "./OpIcon";
@@ -252,7 +252,7 @@ export function PlanDiagram(props: {
     [plan.root, total, expanded, keep, estimates, shares],
   );
   const byId = new Map(boxes.map((b) => [b.node.id, b]));
-  const maxRows = Math.max(1, ...nodes.map((node) => rowsOut(plan, node)));
+  const maxRows = Math.max(1, ...nodes.map((node) => rowsOut(plan, node) ?? 0));
   const stroke = (r: number) => 1.5 + 4.5 * (Math.log10(r + 1) / Math.log10(maxRows + 1));
   const selectedNode = nodes.find((n) => n.id === selected) ?? null;
 
@@ -297,7 +297,7 @@ export function PlanDiagram(props: {
   boxes.forEach((b) => {
     const parent = parentOf.get(b.node.id);
     const to = parent != null ? byId.get(parent) : undefined;
-    if (to) edges.push({ from: b, to, rows: rowsOut(plan, b.node), hot: hot.has(b.node.id) && hot.has(to.node.id), key: `${to.node.id}-${b.node.id}`, via: b.via });
+    if (to) edges.push({ from: b, to, rows: rowsOut(plan, b.node) ?? 0, hot: hot.has(b.node.id) && hot.has(to.node.id), key: `${to.node.id}-${b.node.id}`, via: b.via });
   });
   folds.forEach((f) => {
     const parent = byId.get(f.parent);
@@ -317,7 +317,7 @@ export function PlanDiagram(props: {
           <span className="tag">{kindLabel ?? (plan.kind === "actual" ? "Actual plan" : plan.kind === "generic" ? "Generic plan" : "Estimated plan")}</span>
           <span>
             {nodes.length} operator{nodes.length === 1 ? "" : "s"}
-            {estimates && ` · cost ${cost(planCost)}`}
+            {estimates && ` · cost ${plan.facts?.estimated_cost_unavailable ? "unavailable" : cost(planCost)}`}
           </span>
           <span className="spacer" />
           {plan.warnings.length > 0 && (
@@ -528,7 +528,7 @@ function PlanCard(props: {
             {mis != null && <span className="mis">×{rows(Math.abs(mis))}</span>}
           </>
         ) : estimates ? (
-          <>{rows(node.est_rows * Math.max(1, node.est_executions))} est.</>
+          <>{rows(estRows(plan, node))} est.</>
         ) : (
           node.seek_predicate && (
             <span className="muted mono pc-seek" title={node.seek_predicate}>

@@ -28,7 +28,7 @@ import type { PlanNode } from "../gen/PlanNode";
 import type { ScenarioKind } from "../gen/ScenarioKind";
 import { api, errorMessage, type ApiError } from "../lib/api";
 import { count, duration, percent } from "../lib/format";
-import { stepShare } from "../lib/plan-format";
+import { estRows, stepShare } from "../lib/plan-format";
 import { useHotkeys } from "../lib/hotkeys";
 import { SAMPLES, setSide, swapSides, trySample, usePlans, type LoadedPlan } from "../lib/plans";
 import { deliver, exportOptions } from "../lib/share";
@@ -331,8 +331,8 @@ export function PlanCompare() {
             </ul>
           )}
           <div className="cmp-figures">
-            <Figure label={`cost · ${names[0]}`} value={cost(ready.cost_a)} />
-            <Figure label={`cost · ${names[1]}`} value={cost(ready.cost_b)} tone={v.tone} />
+            <Figure label={`cost · ${names[0]}`} value={ready.cost_a == null ? "unavailable" : cost(ready.cost_a)} />
+            <Figure label={`cost · ${names[1]}`} value={ready.cost_b == null ? "unavailable" : cost(ready.cost_b)} tone={v.tone} />
             {ready.time_a_ms != null && ready.time_b_ms != null && (
               <>
                 <Figure label={`time · ${names[0]}`} value={duration(ready.time_a_ms)} />
@@ -550,7 +550,7 @@ type Row = { label: string; a: string | null; b: string | null };
 
 function rowsFor(node: PlanNode | null, plan: Plan): Record<string, string | null> {
   if (!node) return {};
-  const est = node.est_rows * Math.max(1, node.est_executions);
+  const est = estRows(plan, node);
   // SQLite's plans have no estimates or costs: nothing to show rather than zeros.
   const weighed = can(plan.engine, "plan_estimates") || plan.kind === "actual";
   return {
@@ -559,15 +559,15 @@ function rowsFor(node: PlanNode | null, plan: Plan): Record<string, string | nul
     Index: node.index,
     "Seek on": node.seek_predicate ? norm(node.seek_predicate) : null,
     Filter: node.predicate ? norm(node.predicate) : null,
-    "Estimated rows": weighed ? count(est) : null,
-    "Estimated executions": weighed ? count(node.est_executions) : null,
+    "Estimated rows": weighed && est != null ? count(est) : null,
+    "Estimated executions": weighed && est != null ? count(node.est_executions) : null,
     "Actual rows": node.act_rows != null ? count(node.act_rows) : null,
     "Rows read": node.rows_read != null ? count(node.rows_read) : null,
     "Rows in table": node.table_rows != null ? count(node.table_rows) : null,
     "Actual time": node.act_time_ms != null ? duration(node.act_time_ms) : null,
     // Only where the plan can state one (none beside a step it puts no cost on, nor on a default guess): "—".
     "Share of the plan's cost": weighed ? percent(stepShare(plan, node)) : null,
-    "Subtree cost": weighed ? cost(node.subtree_cost) : null,
+    "Subtree cost": weighed && !plan.facts?.estimated_cost_unavailable ? cost(node.subtree_cost) : null,
     Warnings: node.warnings.length ? node.warnings.map((w) => w.replace(/-/g, " ")).join(", ") : null,
   };
 }

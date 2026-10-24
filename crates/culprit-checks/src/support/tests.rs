@@ -267,6 +267,7 @@ fn query_handles() {
 
 pub(crate) fn sample() -> QueryStat {
     QueryStat {
+        plan_history: None,
         resolved_write_target: None,
         requests: None,
         id: "1".into(),

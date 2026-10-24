@@ -104,7 +104,7 @@ pub(super) fn plan_changes<'a>(s: &'a Snapshot, w: &Workload) -> Vec<PlanChange<
     // A plan switch of a query that has since stopped running is history, not news. Its share as every surface states
     // it ([`Workload::statement_share`]).
     let mut out: Vec<PlanChange> = app_queries(s)
-        .filter(|q| q.plans.len() >= 2 && w.statement_share(q) >= 0.02)
+        .filter(|q| q.workload_plans().len() >= 2 && w.statement_share(q) >= 0.02)
         .filter(|q| !crate::query_is_history(s, q))
         .filter_map(|q| {
             let seen = |p: &culprit_core::PlanVariant| p.first_seen.as_deref().and_then(format::epoch_seconds);

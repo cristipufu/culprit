@@ -628,14 +628,14 @@ pub fn cheap_plan_runs(plan: &Plan, q: Option<&crate::model::QueryStat>) -> Chea
     let fed = root.children.first().filter(|_| root.kind == NodeKind::Modify).map_or(0.0, |c| c.est_rows);
     let expected = root.est_rows.max(fed).max(1.0);
     let variant = q.and_then(|q| q.captured_plan_variant());
-    let ambiguous = variant.is_none() && q.is_some_and(|q| q.plans.len() > 1);
+    let ambiguous = variant.is_none() && q.is_some_and(|q| q.workload_plans().len() > 1);
     let reads = match variant {
         Some(p) => p.logical_reads.filter(|_| p.executions > 0.0).map(|r| r / p.executions),
         None if ambiguous => None,
         None => q.and_then(|q| q.reads_per_execution()),
     };
     // Query Store keeps no rows per variant in this model. Never compare a plan with rows measured over other plans.
-    let rows = q.filter(|q| q.plans.len() <= 1).and_then(|q| q.rows_handled_per_execution());
+    let rows = q.filter(|q| q.workload_plans().len() <= 1).and_then(|q| q.rows_handled_per_execution());
     let mean = variant.map(|p| p.mean_time_ms).or_else(|| q.filter(|_| !ambiguous).map(|q| q.mean_time_ms));
     if let Some(rows) =
         rows.filter(|rows| *rows >= expected * MISESTIMATE_FACTOR && *rows >= crate::plan::MISESTIMATE_MIN_ROWS)

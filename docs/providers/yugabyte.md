@@ -26,6 +26,7 @@ are not claimed as verified; optional views and functions that are absent or den
 | Workload | Database-filtered `pg_stat_statements`, aggregated by query identity; top queries retain totals for the complete source |
 | Native costs | DocDB RPCs, storage operations/entries, timings, retries and LSM traversal counters, only for metric families enabled on every contributing node |
 | Captured plans | Safe generic/estimated YSQL plans; elevated logins plan their own recorded text, including their copy on another node when global views are configured |
+| Retained plan history | Native `yb_pg_stat_plans` cache counts, weighted average/max elapsed times and first/last use; selected cached bodies stay in saved scans for offline inspection |
 | Analyze | `EXPLAIN (ANALYZE, DIST, VERBOSE, FORMAT JSON)`; measured writes roll back |
 | Plan files | Native JSON with DIST/storage markers is detected as YugabyteDB; saved scans reparse with the native reader |
 | Catalog | Tables, row estimates, columns, defaults, foreign keys, index definitions, hash keys, tablet counts and colocation |
@@ -41,8 +42,10 @@ Workload retention streams at most 8 MiB of statement text and counters, without
 An oversized response retains a contiguous prefix and records partial coverage; no retained totals means unknown
 workload rather than a zero. Completion and late errors are still read after retention stops.
 
-The plan-capture phase has one 20-second budget and retains at most 8 MiB of native plan/statement text. Remaining
-statements can be planned on demand. Operator DIST counters are per-loop averages; normalized row counts multiply by
+The plan-capture phase has one 20-second budget and retains at most 8 MiB of native plan/statement text across current
+estimates and retained cache plans. History metadata retains at most 1,000 entries and 8 MiB; collection fetches one
+dominant retained body for each requested query in a single bounded read. `--plans 0` keeps metadata without fetching
+bodies. Remaining statements can be planned on demand. Operator DIST counters are per-loop averages; normalized row counts multiply by
 executions once. Storage entries can include index and table reads of the same SQL row. Native timings may overlap;
 they are not PostgreSQL page counts, CPU utilization or exclusive shares of statement time.
 
@@ -51,6 +54,27 @@ costs have no calibrated materiality threshold in Culprit: a large or small cost
 expensive or cheap work. Measured operator work and elapsed time remain separate from those estimates.
 
 Without `pg_read_all_stats`, statement totals are filtered to the current role before aggregation and labeled with that role scope. Hidden queries never become an invented query group.
+
+## Retained plans
+
+[Query Plan Management](https://docs.yugabyte.com/stable/launch-and-manage/monitor-and-alert/query-tuning/query-plan-manage/)
+keeps an independent, evictable cache. Its counts and elapsed times have their own first/last-use dates, resets and
+evictions; they do not share `pg_stat_statements`' counter epoch. Culprit shows those entries in Queries → History,
+without turning a cache entry's first use into a plan-change event or attributing the statement's runtime to it.
+The Plan tab initially shows the current safe estimate. Choosing a retained plan shows its cached tree instead.
+The selected cached body in a saved scan opens offline, including after eviction from the database cache.
+
+Retained bodies need complete JSON in the existing `yb_pg_stat_plans_plan_format` configuration. Text, XML, YAML or
+truncated bodies remain unavailable with a reason. Native cached trees redact original constants and can omit row
+estimates, execution counts and optimizer costs; these stay unknown. No measured operator counters, current-catalog
+row counts or index-fix SQL are borrowed from the current workload. Collection never selects execution parameters
+or hints, and tagged monitoring statements opt out of QPM tracking with the native skip comment.
+
+Plan-cache reads require an effective `pg_read_all_stats` privilege (or superuser). Membership without inheritance is
+insufficient. On the verified **2026.1.2.0-b137** release, an unprivileged native cache read crashes that backend in
+`yb_pg_stat_plans_get_all_entries`, even with a `userid` filter. Culprit checks the effective privilege before any
+cache read and records unavailable coverage instead; ordinary role-scoped statement collection still works.
+An administrator can grant the monitoring role outside collection. Culprit never grants it or enables QPM itself.
 
 Ordinary statistics are **node-local**. The scope is visible in the workload source and coverage notes. Culprit does not
 enable or configure the optional [cluster-wide database views](https://docs.yugabyte.com/stable/launch-and-manage/monitor-and-alert/cluster-wide-db-views/)
@@ -85,7 +109,7 @@ PostgreSQL heap pages, buffer ratios, dead tuples, HOT updates, autovacuum, XID/
 advice are unavailable by design. Database size remains unknown. Configuration suggestions are restricted to supported
 YSQL database settings; other changes use YugabyteDB administration rather than PostgreSQL `ALTER SYSTEM` guesses.
 
-The current provider does not yet collect native ASH history, saved `yb_pg_stat_plans` history, complete native operation progress,
+The current provider does not yet collect native ASH history, complete native operation progress,
 server resource pressure or distributed error/deadlock history. These are implementation gaps;
 PostgreSQL placeholders are not substituted. Current session/lock collection is limited to 1,000 sessions and 2,000
 waits and labels truncated or node-local visibility incomplete. Live lowers the lock metadata reader's session-local
@@ -121,4 +145,5 @@ published 0.4.4 build.
 
 ![YSQL workload scope and dashboard](../screenshots/yugabyte-dashboard.png)
 ![Recorded native DocDB work per statement run](../screenshots/yugabyte-queries.png)
+![Native retained plan history with independent cache periods](../screenshots/yugabyte-history.png)
 ![Native hash keys and unavailable local index-usage counters](../screenshots/yugabyte-schema.png)

@@ -1,40 +1,40 @@
-reading: YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12) · database culprit_yugabyte · scanned 2026-10-24T01:01:08.861346Z
-headline: 4 opportunities. The top ones touch 706 ms of database time over the 1 minute since statistics were reset (89%).
-top share: 89%
-findings: 5
+reading: YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12) · database culprit_yugabyte · scanned 2026-10-24T03:50:04.638867Z
+headline: 5 opportunities. The top ones touch 1.2 s of database time over the 4 minutes since statistics were reset (84%).
+top share: 84%
+findings: 6
 
 === finding heavy-query:8345917977273313509
 Optional improvement · low severity · high confidence · queries
-title: A read from orders takes 390 ms of database time over the 1 minute since statistics were reset (49%)
-summary: 390 ms of database time over the 1 minute since statistics were reset (49%). It ran 30 times in 1 minute at 13 ms on average: 49% of all database time in the 1 minute since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.
-impact: 390 ms of database time over the 1 minute since statistics were reset (49%) · 49.0% of database time
+title: A read from orders takes 696 ms of database time over the 4 minutes since statistics were reset (47%)
+summary: 696 ms of database time over the 4 minutes since statistics were reset (47%). It ran 30 times in 4 minutes at 23 ms on average: 47% of all database time in the 4 minutes since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.
+impact: 696 ms of database time over the 4 minutes since statistics were reset (47%) · 47.0% of database time
 metrics:
-  - Share of DB time: 49%
-  - Average duration: 13 ms
+  - Share of DB time: 47%
+  - Average duration: 23 ms
   - Rows returned per run: 20
 fix: Find this statement in the application and check whether it reads more rows or columns than it needs.
 verify:
   1. YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 queries:
-  - 8345917977273313509: 49% of database time
+  - 8345917977273313509: 47% of database time
 brief:
-    # A read from orders takes 390 ms of database time over the 1 minute since statistics were reset (49%)
+    # A read from orders takes 696 ms of database time over the 4 minutes since statistics were reset (47%)
 
-    Database: **yugabyte-demo** (YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12), database `culprit_yugabyte`, local environment). Finding `heavy-query:8345917977273313509`: Optional improvement, low impact, high confidence. Scanned 2026-10-24T01:01:08.861346Z.
+    Database: **yugabyte-demo** (YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12), database `culprit_yugabyte`, local environment). Finding `heavy-query:8345917977273313509`: Optional improvement, low impact, high confidence. Scanned 2026-10-24T03:50:04.638867Z.
 
     ## What's happening
 
-    390 ms of database time over the 1 minute since statistics were reset (49%). It ran 30 times in 1 minute at 13 ms on average: 49% of all database time in the 1 minute since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.
+    696 ms of database time over the 4 minutes since statistics were reset (47%). It ran 30 times in 4 minutes at 23 ms on average: 47% of all database time in the 4 minutes since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.
 
     ## Evidence
 
-    - Share of DB time: 49%
-    - Average duration: 13 ms
+    - Share of DB time: 47%
+    - Average duration: 23 ms
     - Rows returned per run: 20
 
     ## Queries involved
 
-    Query `8345917977273313509` — 49% of DB time, 30 runs over the 1 minute since statistics were reset, 13 ms average:
+    Query `8345917977273313509` — 47% of DB time, 30 runs over the 4 minutes since statistics were reset, 23 ms average:
 
     ```sql
     SELECT id,total FROM public.orders WHERE created_at >= $1::timestamptz ORDER BY created_at LIMIT $2
@@ -54,36 +54,36 @@ brief:
 
 === finding heavy-query:4357247400045295631
 Optional improvement · low severity · high confidence · queries
-title: A read from orders takes 169 ms of database time over the 1 minute since statistics were reset (21%)
-summary: 169 ms of database time over the 1 minute since statistics were reset (21%). It ran 30 times in 1 minute at 5.6 ms on average: 21% of all database time in the 1 minute since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.
-impact: 169 ms of database time over the 1 minute since statistics were reset (21%) · 21.2% of database time
+title: A read from orders takes 293 ms of database time over the 4 minutes since statistics were reset (20%)
+summary: 293 ms of database time over the 4 minutes since statistics were reset (20%). It ran 30 times in 4 minutes at 9.8 ms on average: 20% of all database time in the 4 minutes since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.
+impact: 293 ms of database time over the 4 minutes since statistics were reset (20%) · 19.8% of database time
 metrics:
-  - Share of DB time: 21%
-  - Average duration: 5.6 ms
+  - Share of DB time: 20%
+  - Average duration: 9.8 ms
   - Rows returned per run: 1
 fix: The plan reads all of public.orders and keeps about 50% of the rows, too many for an index to help. Read only the rows and columns the caller needs, or page through them.
 verify:
   1. YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 queries:
-  - 4357247400045295631: 21% of database time · plan step 1
+  - 4357247400045295631: 20% of database time · plan step 1
 brief:
-    # A read from orders takes 169 ms of database time over the 1 minute since statistics were reset (21%)
+    # A read from orders takes 293 ms of database time over the 4 minutes since statistics were reset (20%)
 
-    Database: **yugabyte-demo** (YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12), database `culprit_yugabyte`, local environment). Finding `heavy-query:4357247400045295631`: Optional improvement, low impact, high confidence. Scanned 2026-10-24T01:01:08.861346Z.
+    Database: **yugabyte-demo** (YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12), database `culprit_yugabyte`, local environment). Finding `heavy-query:4357247400045295631`: Optional improvement, low impact, high confidence. Scanned 2026-10-24T03:50:04.638867Z.
 
     ## What's happening
 
-    169 ms of database time over the 1 minute since statistics were reset (21%). It ran 30 times in 1 minute at 5.6 ms on average: 21% of all database time in the 1 minute since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.
+    293 ms of database time over the 4 minutes since statistics were reset (20%). It ran 30 times in 4 minutes at 9.8 ms on average: 20% of all database time in the 4 minutes since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.
 
     ## Evidence
 
-    - Share of DB time: 21%
-    - Average duration: 5.6 ms
+    - Share of DB time: 20%
+    - Average duration: 9.8 ms
     - Rows returned per run: 1
 
     ## Queries involved
 
-    Query `4357247400045295631` — 21% of DB time, 30 runs over the 1 minute since statistics were reset, 5.6 ms average:
+    Query `4357247400045295631` — 20% of DB time, 30 runs over the 4 minutes since statistics were reset, 9.8 ms average:
 
     ```sql
     SELECT count(*) FROM public.orders WHERE status = $1
@@ -106,8 +106,8 @@ brief:
 === finding unindexed-fk:public.orders(customer_id)
 Optional improvement · low severity · high confidence · indexes
 title: orders has no index on customer_id, its foreign key to customers
-summary: The associated statements used 147 ms of database time over the 1 minute since statistics were reset (18%). Deleting a row from public.customers, or changing its key, makes the database look for matching rows in public.orders (20K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 18% of database time.
-impact: 18% of DB time · 18.4% of database time
+summary: The associated statements used 251 ms of database time over the 4 minutes since statistics were reset (17%). Deleting a row from public.customers, or changing its key, makes the database look for matching rows in public.orders (20K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 17% of database time.
+impact: 17% of DB time · 16.9% of database time
 metrics:
   - Rows in table: 20K
   - Foreign key: orders_customer_id_fkey
@@ -120,15 +120,15 @@ verify:
   2. Re-scan once the index exists: this finding should be gone, and a delete from public.customers then finds the rows of public.orders it checks through the index, not by scanning the table.
   3. YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop.
 queries:
-  - 466454478821061062: 18% of database time
+  - 466454478821061062: 17% of database time
 brief:
     # orders has no index on customer_id, its foreign key to customers
 
-    Database: **yugabyte-demo** (YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12), database `culprit_yugabyte`, local environment). Finding `unindexed-fk:public.orders(customer_id)`: Optional improvement, low impact, high confidence. Scanned 2026-10-24T01:01:08.861346Z.
+    Database: **yugabyte-demo** (YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12), database `culprit_yugabyte`, local environment). Finding `unindexed-fk:public.orders(customer_id)`: Optional improvement, low impact, high confidence. Scanned 2026-10-24T03:50:04.638867Z.
 
     ## What's happening
 
-    The associated statements used 147 ms of database time over the 1 minute since statistics were reset (18%). Deleting a row from public.customers, or changing its key, makes the database look for matching rows in public.orders (20K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 18% of database time.
+    The associated statements used 251 ms of database time over the 4 minutes since statistics were reset (17%). Deleting a row from public.customers, or changing its key, makes the database look for matching rows in public.orders (20K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 17% of database time.
 
     ## Evidence
 
@@ -137,7 +137,7 @@ brief:
 
     ## Queries involved
 
-    Query `466454478821061062` — 18% of DB time, 30 runs over the 1 minute since statistics were reset, 4.9 ms average:
+    Query `466454478821061062` — 17% of DB time, 30 runs over the 4 minutes since statistics were reset, 8.4 ms average:
 
     ```sql
     SELECT id,status,total FROM public.orders WHERE customer_id = $1 LIMIT $2
@@ -162,38 +162,87 @@ brief:
 
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan yugabyte-demo` and check `unindexed-fk:public.orders(customer_id)` the way *How to verify* says.
 
-=== finding heavy-query:-71879613880347319
+=== finding heavy-query:-1395695495724611761
 Optional improvement · low severity · high confidence · queries
-title: A read from orders takes 70 ms of database time over the 1 minute since statistics were reset (9%)
-summary: 70 ms of database time over the 1 minute since statistics were reset (9%). It ran 10 times in 1 minute at 7 ms on average: 9% of all database time in the 1 minute since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.
-impact: 70 ms of database time over the 1 minute since statistics were reset (9%) · 8.8% of database time
+title: A read from customers takes 132 ms of database time over the 4 minutes since statistics were reset (9%)
+summary: 132 ms of database time over the 4 minutes since statistics were reset (9%). It ran 30 times in 4 minutes at 4.4 ms on average: 9% of all database time in the 4 minutes since statistics were reset.
+impact: 132 ms of database time over the 4 minutes since statistics were reset (9%) · 8.9% of database time
 metrics:
   - Share of DB time: 9%
-  - Average duration: 7 ms
+  - Average duration: 4.4 ms
+  - Rows returned per run: 1
+fix: Find this statement in the application and check whether it reads more rows or columns than it needs.
+verify:
+  1. YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+queries:
+  - -1395695495724611761: 9% of database time
+brief:
+    # A read from customers takes 132 ms of database time over the 4 minutes since statistics were reset (9%)
+
+    Database: **yugabyte-demo** (YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12), database `culprit_yugabyte`, local environment). Finding `heavy-query:-1395695495724611761`: Optional improvement, low impact, high confidence. Scanned 2026-10-24T03:50:04.638867Z.
+
+    ## What's happening
+
+    132 ms of database time over the 4 minutes since statistics were reset (9%). It ran 30 times in 4 minutes at 4.4 ms on average: 9% of all database time in the 4 minutes since statistics were reset.
+
+    ## Evidence
+
+    - Share of DB time: 9%
+    - Average duration: 4.4 ms
+    - Rows returned per run: 1
+
+    ## Queries involved
+
+    Query `-1395695495724611761` — 9% of DB time, 30 runs over the 4 minutes since statistics were reset, 4.4 ms average:
+
+    ```sql
+    SELECT name FROM public.customers WHERE id = $1
+    ```
+
+    ## Suggested fix
+
+    Find this statement in the application and check whether it reads more rows or columns than it needs.
+
+    ## How to verify
+
+    - YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes yugabyte-demo --since <ship time>`): there its time per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+
+    ## What to do in the codebase
+
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan yugabyte-demo` and check `heavy-query:-1395695495724611761` the way *How to verify* says.
+
+=== finding heavy-query:-71879613880347319
+Optional improvement · low severity · high confidence · queries
+title: A read from orders takes 110 ms of database time over the 4 minutes since statistics were reset (7%)
+summary: 110 ms of database time over the 4 minutes since statistics were reset (7%). It ran 10 times in 4 minutes at 11 ms on average: 7% of all database time in the 4 minutes since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.
+impact: 110 ms of database time over the 4 minutes since statistics were reset (7%) · 7.5% of database time
+metrics:
+  - Share of DB time: 7%
+  - Average duration: 11 ms
   - Rows returned per run: 20
 fix: Find this statement in the application and check whether it reads more rows or columns than it needs.
 verify:
   1. YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 queries:
-  - -71879613880347319: 9% of database time
+  - -71879613880347319: 7% of database time
 brief:
-    # A read from orders takes 70 ms of database time over the 1 minute since statistics were reset (9%)
+    # A read from orders takes 110 ms of database time over the 4 minutes since statistics were reset (7%)
 
-    Database: **yugabyte-demo** (YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12), database `culprit_yugabyte`, local environment). Finding `heavy-query:-71879613880347319`: Optional improvement, low impact, high confidence. Scanned 2026-10-24T01:01:08.861346Z.
+    Database: **yugabyte-demo** (YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12), database `culprit_yugabyte`, local environment). Finding `heavy-query:-71879613880347319`: Optional improvement, low impact, high confidence. Scanned 2026-10-24T03:50:04.638867Z.
 
     ## What's happening
 
-    70 ms of database time over the 1 minute since statistics were reset (9%). It ran 10 times in 1 minute at 7 ms on average: 9% of all database time in the 1 minute since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.
+    110 ms of database time over the 4 minutes since statistics were reset (7%). It ran 10 times in 4 minutes at 11 ms on average: 7% of all database time in the 4 minutes since statistics were reset. Every run includes a seq scan of public.orders that reads 20K rows: a scan reads the whole table, and costs more as the table grows.
 
     ## Evidence
 
-    - Share of DB time: 9%
-    - Average duration: 7 ms
+    - Share of DB time: 7%
+    - Average duration: 11 ms
     - Rows returned per run: 20
 
     ## Queries involved
 
-    Query `-71879613880347319` — 9% of DB time, 10 runs over the 1 minute since statistics were reset, 7 ms average:
+    Query `-71879613880347319` — 7% of DB time, 10 runs over the 4 minutes since statistics were reset, 11 ms average:
 
     ```sql
     SELECT o.id,c.name FROM public.orders o JOIN public.customers c ON c.id=o.customer_id WHERE o.id < $1
@@ -214,35 +263,35 @@ brief:
 === finding filtered-scan:public.orders(customer_id)
 Information · low severity · high confidence · indexes
 title: orders is read in full to find rows by customer_id
-summary: 147 ms of database time over the 1 minute since statistics were reset (18%). One query plans to read public.orders and keep only those matching `(orders.customer_id = $1)`. The captured scan uses 20K rows as its size basis; this scan's catalog reports 20K rows in the table. Captured estimates can predate the current table size. No index starts with customer_id, so the database has no faster way in. It accounts for 18% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.
-impact: 147 ms of database time over the 1 minute since statistics were reset (18%) · 18.4% of database time
+summary: 251 ms of database time over the 4 minutes since statistics were reset (17%). One query plans to read public.orders and keep only those matching `(orders.customer_id = $1)`. The captured scan uses 20K rows as its size basis; this scan's catalog reports 20K rows in the table. Captured estimates can predate the current table size. No index starts with customer_id, so the database has no faster way in. It accounts for 17% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.
+impact: 251 ms of database time over the 4 minutes since statistics were reset (17%) · 16.9% of database time
 metrics:
-  - Share of DB time: 18%
+  - Share of DB time: 17%
   - Captured scan size basis: 20K
   - Queries: 1
 fix: Keep this as an index candidate. The captured workload does not establish enough measured work to recommend creating it now. Compare representative plans, reads and write maintenance if the workload grows. Only if later measurements justify a change, evaluate this candidate: Test an index on customer_id as a way for the query to find matching rows without a full scan.
 verify:
   1. Compare representative plans, reads, execution time and write maintenance before choosing an index. Recheck the access path as the table or call volume grows; an old plan or optimizer request does not establish current benefit.
 queries:
-  - 466454478821061062: 18% of database time · plan step 1
+  - 466454478821061062: 17% of database time · plan step 1
 brief:
     # orders is read in full to find rows by customer_id
 
-    Database: **yugabyte-demo** (YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12), database `culprit_yugabyte`, local environment). Finding `filtered-scan:public.orders(customer_id)`: Information, low impact, high confidence. Scanned 2026-10-24T01:01:08.861346Z.
+    Database: **yugabyte-demo** (YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12), database `culprit_yugabyte`, local environment). Finding `filtered-scan:public.orders(customer_id)`: Information, low impact, high confidence. Scanned 2026-10-24T03:50:04.638867Z.
 
     ## What's happening
 
-    147 ms of database time over the 1 minute since statistics were reset (18%). One query plans to read public.orders and keep only those matching `(orders.customer_id = $1)`. The captured scan uses 20K rows as its size basis; this scan's catalog reports 20K rows in the table. Captured estimates can predate the current table size. No index starts with customer_id, so the database has no faster way in. It accounts for 18% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.
+    251 ms of database time over the 4 minutes since statistics were reset (17%). One query plans to read public.orders and keep only those matching `(orders.customer_id = $1)`. The captured scan uses 20K rows as its size basis; this scan's catalog reports 20K rows in the table. Captured estimates can predate the current table size. No index starts with customer_id, so the database has no faster way in. It accounts for 17% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.
 
     ## Evidence
 
-    - Share of DB time: 18%
+    - Share of DB time: 17%
     - Captured scan size basis: 20K
     - Queries: 1
 
     ## Queries involved
 
-    Query `466454478821061062` — 18% of DB time, 30 runs over the 1 minute since statistics were reset, 4.9 ms average:
+    Query `466454478821061062` — 17% of DB time, 30 runs over the 4 minutes since statistics were reset, 8.4 ms average:
 
     ```sql
     SELECT id,status,total FROM public.orders WHERE customer_id = $1 LIMIT $2
@@ -281,12 +330,12 @@ insight scan-filter · low severity · impact no share stated
 note: This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. The selected workload does not establish material execution cost. Structural concerns remain relevant as table size or call volume grows; compare reads and time under representative load before changing an index.
 shares: The optimizer's cost scale has no calibrated work threshold here, so this estimate establishes neither a cheap run nor a share of statement time. Compare measured operator work and elapsed time.
 
-=== plan -71879613880347319
+=== plan -1395695495724611761
 no insights
 note: This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values.
 shares: The optimizer's cost scale has no calibrated work threshold here, so this estimate establishes neither a cheap run nor a share of statement time. Compare measured operator work and elapsed time.
 
-=== plan -1395695495724611761
+=== plan -71879613880347319
 no insights
 note: This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values.
 shares: The optimizer's cost scale has no calibrated work threshold here, so this estimate establishes neither a cheap run nor a share of statement time. Compare measured operator work and elapsed time.
