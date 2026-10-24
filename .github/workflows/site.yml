@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - "site/**"
+      - "assets/providers/**"
       - "docs/**"
       - "README.md"
       - "dev/site.sh"

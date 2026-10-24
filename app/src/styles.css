@@ -7032,76 +7032,24 @@ table.rg {
   display: inline-grid;
   place-items: center;
   flex: none;
-  width: 18px;
-  height: 18px;
+  width: 22px;
+  height: 22px;
   border-radius: 5px;
-  color: #fff;
-  /* Glyphs inside the badge are iconography sized to its square (half its height), so they sit outside the type scale. */
-  font: 700 9px/1 var(--font);
-  letter-spacing: -0.02em;
   user-select: none;
 }
 
 .engine-badge.size-md {
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   border-radius: 6px;
-  font-size: 10.5px;
 }
 
-.engine-mssql {
-  background: #cc2927;
-}
-
-.engine-postgres {
-  background: #336791;
-}
-
-.engine-sqlite {
-  background: #003b57;
-}
-
-.engine-mysql {
-  background: #00758f;
-}
-
-/* MariaDB's seal copper, so it never reads as MySQL's teal. */
-.engine-mariadb {
-  background: #a0583f;
-}
-
-:root[data-theme="dark"] .engine-mssql {
-  background: #ce4347;
-}
-
-:root[data-theme="dark"] .engine-postgres {
-  background: #4677a8;
-}
-
-:root[data-theme="dark"] .engine-mysql {
-  background: #177f96;
-}
-
-:root[data-theme="dark"] .engine-mariadb {
-  background: #a6644a;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .engine-mssql {
-    background: #ce4347;
-  }
-
-  :root:not([data-theme="light"]) .engine-postgres {
-    background: #4677a8;
-  }
-
-  :root:not([data-theme="light"]) .engine-mysql {
-    background: #177f96;
-  }
-
-  :root:not([data-theme="light"]) .engine-mariadb {
-    background: #a6644a;
-  }
+.engine-badge img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 2px;
+  object-fit: contain;
 }
 
 /* The environment sits on the badge's corner, ringed in the surface color so it reads on any engine color. */
@@ -7146,11 +7094,12 @@ table.rg {
 }
 
 .saved-conn .engine-badge {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border-radius: 4px;
-  font-size: 7.5px;
 }
+
+.saved-conn .engine-badge img { padding: 0; }
 
 .saved-conn.other-engine {
   opacity: 0.55;
@@ -13046,4 +12995,16 @@ li code,
   color: var(--text-2);
 }
 
-.engine-yugabyte { background: #4653bb; color: #fff; }
+/* Monochrome product marks keep their shape readable on dark surfaces without adding a tile. */
+:root[data-theme="dark"] .engine-mysql img,
+:root[data-theme="dark"] .engine-mariadb img,
+:root[data-theme="dark"] .engine-timescale img {
+  filter: brightness(0) invert(1);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .engine-mysql img,
+  :root:not([data-theme="light"]) .engine-mariadb img,
+  :root:not([data-theme="light"]) .engine-timescale img {
+    filter: brightness(0) invert(1);
+  }
+}

@@ -935,44 +935,22 @@ section {
   border: 1px solid var(--line);
 }
 
-.badge {
+.provider-logo {
   display: inline-grid;
   place-items: center;
   width: 40px;
   height: 40px;
   margin-bottom: 14px;
   border-radius: 10px;
-  font: 700 15px var(--font);
-  color: #fff;
+  background: transparent;
 }
 
-.badge.ms {
-  background: #b8242c;
-}
-
-.badge.pg {
-  background: #2f5d8a;
-}
-
-.badge.ts {
-  background: #f4ce41;
-  color: #1b1a18;
-}
-
-.badge.yb {
-  background: #b64420;
-}
-
-.badge.my {
-  background: #00627a;
-}
-
-.badge.ma {
-  background: #003545;
-}
-
-.badge.sq {
-  background: #0b6aa8;
+.provider-logo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 4px;
+  object-fit: contain;
 }
 
 .engine h3 small {
@@ -1284,5 +1262,18 @@ section {
   .btn,
   .dl {
     transition: none;
+  }
+}
+
+:root[data-theme="dark"] [data-provider="mysql"] .provider-logo img,
+:root[data-theme="dark"] [data-provider="mariadb"] .provider-logo img,
+:root[data-theme="dark"] [data-provider="timescale"] .provider-logo img {
+  filter: brightness(0) invert(1);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) [data-provider="mysql"] .provider-logo img,
+  :root:not([data-theme="light"]) [data-provider="mariadb"] .provider-logo img,
+  :root:not([data-theme="light"]) [data-provider="timescale"] .provider-logo img {
+    filter: brightness(0) invert(1);
   }
 }

@@ -75,16 +75,18 @@ def documentation(root: Path, site: Path) -> str:
         full += "\n---\n\n" + published[source]
     (site / "llms-full.txt").write_text(full)
 
-    badges = {"mssql": ("ms", "MS"), "postgres": ("pg", "Pg"), "timescale": ("ts", "Ts"),
-              "yugabyte": ("yb", "Yb"), "mysql": ("my", "My"), "mariadb": ("ma", "Ma"), "sqlite": ("sq", "Sq")}
+    logos = site / "images/providers"
+    logos.mkdir(parents=True, exist_ok=True)
     cards = []
     for label, provider in providers:
         slug = Path(provider).stem
-        badge, abbreviation = badges[slug]
+        logo = root / "assets/providers" / f"{slug}.svg"
+        (logos / logo.name).write_bytes(logo.read_bytes())
         row = next(line for line in parity_text.splitlines() if line.startswith(f"| [{label}]({provider})"))
         summary = row.split("|")[3].strip().replace("`", "")
         cards.append(
-            f'<article class="engine" data-provider="{slug}"><span class="badge {badge}" aria-hidden="true">{abbreviation}</span>'
+            f'<article class="engine" data-provider="{slug}"><span class="provider-logo" aria-hidden="true">'
+            f'<img src="/images/providers/{slug}.svg" alt="" width="40" height="40" loading="lazy" decoding="async"></span>'
             f'<h3>{html.escape(label)}</h3><p>{html.escape(summary)}.</p><p>'
             f'<a href="https://github.com/cristipufu/culprit-sql-studio/blob/main/docs/{provider}">Coverage and setup →</a></p></article>'
         )

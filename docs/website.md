@@ -9,6 +9,9 @@ inline handlers and arbitrary third-party scripts are not allowed. It also versi
 including the font referenced by both CSS and its preload, while keeping stable paths available to cached pages.
 The version and check count come from the workspace metadata and exported checks.
 
+Provider logos are shared with the app in `assets/providers/`. The site build copies the catalog's SVGs into its
+image assets and versions their URLs by content. Source and licence notices live beside the shared files.
+
 The provider catalog in `docs/parity.md` is the documentation entry point. Its ordered provider links drive the
 website cards, the published `/docs/providers/` pages and inclusion in `llms-full.txt`. All provider pages use the
 same seven sections. The build rebases links between published Markdown pages and sends source/fixture links to
