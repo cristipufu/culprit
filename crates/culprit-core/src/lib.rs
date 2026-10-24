@@ -92,7 +92,8 @@ pub use signals::{
 };
 pub use verification::{Verification, VerifiedFinding, VerifyStatus, compare_reports};
 pub use waits::{
-    CleanupHolder, GrantStat, OpenTransaction, Pressure, Signal, SignalScope, SignalStatus, SignalUnit, WaitCategory,
-    WaitQuery, WaitSample, WaitScope, WaitsReport, signal_id,
+    ActivityCategory, ActivityEvent, ActivityHistory, ActivityPeriod, ActivityQuery, ActivityReport, CleanupHolder,
+    GrantStat, OpenTransaction, Pressure, Signal, SignalScope, SignalStatus, SignalUnit, WaitCategory, WaitQuery,
+    WaitSample, WaitScope, WaitsReport, signal_id,
 };
 pub use window::{MAX_WINDOW_MINUTES, MINUTES_PER_DAY, parse_window, window_label};

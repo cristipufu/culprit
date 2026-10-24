@@ -690,6 +690,6 @@
       "Left out 1 candidate without sufficient current measured workload, or for a table that is gone or queries that are history."
     ],
     "tables": [],
-    "taken_at": "2026-10-24T03:50:04.638867Z"
+    "taken_at": "2026-10-24T05:21:30.020268Z"
   }
 }

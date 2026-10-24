@@ -146,6 +146,12 @@ charts and runtime weighting. A captured cache body stays separate from the curr
 current catalog and opens from the saved report before provider or credential resolution. Missing native estimates
 remain unknown in the shared plan projection, and redacted constants cannot establish filter selectivity.
 
+Native ASH lives in `OperationalStats::activity_history`, separate from measured `WaitStat` durations and statement
+statistics. Its bounded event groups preserve component, query identity and sampling weight in their own period.
+The waits view derives sample shares, keeps elapsed time unknown and adds no resource-pressure verdict. Local reads
+bound the native function by time; configured global views receive constant filters. UI event groups are paginated,
+and wait-tool summaries borrow operational evidence without serializing the raw history a second time.
+
 ### Platforms: where a database runs
 
 A managed service changes how Culprit reads and advises (no superuser, settings in a parameter group, the cloud's own

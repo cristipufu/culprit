@@ -14,7 +14,50 @@ fn material(s: &Snapshot, scope: WaitScope, ms: f64) -> bool {
 }
 
 pub(super) fn waits(s: &Snapshot) -> Tile {
-    let report = crate::waits::explain(s).filter(|r| !r.categories.is_empty());
+    let report = crate::waits::explain(s);
+    if let Some(activity) = report.as_ref().and_then(|r| r.activity.as_ref()) {
+        let p = &activity.period;
+        let takeaway = activity.categories.first().map_or_else(
+            || "Recorded activity has no retained observations in this period.".into(),
+            |c| format!("{} account for {} of retained active-task sample weight.", c.label, format::percent(c.share)),
+        );
+        let mut tile = Tile::new(TileKey::Waits, TileStatus::Info, takeaway);
+        tile.title = "Recorded activity".into();
+        tile.detail = Some(format!(
+            "{} · observations {} to {}. {}Sampling describes active tasks, not elapsed query time or CPU utilization.",
+            p.source,
+            p.first_sample.as_deref().unwrap_or("unavailable"),
+            p.last_sample.as_deref().unwrap_or("unavailable"),
+            if p.partial { "This read was partial. " } else { "" }
+        ));
+        tile.metrics = vec![
+            TileMetric::new(
+                "observations",
+                "Retained observations",
+                Some(p.observations),
+                format::count(p.observations),
+            ),
+            TileMetric::new(
+                "sample-weight",
+                "Sample weight",
+                Some(p.weighted_observations),
+                format::count(p.weighted_observations),
+            ),
+        ];
+        tile.items = activity
+            .categories
+            .iter()
+            .take(6)
+            .map(|c| {
+                let mut item = TileItem::new(ItemKind::Wait, c.key.clone(), c.label.clone());
+                item.share = Some(c.share);
+                item.value = Some(format!("{} of sample weight", format::percent(c.share)));
+                item
+            })
+            .collect();
+        return tile;
+    }
+    let report = report.filter(|r| !r.categories.is_empty());
     let Some(r) = report else { return waits_missing(s) };
     let top = &r.categories[0];
     let named = r.categories.iter().find(|c| c.key != "other");
@@ -22,17 +65,18 @@ pub(super) fn waits(s: &Snapshot) -> Tile {
     // time, so "100% locks" would be 100% of the little that was measured. Say what is known, against database time.
     if r.scope == WaitScope::Statements && s.server.engine == Engine::Mysql {
         let database_ms = s.workload.as_ref().map(|w| w.total_time_ms).unwrap_or(0.0);
-        let share = if database_ms > 0.0 { r.total_ms / database_ms } else { 0.0 };
+        let total_ms = r.total_ms.unwrap_or(0.0);
+        let share = if database_ms > 0.0 { total_ms / database_ms } else { 0.0 };
         let takeaway = format!(
             "{} times no waits without performance_schema; logged statements waited {} on locks ({} of their time).",
             family(&s.server),
-            format::duration(r.total_ms),
+            format::duration(total_ms),
             format::percent(share)
         );
-        let watch = share >= 0.25 && material(s, r.scope, r.total_ms);
+        let watch = share >= 0.25 && material(s, r.scope, total_ms);
         let mut tile = Tile::new(TileKey::Waits, if watch { TileStatus::Watch } else { TileStatus::Info }, takeaway);
         tile.detail = top.detail.clone();
-        tile.metrics = vec![TileMetric::new("total", "Lock time", Some(r.total_ms), format::duration(r.total_ms))];
+        tile.metrics = vec![TileMetric::new("total", "Lock time", r.total_ms, format::duration(total_ms))];
         tile.items = r
             .categories
             .iter()
@@ -77,7 +121,7 @@ pub(super) fn waits(s: &Snapshot) -> Tile {
     let shared = r.scope == WaitScope::SinceStartup
         && !s.server.platform().is_some_and(|p| p.is_azure_sql_database())
         && s.server.engine.has_server();
-    let watch = contended >= 0.25 && !shared && material(s, r.scope, contended * r.total_ms);
+    let watch = contended >= 0.25 && !shared && r.total_ms.is_some_and(|ms| material(s, r.scope, contended * ms));
     let status = if watch { TileStatus::Watch } else { TileStatus::Info };
     let mut tile = Tile::new(TileKey::Waits, status, takeaway);
     let lead = if top.key == "other" { named.unwrap_or(top) } else { top };
@@ -100,7 +144,12 @@ pub(super) fn waits(s: &Snapshot) -> Tile {
     } else {
         "Waiting"
     };
-    tile.metrics = vec![TileMetric::new("total", label, Some(r.total_ms), format::duration(r.total_ms))];
+    tile.metrics = vec![TileMetric::new(
+        "total",
+        label,
+        r.total_ms,
+        r.total_ms.map(format::duration).unwrap_or_else(|| "unavailable".into()),
+    )];
     tile.items = r
         .categories
         .iter()
@@ -200,6 +249,9 @@ pub(super) fn waits_missing(s: &Snapshot) -> Tile {
             None => Tile::new(TileKey::Waits, TileStatus::Unavailable, "This scan recorded no waits."),
         },
     };
+    if s.server.engine == Engine::Yugabyte {
+        tile.detail = s.source_problem(&[culprit_core::source_id::DOCDB_ACTIVITY_HISTORY]);
+    }
     if tile.detail.is_none() && s.server.engine.has_server() {
         tile.detail = Some("Sample what it waits on right now instead.".into());
     }

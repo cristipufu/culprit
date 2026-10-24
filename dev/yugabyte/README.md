@@ -59,6 +59,19 @@ logins are refused before reading the native cache, while an inherited `pg_read_
 Temporary roles are removed afterward. The offline case uses a provider factory that fails if opened, and checks
 that no current catalog, statement runtime or fabricated zero row/execution estimates enter the retained tree.
 
+Verify ASH samples, bounded retention, query identities, restricted-role visibility and one-node global counts:
+
+```sh
+CULPRIT_YSQL_TEST_PORT=55434 cargo test --locked -p culprit-yugabyte --lib live_ash_history_has_its_own_weights_period_bounds_and_role_scope -- --ignored
+cargo test --locked -p culprit-checks --lib views::waits::tests
+cargo test --locked -p culprit-mcp --lib waits_view::tests
+```
+
+The live case sleeps only its own disposable sessions long enough to cross sampling ticks, checks observation nodes,
+and verifies that a revoked monitoring grant rejects a stale probe; it performs no query cancellation.
+Shared view tests verify independent periods and weights, unknown elapsed time, and the absence of
+resource-pressure verdicts from sample shares. Agent-output tests bound the response without duplicating raw history.
+
 ## Cluster-view verification
 
 [Cluster-wide views](https://docs.yugabyte.com/stable/launch-and-manage/monitor-and-alert/cluster-wide-db-views/) are a disabled-by-default preview in 2026.1.2. Their `server_uuid` identifies each contributing node, and warnings can indicate skipped nodes. A successful SQL response alone does not establish complete cluster coverage.

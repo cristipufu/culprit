@@ -22,6 +22,19 @@ export const WAIT_LABEL: Record<string, string> = {
   other: "Everything else",
 };
 
+/** Shares of task observations; these weights are never durations. */
+export function foldActivity(history: import("../gen/ActivityHistory").ActivityHistory) {
+  const weights = new Map<string, number>();
+  let total = 0;
+  for (const e of history.events.slice(0, 10_000)) {
+    if (!(e.observations > 0) || !Number.isFinite(e.observations) || !(e.weighted_observations > 0) || !Number.isFinite(e.weighted_observations + total)) continue;
+    const key = waitKey(e.category);
+    weights.set(key, (weights.get(key) ?? 0) + e.weighted_observations);
+    total += e.weighted_observations;
+  }
+  return [...weights].map(([key, weight]) => ({ key, label: WAIT_LABEL[key] ?? "Everything else", weight, share: weight / total })).sort((a, b) => b.weight - a.weight);
+}
+
 /** Fold an engine's category name into a shared key (mirrors `category_key` in Rust). */
 export function waitKey(category: string): string {
   switch (category.toLowerCase()) {

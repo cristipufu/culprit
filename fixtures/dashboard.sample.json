@@ -4157,14 +4157,14 @@
       "statistics"
     ],
     "connection": "yugabyte-demo",
-    "coverage": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416), the 4 minutes since statistics were reset",
+    "coverage": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416), the 1 minute since statistics were reset",
     "database": "culprit_yugabyte",
     "engine": "yugabyte",
     "environment": "local",
-    "headline": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) covers only the 4 minutes since statistics were reset, so the numbers are thin until it has seen more.",
+    "headline": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) covers only the 1 minute since statistics were reset, so the numbers are thin until it has seen more.",
     "product": "YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12)",
-    "report_id": "20261024T035004.638867Z",
-    "taken_at": "2026-10-24T03:50:04.638867Z",
+    "report_id": "20261024T052130.020268Z",
+    "taken_at": "2026-10-24T05:21:30.020268Z",
     "tiles": [
       {
         "detail": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) keeps running totals only, so the trend comes from Culprit's own scans; it appears after the next scan.",
@@ -4175,25 +4175,25 @@
           {
             "key": "total",
             "label": "Database time",
-            "text": "1.5 s",
-            "value": 1481.597457
+            "text": "1.1 s",
+            "value": 1069.4668350000002
           },
           {
             "key": "runs",
             "label": "Runs",
-            "text": "130",
-            "value": 130.0
+            "text": "153",
+            "value": 153.0
           },
           {
             "key": "window-hours",
             "label": "Covers",
-            "text": "4 minutes",
-            "value": 0.06052581383122338
+            "text": "1 minute",
+            "value": 0.001425094140900506
           }
         ],
         "next": "culprit changes yugabyte-demo",
         "status": "info",
-        "takeaway": "1.5 s of database time over the 4 minutes since statistics were reset.",
+        "takeaway": "1.1 s of database time over the 1 minute since statistics were reset.",
         "title": "Database time"
       },
       {
@@ -4205,22 +4205,22 @@
             "finding_id": "heavy-query:8345917977273313509",
             "id": "heavy-query:8345917977273313509",
             "kind": "finding",
-            "label": "A read from orders takes 696 ms of database time over the 4 minutes since statistics were reset (47%)",
+            "label": "A read from orders takes 571 ms of database time over the 1 minute since statistics were reset (53%)",
             "query_id": null,
-            "share": 0.46978504161943907,
+            "share": 0.5342356539742533,
             "status": "info",
-            "value": "696 ms of database time over the 4 minutes since statistics were reset (47%)"
+            "value": "571 ms of database time over the 1 minute since statistics were reset (53%)"
           },
           {
             "at": null,
             "finding_id": "heavy-query:4357247400045295631",
             "id": "heavy-query:4357247400045295631",
             "kind": "finding",
-            "label": "A read from orders takes 293 ms of database time over the 4 minutes since statistics were reset (20%)",
+            "label": "A read from orders takes 232 ms of database time over the 1 minute since statistics were reset (22%)",
             "query_id": null,
-            "share": 0.19766091904138572,
+            "share": 0.21683737579389264,
             "status": "info",
-            "value": "293 ms of database time over the 4 minutes since statistics were reset (20%)"
+            "value": "232 ms of database time over the 1 minute since statistics were reset (22%)"
           },
           {
             "at": null,
@@ -4229,9 +4229,9 @@
             "kind": "finding",
             "label": "orders has no index on customer_id, its foreign key to customers",
             "query_id": null,
-            "share": 0.16917773840374511,
+            "share": 0.132349098043793,
             "status": "info",
-            "value": "17% of DB time"
+            "value": "13% of DB time"
           }
         ],
         "key": "findings",
@@ -4251,8 +4251,8 @@
           {
             "key": "low",
             "label": "Low",
-            "text": "5",
-            "value": 5.0
+            "text": "4",
+            "value": 4.0
           },
           {
             "key": "context",
@@ -4263,11 +4263,11 @@
         ],
         "next": "culprit findings yugabyte-demo",
         "status": "info",
-        "takeaway": "5 opportunities; the top ones touch 1.2 s of database time over the 4 minutes since statistics were reset (84%).",
+        "takeaway": "4 opportunities; the top ones touch 945 ms of database time over the 1 minute since statistics were reset (88%).",
         "title": "Findings"
       },
       {
-        "detail": "5 queries tracked over the 4 minutes since statistics were reset.",
+        "detail": "10 queries tracked over the 1 minute since statistics were reset.",
         "fix_sql": null,
         "items": [
           {
@@ -4277,9 +4277,9 @@
             "kind": "query",
             "label": "a read from orders",
             "query_id": "8345917977273313509",
-            "share": 0.46978504161943907,
+            "share": 0.5342356539742533,
             "status": null,
-            "value": "47%"
+            "value": "53%"
           },
           {
             "at": null,
@@ -4288,9 +4288,9 @@
             "kind": "query",
             "label": "a read from orders",
             "query_id": "4357247400045295631",
-            "share": 0.19766091904138572,
+            "share": 0.21683737579389264,
             "status": null,
-            "value": "20%"
+            "value": "22%"
           },
           {
             "at": null,
@@ -4299,20 +4299,9 @@
             "kind": "query",
             "label": "a read from orders",
             "query_id": "466454478821061062",
-            "share": 0.16917773840374511,
+            "share": 0.132349098043793,
             "status": null,
-            "value": "17%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "-1395695495724611761",
-            "kind": "query",
-            "label": "a read from customers",
-            "query_id": "-1395695495724611761",
-            "share": 0.08883706122613844,
-            "status": null,
-            "value": "9%"
+            "value": "13%"
           },
           {
             "at": null,
@@ -4321,9 +4310,20 @@
             "kind": "query",
             "label": "a read from orders",
             "query_id": "-71879613880347319",
-            "share": 0.07453923970929172,
+            "share": 0.06892048877794325,
             "status": null,
             "value": "7%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "-1395695495724611761",
+            "kind": "query",
+            "label": "a read from customers",
+            "query_id": "-1395695495724611761",
+            "share": 0.028131500683702827,
+            "status": null,
+            "value": "3%"
           }
         ],
         "key": "top-queries",
@@ -4331,37 +4331,106 @@
           {
             "key": "top-share",
             "label": "Top query",
-            "text": "47%",
-            "value": 0.46978504161943907
+            "text": "53%",
+            "value": 0.5342356539742533
           },
           {
             "key": "top5-share",
             "label": "Top five",
-            "text": "100%",
-            "value": 1.0
+            "text": "98%",
+            "value": 0.980474117273585
           },
           {
             "key": "queries",
             "label": "Queries",
-            "text": "5",
-            "value": 5.0
+            "text": "10",
+            "value": 10.0
           }
         ],
         "next": "culprit top yugabyte-demo",
         "status": "info",
-        "takeaway": "One query is 47% of database time: a read from orders.",
+        "takeaway": "One query is 53% of database time: a read from orders.",
         "title": "Top queries"
       },
       {
-        "detail": "Sample what it waits on right now instead.",
+        "detail": "yb_active_session_history (node 3d2d9e10555b4ae2a683a8402505e416) · observations 2026-10-23T21:02:32.797443Z to 2026-10-24T05:21:25.680211Z. Sampling describes active tasks, not elapsed query time or CPU utilization.",
         "fix_sql": null,
-        "items": [],
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "rpc",
+            "kind": "wait",
+            "label": "Distributed RPCs",
+            "query_id": null,
+            "share": 0.5482233502538071,
+            "status": null,
+            "value": "55% of sample weight"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "cpu",
+            "kind": "wait",
+            "label": "CPU",
+            "query_id": null,
+            "share": 0.15736040609137056,
+            "status": null,
+            "value": "16% of sample weight"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "other",
+            "kind": "wait",
+            "label": "Everything else",
+            "query_id": null,
+            "share": 0.14382402707275804,
+            "status": null,
+            "value": "14% of sample weight"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "log",
+            "kind": "wait",
+            "label": "Log writes",
+            "query_id": null,
+            "share": 0.10490693739424704,
+            "status": null,
+            "value": "10% of sample weight"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "lock",
+            "kind": "wait",
+            "label": "Locks",
+            "query_id": null,
+            "share": 0.04568527918781726,
+            "status": null,
+            "value": "5% of sample weight"
+          }
+        ],
         "key": "waits",
-        "metrics": [],
+        "metrics": [
+          {
+            "key": "observations",
+            "label": "Retained observations",
+            "text": "591",
+            "value": 591.0
+          },
+          {
+            "key": "sample-weight",
+            "label": "Sample weight",
+            "text": "591",
+            "value": 591.0
+          }
+        ],
         "next": "culprit waits yugabyte-demo",
-        "status": "unavailable",
-        "takeaway": "No exclusive historical wait mix was collected. DocDB RPC timings can overlap; sample active YSQL sessions or inspect native storage metrics.",
-        "title": "Where time goes"
+        "status": "info",
+        "takeaway": "Distributed RPCs account for 55% of retained active-task sample weight.",
+        "title": "Recorded activity"
       },
       {
         "detail": "The app reads them every few seconds; `culprit live` reads them once.",
@@ -4509,8 +4578,8 @@
           {
             "key": "queries",
             "label": "Queries",
-            "text": "5",
-            "value": 5.0
+            "text": "10",
+            "value": 10.0
           },
           {
             "key": "plans",
@@ -4521,8 +4590,8 @@
           {
             "key": "window-hours",
             "label": "Covers",
-            "text": "4 minutes",
-            "value": 0.06052581383122338
+            "text": "1 minute",
+            "value": 0.001425094140900506
           },
           {
             "key": "locked",
@@ -4533,7 +4602,7 @@
         ],
         "next": "culprit doctor yugabyte-demo",
         "status": "watch",
-        "takeaway": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) covers only the 4 minutes since statistics were reset, so the numbers are thin until it has seen more.",
+        "takeaway": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) covers only the 1 minute since statistics were reset, so the numbers are thin until it has seen more.",
         "title": "Query statistics"
       }
     ]

@@ -447,7 +447,8 @@ pub fn definitions() -> Vec<Tool> {
                 "Where database time goes: wait categories (CPU, disk reads, locks, sending results, memory…) each \
                  explained in plain words with the queries behind it, plus pressure signals (compiles, memory grants, \
                  cache hits, connections opened per second, the oldest open transaction), storage latency per file and \
-                 replica lag. With `now`, samples the server for a few \
+                 replica lag. Native activity history keeps weighted task observations and its own dates; these \
+                 are not elapsed query time or CPU utilization. With `now`, samples the server for a few \
                  seconds instead. Reads statistics views only.{DATA_NOTE}"
             ),
         ),

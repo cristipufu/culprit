@@ -41,6 +41,15 @@ def main():
             report["snapshot"]["connection"]: cli(command, path)
             for path, report in reports
         })
+    # Retained activity is projected by Rust. Keep the older live captures, but refresh this derived view together
+    # with its snapshot so the browser never substitutes durations or another period for native task samples.
+    waits_path = FIXTURES / "waits.sample.json"
+    waits = json.loads(waits_path.read_text())
+    for path, report in reports:
+        if report["snapshot"].get("operations", {}).get("activity_history") is not None:
+            waits["reports"][report["snapshot"]["connection"]] = cli("waits", "--file", path)["waits"]
+    # Preserve the captured sidecar's existing order and one-space indentation.
+    waits_path.write_text(json.dumps(waits, indent=1, ensure_ascii=False) + "\n")
     run("cargo", "test", "-p", "culprit-engine", "--test", "all", "insights::write_demo_sidecar", "--", "--ignored")
     run("cargo", "run", "-p", "culprit-engine", "--example", "share_sample")
     run("cargo", "run", "-p", "culprit-engine", "--example", "dashboard_live_sample")

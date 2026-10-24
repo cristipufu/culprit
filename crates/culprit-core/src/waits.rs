@@ -16,7 +16,7 @@ pub enum WaitScope {
     Window,
     /// Running totals since the server started (or its statistics were reset).
     SinceStartup,
-    /// A short sample taken just now.
+    /// Sampled observations, taken live or retained independently in an activity-history buffer.
     Sampled,
     /// Statement timing totals (PostgreSQL's per-statement I/O timing), since statistics were reset.
     Statements,
@@ -60,18 +60,91 @@ pub struct WaitCategory {
     pub attribution: Option<String>,
 }
 
-/// Where database time went over the scan's window (or since startup), by category.
+/// Recorded waits or sampled activity, with the source's own period. Activity observations have no measured
+/// millisecond total; their weights must not be interpreted as query elapsed time or CPU utilization.
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
 #[ts(export)]
 pub struct WaitsReport {
     pub engine: Engine,
     pub scope: WaitScope,
-    /// Where the numbers come from and how far back they reach, e.g. "Query Store, last 7 days".
+    // Where the numbers come from and how far back they reach, e.g. "Query Store, last 7 days".
     pub source: String,
-    pub total_ms: f64,
+    pub total_ms: Option<f64>,
     pub categories: Vec<WaitCategory>,
-    /// What the engine can't tell, and what would unlock more.
+    // What the engine can't tell, and what would unlock more.
     pub notes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub activity: Option<ActivityReport>,
+}
+
+/// Metadata for independently retained activity samples. First/last observations do not prove continuous coverage.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct ActivityPeriod {
+    pub source: String,
+    pub requested_start: String,
+    pub requested_end: String,
+    pub first_sample: Option<String>,
+    pub last_sample: Option<String>,
+    pub scope: crate::CounterScope,
+    pub nodes: Vec<String>,
+    pub observations: f64,
+    pub weighted_observations: f64,
+    pub partial: bool,
+    pub notes: Vec<String>,
+}
+
+/// Aggregated native task observations, kept apart from measured wait durations and statement lifetime totals.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct ActivityHistory {
+    pub period: ActivityPeriod,
+    pub events: Vec<ActivityEvent>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct ActivityEvent {
+    pub category: String,
+    pub component: String,
+    pub wait_event: String,
+    pub query_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub node: Option<String>,
+    pub observations: f64,
+    pub weighted_observations: f64,
+}
+
+/// Sample shares, never shares of a statement's elapsed time. Queries may span several concurrent native components.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct ActivityReport {
+    pub period: ActivityPeriod,
+    pub categories: Vec<ActivityCategory>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct ActivityCategory {
+    pub key: String,
+    pub label: String,
+    pub observations: f64,
+    pub weighted_observations: f64,
+    pub share: f64,
+    pub events: Vec<ActivityEvent>,
+    pub queries: Vec<ActivityQuery>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct ActivityQuery {
+    pub id: String,
+    pub text: Option<String>,
+    pub observations: f64,
+    pub weighted_observations: f64,
+    pub share_of_category: f64,
 }
 
 /// A short "right now" sample: the difference between two readings, or sessions sampled every second.

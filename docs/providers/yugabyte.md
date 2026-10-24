@@ -36,6 +36,7 @@ are not claimed as verified; optional views and functions that are absent or den
 | Index usage | Complete global index counters when available; no unused-index verdict from a local zero or unknown reset date |
 | Live | Current-database sessions and native `yb_lock_status` blocking evidence; node-qualified identities include backend start time |
 | Live samples / progress | Bounded session sampling with native RPC/storage categories; scoped current activity and optional estimated plans; supported CREATE INDEX / ANALYZE phases without guessed percentages |
+| Activity history | Database- and role-scoped native ASH observations, with task weights, observation nodes, component/event names and query identities in an independent retained period |
 | Session actions | Non-production only; local node, database and backend-start guards; Connection Manager worker backends are refused |
 
 Workload retention streams at most 8 MiB of statement text and counters, without whole-row latency-histogram expansion.
@@ -103,13 +104,37 @@ A global database reset date can be NULL. That means unknown, even on a long-run
 least a week since every contributing node's proven database reset; differing known epochs can bound absence but do
 not supply a common denominator for positive-rate calculations.
 
+## Active Session History
+
+[Native ASH](https://docs.yugabyte.com/stable/launch-and-manage/monitor-and-alert/active-session-history-monitor/)
+records task observations and inverse-sampling weights. Culprit shows their distribution as **Recorded activity** in
+the dashboard and waits panel, and through `culprit waits` and the MCP waits tool. Query links use only matching
+statement identities; queries outside the collected workload remain identified without borrowed runtime statistics.
+Event groups are paginated in the desktop, and agent output includes bounded event/query summaries.
+Each event's node identifies the ASH buffer that supplied it, which can differ from the query's coordinating node.
+
+The reader retains the newest 10,000 observations or 8 MiB of projected sample data, records partial reads, and honors
+the requested scan period independently of `pg_stat_statements` resets. Local reads pass time bounds directly to the
+native function. Existing global views receive constant database, role and time filters; Culprit never enables them.
+Without the effective monitoring privilege, local history is restricted to the current role before retention.
+Client addresses, request IDs, process memory and auxiliary event text are not collected.
+
+Weights are **not elapsed query time, exclusive wait time or CPU utilization**. YSQL and DocDB components may run
+concurrently. Sampling cadence can change, short operations can be missed and the circular buffer can evict records;
+first/last observations do not prove continuous coverage. Historical samples may include administrative work and
+statements no longer in the statement-statistics cache. Unknown database identities are excluded. These observations
+do not produce resource-pressure or query-regression verdicts. Current live samples remain a separate measurement.
+
+Verified live: bounded local reads, query-ID/node correlation, role isolation, revoked monitoring grants and matching counts through one-node global
+views. Multi-node failure and independent retention scenarios still require verification.
+
 ## Limits
 
 PostgreSQL heap pages, buffer ratios, dead tuples, HOT updates, autovacuum, XID/MultiXact wraparound and heap-oriented GUC
 advice are unavailable by design. Database size remains unknown. Configuration suggestions are restricted to supported
 YSQL database settings; other changes use YugabyteDB administration rather than PostgreSQL `ALTER SYSTEM` guesses.
 
-The current provider does not yet collect native ASH history, complete native operation progress,
+The current provider does not yet collect complete native operation progress,
 server resource pressure or distributed error/deadlock history. These are implementation gaps;
 PostgreSQL placeholders are not substituted. Current session/lock collection is limited to 1,000 sessions and 2,000
 waits and labels truncated or node-local visibility incomplete. Live lowers the lock metadata reader's session-local
@@ -144,6 +169,7 @@ These screenshots show the development UI reading the live fixture described abo
 published 0.4.4 build.
 
 ![YSQL workload scope and dashboard](../screenshots/yugabyte-dashboard.png)
+![Native recorded task activity, independent sample weights and observation nodes](../screenshots/yugabyte-activity.png)
 ![Recorded native DocDB work per statement run](../screenshots/yugabyte-queries.png)
 ![Native retained plan history with independent cache periods](../screenshots/yugabyte-history.png)
 ![Native hash keys and unavailable local index-usage counters](../screenshots/yugabyte-schema.png)

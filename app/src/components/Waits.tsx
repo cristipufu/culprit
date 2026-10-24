@@ -1,9 +1,9 @@
 import { ChevronRight } from "lucide-react";
-import type { KeyboardEvent } from "react";
+import { useMemo, type KeyboardEvent } from "react";
 import type { Report } from "../gen/Report";
 import type { Signal } from "../gen/Signal";
 import { percent } from "../lib/format";
-import { foldWaits, signalValue, waitColor } from "../lib/waits";
+import { foldActivity, foldWaits, signalValue, waitColor } from "../lib/waits";
 import { can, serverName } from "../lib/engines";
 
 /** Which part of the waits panel to open. */
@@ -38,6 +38,17 @@ function activate(e: KeyboardEvent, run: () => void) {
  * place on every engine; when the scan recorded no waits it offers a live sample instead.
  */
 export function WaitsVital({ report, onOpen }: { report: Report; onOpen: OpenWaits }) {
+  const activity = report.snapshot.operations.activity_history;
+  const sampled = useMemo(() => activity ? foldActivity(activity) : [], [activity]);
+  if (activity) {
+    const categories = sampled;
+    const top = categories[0];
+    return <div className="vital waits-vital" role="button" tabIndex={0} onClick={() => onOpen("waits", top?.key)} onKeyDown={(e) => activate(e, () => onOpen("waits", top?.key))} title="Retained active-task sample weights, independent of statement time">
+      <div className="label">Recorded activity</div><div className="value waits-value">{top?.label ?? "No retained samples"}</div>
+      <div className="waits-bar" aria-hidden>{categories.map((c) => <span key={c.key} style={{ flexGrow: c.weight, background: waitColor(c.key) }} />)}</div>
+      <div className="hint">{top ? `${percent(top.share)} of retained sample weight` : "Sampling may miss short activity"}{activity.period.partial && " · partial read"}</div>
+    </div>;
+  }
   const waits = foldWaits(report.snapshot.waits);
   if (waits.length === 0 && !can(report.snapshot.server.engine, "wait_sample")) {
     return (

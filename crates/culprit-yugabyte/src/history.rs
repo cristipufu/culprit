@@ -54,16 +54,24 @@ pub(crate) async fn collect(
         sum(calls::float8*avg_exec_time) AS ms,
         sum(calls::float8*avg_exec_time)/NULLIF(sum(calls::float8),0) AS mean_ms,
         max(max_exec_time)::float8 AS max_ms,{} AS first,{} AS last
-        FROM {} WHERE dbid={} AND queryid IN ({ids}) AND calls>0
+        FROM {} WHERE dbid={} AND queryid IN ({ids}) AND calls>0 AND {}
         GROUP BY queryid,planid ORDER BY ms DESC,queryid,planid LIMIT 1001",
         crate::probe::timestamp("min(first_used)"),
         crate::probe::timestamp("max(last_used)"),
         relation(probe),
-        probe.oid
+        probe.oid,
+        crate::probe::ALL_STATS
     );
     let before = session.notices();
     let result = match authorize(probe) {
-        Ok(()) => query_bounded(&session.client, &sql, 1000).await,
+        Ok(()) => {
+            async {
+                let rows = query_bounded(&session.client, &sql, 1000).await?;
+                crate::probe::require_all_stats(&session.client).await?;
+                Ok(rows)
+            }
+            .await
+        }
         Err(error) => Err(error),
     };
     let truncated = result.as_ref().is_ok_and(|(_, truncated)| *truncated);
@@ -149,14 +157,20 @@ pub(crate) async fn capture(
     // One scan of the native cache, rather than one full get_all_entries() scan for each requested plan.
     let sql = format!(
         "WITH entries AS (SELECT DISTINCT ON (queryid) queryid,planid,plan
-        FROM {} WHERE dbid={} AND (queryid,planid) IN ({pairs})
+        FROM {} WHERE dbid={} AND (queryid,planid) IN ({pairs}) AND {}
         ORDER BY queryid,last_used DESC)
         SELECT queryid::text AS query,planid::text AS id,plan FROM entries
         ORDER BY CASE queryid {priority} END",
         relation(probe),
-        probe.oid
+        probe.oid,
+        crate::probe::ALL_STATS
     );
-    let result = query_bounded(&session.client, &sql, requested).await;
+    let result: Result<_> = async {
+        let rows = query_bounded(&session.client, &sql, requested).await?;
+        crate::probe::require_all_stats(&session.client).await?;
+        Ok(rows)
+    }
+    .await;
     let Ok((rows, truncated)) = result else {
         coverage.partial(
             &sources::PLAN_HISTORY,
@@ -217,12 +231,14 @@ pub(crate) async fn stored(session: &ObservedSession, probe: &Probe, query: &str
     let query = query.parse::<i64>().map_err(|_| Error::invalid("Invalid YSQL query identifier"))?;
     let id = id.parse::<i64>().map_err(|_| Error::invalid("Invalid YSQL plan identifier"))?;
     let sql = format!(
-        "SELECT plan FROM {} WHERE dbid={} AND queryid={query} AND planid={id}
+        "SELECT plan FROM {} WHERE dbid={} AND queryid={query} AND planid={id} AND {}
         ORDER BY last_used DESC LIMIT 1",
         relation(probe),
-        probe.oid
+        probe.oid,
+        crate::probe::ALL_STATS
     );
     let (rows, truncated) = query_bounded(&session.client, &sql, 1).await?;
+    crate::probe::require_all_stats(&session.client).await?;
     if truncated {
         return Err(Error::invalid("The stored YSQL plan exceeds the 8 MiB retention budget"));
     }

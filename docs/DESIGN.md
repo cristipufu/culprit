@@ -103,6 +103,11 @@ Health colors are assessments, never thresholds on an isolated ratio or size. CP
 
 Planner cost constants stay visible as settings; a default alone supplies no measured reason to change one. A saved statistics warning describes the plan's compilation, not current statistics: index seek keys do not prove that each column has a histogram or that a refresh is needed. Frequent empty calls can be polling or request-driven checks, and statement counts do not reveal transaction boundaries. Advice names these possibilities and asks for the evidence needed to choose a change.
 
+YugabyteDB's **Recorded activity** shows retained ASH task observations, with the source's own dates, node and role
+scope. Percentages are shares of sample weight; YSQL and DocDB components can overlap, so they are not elapsed query
+time or CPU utilization. Event groups are paginated, query links use matching identities without borrowing runtime
+statistics, and partial or unavailable history says why. Live sampling remains a separate measurement.
+
 ### Finding detail (the heart of the product)
 
 ```

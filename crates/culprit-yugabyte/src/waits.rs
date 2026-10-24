@@ -6,6 +6,9 @@ use tokio::time::{Instant, sleep_until};
 
 /// Only the native type/event establishes a category. A missing event is unknown, not measured CPU time.
 pub(crate) fn category(kind: &str, event: &str) -> &'static str {
+    if event == "WAL_Read" {
+        return "Storage";
+    }
     if event.starts_with("WAL_") || event.starts_with("Raft_WaitingFor") {
         return "Log";
     }
@@ -118,6 +121,7 @@ mod tests {
         assert_eq!(category("Cpu", "OnCpu_Active"), "CPU");
         assert_eq!(category("RPCWait", "CatalogRead"), "RPC");
         assert_eq!(category("DiskIO", "RocksDB_WriteToFile"), "Storage");
+        assert_eq!(category("DiskIO", "WAL_Read"), "Storage");
         assert_eq!(category("RPCWait", "Raft_WaitingForReplication"), "Log");
         assert_eq!(category("WaitOnCondition", "LockedBatchEntry_Lock"), "Lock");
         assert_eq!(category("", ""), "Other");

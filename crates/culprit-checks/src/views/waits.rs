@@ -4,7 +4,10 @@
 use std::collections::BTreeMap;
 
 use culprit_core::waits::{category_info, category_key};
-use culprit_core::{Capability, Engine, QueryStat, Snapshot, WaitCategory, WaitQuery, WaitScope, WaitsReport, format};
+use culprit_core::{
+    ActivityCategory, ActivityQuery, ActivityReport, Capability, Engine, QueryStat, Snapshot, WaitCategory, WaitQuery,
+    WaitScope, WaitsReport, format,
+};
 
 use crate::support::{app_queries, setting_change};
 
@@ -31,8 +34,23 @@ pub fn explain(snapshot: &Snapshot) -> Option<WaitsReport> {
     let queries: Vec<&QueryStat> =
         app_queries(snapshot).filter(|q| !q.text.trim_start().to_ascii_uppercase().starts_with("EXPLAIN")).collect();
     let attributed: BTreeMap<&'static str, Vec<(&QueryStat, f64)>> = attribute(&queries);
+    let activity = activity(snapshot);
     if total_ms <= 0.0 && attributed.is_empty() {
-        return None;
+        let activity = activity?;
+        return Some(WaitsReport {
+            engine,
+            scope: WaitScope::Sampled,
+            source: format!(
+                "{}; retained observations {} to {}",
+                activity.period.source,
+                activity.period.first_sample.as_deref().unwrap_or("unavailable"),
+                activity.period.last_sample.as_deref().unwrap_or("unavailable")
+            ),
+            total_ms: None,
+            categories: vec![],
+            notes: activity.period.notes.clone(),
+            activity: Some(activity),
+        });
     }
 
     let mut categories: Vec<WaitCategory> = totals
@@ -94,7 +112,87 @@ pub fn explain(snapshot: &Snapshot) -> Option<WaitsReport> {
         Engine::Mssql if scope == WaitScope::SinceStartup => notes.push(waits_capture_note(snapshot)),
         Engine::Mssql | Engine::Sqlite => {}
     }
-    Some(WaitsReport { engine, scope, source, total_ms, categories, notes })
+    Some(WaitsReport { engine, scope, source, total_ms: Some(total_ms), categories, notes, activity })
+}
+
+fn activity(snapshot: &Snapshot) -> Option<ActivityReport> {
+    let history = snapshot.operations.activity_history.as_ref()?;
+    let mut period = history.period.clone();
+    let mut categories = BTreeMap::<String, ActivityCategory>::new();
+    let mut total = 0.0;
+    let mut observations = 0.0;
+    let names: BTreeMap<_, String> = snapshot
+        .queries()
+        .iter()
+        .map(|q| {
+            (
+                q.id.as_str(),
+                q.text
+                    .split_whitespace()
+                    .flat_map(|w| w.chars().chain(std::iter::once(' ')))
+                    .take(200)
+                    .collect::<String>()
+                    .trim_end()
+                    .into(),
+            )
+        })
+        .collect();
+    for event in history.events.iter().take(10_000) {
+        if !event.weighted_observations.is_finite()
+            || event.weighted_observations <= 0.0
+            || !event.observations.is_finite()
+            || event.observations <= 0.0
+            || !(total + event.weighted_observations).is_finite()
+            || !(observations + event.observations).is_finite()
+        {
+            period.partial = true;
+            continue;
+        }
+        let key = category_key(&event.category);
+        let category = categories.entry(key.into()).or_insert_with(|| ActivityCategory {
+            key: key.into(),
+            label: category_info(key, snapshot.server.engine).0.into(),
+            observations: 0.0,
+            weighted_observations: 0.0,
+            share: 0.0,
+            events: vec![],
+            queries: vec![],
+        });
+        category.observations += event.observations;
+        category.weighted_observations += event.weighted_observations;
+        category.events.push(event.clone());
+        observations += event.observations;
+        total += event.weighted_observations;
+    }
+    period.partial |= history.events.len() > 10_000;
+    period.observations = observations;
+    period.weighted_observations = total;
+    let mut categories: Vec<_> = categories.into_values().collect();
+    for category in &mut categories {
+        category.share = category.weighted_observations / total;
+        category.events.sort_by(|a, b| b.weighted_observations.total_cmp(&a.weighted_observations));
+        let mut queries = BTreeMap::<String, ActivityQuery>::new();
+        for event in &category.events {
+            let Some(id) = &event.query_id else { continue };
+            let query = queries.entry(id.clone()).or_insert_with(|| ActivityQuery {
+                id: id.clone(),
+                text: names.get(id.as_str()).cloned(),
+                observations: 0.0,
+                weighted_observations: 0.0,
+                share_of_category: 0.0,
+            });
+            query.observations += event.observations;
+            query.weighted_observations += event.weighted_observations;
+        }
+        category.queries = queries.into_values().collect();
+        category.queries.sort_by(|a, b| b.weighted_observations.total_cmp(&a.weighted_observations));
+        category.queries.truncate(MAX_QUERIES);
+        for query in &mut category.queries {
+            query.share_of_category = query.weighted_observations / category.weighted_observations;
+        }
+    }
+    categories.sort_by(|a, b| b.weighted_observations.total_cmp(&a.weighted_observations));
+    Some(ActivityReport { period, categories })
 }
 
 /// Why SQL Server's waits aren't tied to queries, and what would tie them. Query Store captures waits per query from
@@ -336,6 +434,88 @@ mod tests {
 
     fn wait(category: &str, wait_type: &str, ms: f64) -> WaitStat {
         WaitStat { category: category.into(), wait_type: Some(wait_type.into()), wait_ms: ms, tasks: None }
+    }
+
+    fn sampled_activity() -> Snapshot {
+        let mut snapshot = snapshot_with(Engine::Yugabyte);
+        snapshot.waits.clear();
+        let query = snapshot.queries()[0].id.clone();
+        snapshot.operations.activity_history = Some(culprit_core::ActivityHistory {
+            period: culprit_core::ActivityPeriod {
+                source: "Native recorded activity".into(),
+                requested_start: "2026-10-01T00:00:00Z".into(),
+                requested_end: "2026-10-08T00:00:00Z".into(),
+                first_sample: Some("2026-10-07T00:00:00Z".into()),
+                last_sample: Some("2026-10-08T00:00:00Z".into()),
+                scope: culprit_core::CounterScope::Node,
+                nodes: vec!["recorded-node".into()],
+                observations: 999.0,
+                weighted_observations: 999.0,
+                partial: false,
+                notes: vec!["Weights are independent of elapsed query time".into()],
+            },
+            events: [
+                ("cpu", "YSQL", "OnCpu_Active", 1.0),
+                ("rpc", "YSQL", "TableRead", 3.0),
+                ("storage", "TServer", "RocksDB_ReadBlockFromFile", 2.0),
+            ]
+            .into_iter()
+            .map(|(category, component, event, weight)| culprit_core::ActivityEvent {
+                category: category.into(),
+                component: component.into(),
+                wait_event: event.into(),
+                query_id: Some(query.clone()),
+                node: Some("recorded-node".into()),
+                observations: 1.0,
+                weighted_observations: weight,
+            })
+            .collect(),
+        });
+        snapshot
+    }
+
+    #[test]
+    fn activity_weights_never_become_query_time_or_borrow_the_workload_period() {
+        let mut snapshot = sampled_activity();
+        let report = explain(&snapshot).unwrap();
+        assert!(report.total_ms.is_none() && report.categories.is_empty());
+        assert_eq!(report.scope, WaitScope::Sampled);
+        let activity = report.activity.unwrap();
+        assert_eq!(activity.period.observations, 3.0);
+        assert_eq!(activity.period.weighted_observations, 6.0);
+        assert_eq!(activity.categories[0].key, "rpc");
+        assert_eq!(activity.categories[0].share, 0.5);
+        assert_eq!(activity.categories[0].events[0].node.as_deref(), Some("recorded-node"));
+        assert_eq!(activity.categories[0].queries[0].share_of_category, 1.0);
+        let workload = snapshot.workload.as_mut().unwrap();
+        workload.window_hours = 9_000.0;
+        workload.total_time_ms *= 100_000.0;
+        for q in &mut workload.queries {
+            q.executions *= 100_000.0;
+            q.mean_time_ms *= 100_000.0;
+        }
+        assert_eq!(activity, explain(&snapshot).unwrap().activity.unwrap());
+        let encoded = serde_json::to_value(&activity).unwrap();
+        let query = &encoded["categories"][0]["queries"][0];
+        assert!(query.get("share_of_query").is_none() && query.get("executions").is_none());
+    }
+
+    #[test]
+    fn malformed_activity_is_partial_and_sample_shares_never_grade_resource_pressure() {
+        let mut snapshot = sampled_activity();
+        let history = snapshot.operations.activity_history.as_mut().unwrap();
+        let mut invalid = history.events[0].clone();
+        invalid.weighted_observations = f64::INFINITY;
+        history.events.push(invalid);
+        history.events[0].category = "lock".into();
+        history.events[0].weighted_observations = 1e12;
+        let activity = explain(&snapshot).unwrap().activity.unwrap();
+        assert!(activity.period.partial && activity.period.weighted_observations.is_finite());
+        let report = crate::analyze(snapshot);
+        let dashboard = crate::dashboard(&report);
+        let tile = dashboard.tiles.iter().find(|t| t.key == culprit_core::TileKey::Waits).unwrap();
+        assert_eq!(tile.status, culprit_core::TileStatus::Info);
+        assert!(tile.takeaway.contains("sample weight"));
     }
 
     #[test]

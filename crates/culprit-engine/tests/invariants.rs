@@ -110,6 +110,8 @@ fn browser_demo_outputs_match_current_analysis() {
     let dashboards = sample("dashboard.sample.json");
     let advice = sample("index-advice.sample.json");
     let insights = sample("insights.sample.json");
+    let waits = sample("waits.sample.json");
+    let mut activity_seen = 0;
     let refresh = "refresh the browser demo with `python3 dev/refresh-demo.py`";
     assert_browser_json(&sample("checks.sample.json"), &serde_json::json!(culprit_checks::infos()), refresh);
     for (name, path) in crate::golden::demo_files().into_iter().filter(|(name, _)| name.ends_with(".report")) {
@@ -142,7 +144,16 @@ fn browser_demo_outputs_match_current_analysis() {
             .filter_map(|q| Some((q.id.clone(), serde_json::json!(q.plan.as_ref()?.insights))))
             .collect();
         assert_browser_json(&insights[connection], &serde_json::Value::Object(by_query), &context);
+        if current.snapshot.operations.activity_history.is_some() {
+            activity_seen += 1;
+            assert_browser_json(
+                &waits["reports"][connection],
+                &serde_json::json!(culprit_engine::explain_waits(&current.snapshot)),
+                &context,
+            );
+        }
     }
+    assert!(activity_seen > 0, "exercise the retained activity projection in the browser demo");
 }
 
 /// Ignore only floating-point round-trip noise; report the first different field instead of pages of JSON.

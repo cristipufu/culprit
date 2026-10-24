@@ -120,6 +120,83 @@ fn local_spec() -> ConnectionSpec {
     spec
 }
 
+#[tokio::test]
+#[ignore = "requires dev/yugabyte and CULPRIT_YSQL_TEST_PORT"]
+async fn live_ash_history_has_its_own_weights_period_bounds_and_role_scope() {
+    let _fixture = LIVE.lock().await;
+    let provider = YugabyteProvider::new(&local_spec()).unwrap();
+    let session = provider.connector.connect_observed(COLLECTOR).await.unwrap();
+    // Disposable application stimulus: a long enough query to cross several native sampling ticks.
+    session.client.simple_query("SELECT pg_sleep(2.2),891 AS native_ash_history_test").await.unwrap();
+    let probe = crate::probe::read(&session.client).await.unwrap();
+    let options = SnapshotOptions { window_minutes: Some(60), ..Default::default() };
+    let local = crate::ash::read(&session, &probe, &options, 10_000).await.unwrap();
+    assert!(local.period.observations >= 2.0 && local.period.weighted_observations >= local.period.observations);
+    let query = query_one(
+        &session.client,
+        "SELECT queryid::text AS id FROM pg_stat_statements
+        WHERE query LIKE 'SELECT pg_sleep%' AND query LIKE '%native_ash_history_test%'
+        AND userid=(SELECT oid FROM pg_roles WHERE rolname=current_user) LIMIT 1",
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .string("id");
+    assert!(
+        local.events.iter().any(|e| e.wait_event == "PgSleep"
+            && e.component == "YSQL"
+            && e.query_id.as_deref() == Some(query.as_str()))
+    );
+    assert!(local.events.iter().all(|e| e.observations > 0.0 && e.weighted_observations > 0.0));
+    assert_eq!(local.period.scope, culprit_core::CounterScope::Node);
+    assert!(local.events.iter().all(|e| e.node == probe.node));
+    assert!(!local.period.partial);
+    let short = crate::ash::read(&session, &probe, &options, 1).await.unwrap();
+    assert!(short.period.partial && short.period.observations == 1.0);
+    session.client.batch_execute(&tagged("SET yb_enable_global_views=on")).await.unwrap();
+    let mut global_probe = crate::probe::read(&session.client).await.unwrap();
+    global_probe.now = probe.now.clone(); // Compare the same closed range, despite work since the first read.
+    let global = crate::ash::read(&session, &global_probe, &options, 10_000).await.unwrap();
+    assert_eq!(global.period.scope, culprit_core::CounterScope::Cluster);
+    assert!(global.events.iter().all(|e| e.node == probe.node));
+    assert_eq!(global.period.observations, local.period.observations, "one-node views retain the same observations");
+    assert_eq!(global.period.weighted_observations, local.period.weighted_observations);
+    assert!(!global.period.partial);
+    session.client.batch_execute(&tagged("SET default_transaction_read_only=off")).await.unwrap();
+    let pid = query_one(&session.client, "SELECT pg_backend_pid()::text AS pid").await.unwrap().unwrap().string("pid");
+    let role = format!("culprit_ash_reader_{pid}");
+    session.client.batch_execute(&tagged(&format!("CREATE ROLE {role} LOGIN"))).await.unwrap();
+    let own=async {
+        let mut spec=local_spec();spec.user=Some(role.clone());
+        let reader=YugabyteProvider::new(&spec)?;
+        let own=reader.connector.connect_observed(COLLECTOR).await?;
+        own.client.simple_query("SELECT pg_sleep(2.2) /* native_ash_role_test */").await.map_err(culprit_postgres::wire::map_error)?;
+        let p=crate::probe::read(&own.client).await?;
+        let history=crate::ash::read(&own,&p,&options,10_000).await?;
+        let id=p.statement_role.ok_or_else(||culprit_core::Error::invalid("The test role unexpectedly has full statistics access"))?;
+        let expected=query_one(&own.client,&format!(
+            "SELECT count(*)::text AS n FROM pg_catalog.yb_active_session_history
+            WHERE ysql_dbid={} AND ysql_userid={id} AND sample_time>='{}'::timestamptz AND sample_time<'{}'::timestamptz",
+            p.oid,history.period.requested_start,history.period.requested_end
+        )).await?.unwrap().string("n").parse::<f64>().unwrap();
+        session.client.batch_execute(&tagged(&format!("GRANT pg_read_all_stats TO {role}"))).await.map_err(culprit_postgres::wire::map_error)?;
+        let stale=crate::probe::read(&own.client).await?;
+        if stale.statement_role.is_some(){return Err(culprit_core::Error::invalid("The test monitoring grant did not apply"));}
+        session.client.batch_execute(&tagged(&format!("REVOKE pg_read_all_stats FROM {role}"))).await.map_err(culprit_postgres::wire::map_error)?;
+        let denied_activity=crate::ash::read(&own,&stale,&options,10_000).await;
+        // A stale probe must not enter QPM's native foreign-role redaction path, which crashes this release.
+        let denied_cache=crate::history::stored(&own,&stale,"1","1").await;
+        Ok::<_,culprit_core::Error>((history,expected,id,denied_activity,denied_cache))
+    }.await;
+    session.client.batch_execute(&tagged(&format!("DROP ROLE {role}"))).await.unwrap();
+    let (history, expected, id, denied_activity, denied_cache) = own.unwrap();
+    assert!(history.period.source.ends_with(&format!("role {id} only")));
+    assert!(history.period.observations >= 2.0);
+    assert_eq!(history.period.observations, expected, "other roles' observations must not enter this history");
+    assert_eq!(denied_activity.unwrap_err().code, culprit_core::ErrorCode::PermissionDenied);
+    assert_eq!(denied_cache.unwrap_err().code, culprit_core::ErrorCode::PermissionDenied);
+}
+
 #[test]
 fn provider_rejects_foreign_engines_and_cloud_bearer_credentials() {
     let mut spec =

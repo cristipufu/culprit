@@ -36,6 +36,17 @@ fn file(f: &FileIo) -> Value {
 pub fn report(report: &Report) -> Value {
     let snapshot = &report.snapshot;
     let waits = culprit_engine::explain_waits(snapshot);
+    let activity = waits.as_ref().and_then(|w| w.activity.as_ref()).map(|a| {
+        json!({
+            "period":a.period,
+            "categories":a.categories.iter().take(12).map(|c|json!({
+                "key":c.key,"label":c.label,"share_of_sample_weight":c.share,
+                "observations":c.observations,"weighted_observations":c.weighted_observations,
+                "events":c.events.iter().take(8).collect::<Vec<_>>(),
+                "events_retained":c.events.len(),"queries":c.queries.iter().take(5).collect::<Vec<_>>()
+            })).collect::<Vec<_>>()
+        })
+    });
     let categories: Vec<Value> = waits
         .as_ref()
         .map(|w| {
@@ -62,19 +73,27 @@ pub fn report(report: &Report) -> Value {
                 .collect()
         })
         .unwrap_or_default();
-    json!({
+    let mut response = json!({
         "connection": snapshot.connection,
         "source": waits.as_ref().map(|w| w.source.clone()),
         "categories": categories,
-        "notes": waits.map(|w| w.notes).unwrap_or_else(|| vec!["The latest scan recorded no waits. Call waits with now=true to sample them.".into()]),
+        "notes": waits.map(|w| w.notes).unwrap_or_else(|| {
+            let mut notes=vec!["The latest scan recorded no waits. Call waits with now=true to sample them.".into()];
+            if let Some(reason)=snapshot.source_problem(&[culprit_core::source_id::DOCDB_ACTIVITY_HISTORY]) {notes.push(reason);}
+            notes
+        }),
         "signals": snapshot.pressure.as_ref().map(|p| p.signals.iter().map(signal).collect::<Vec<_>>()).unwrap_or_default(),
         "storage": snapshot.pressure.as_ref().map(|p| p.files.iter().take(12).map(file).collect::<Vec<_>>()).unwrap_or_default(),
         "replication": snapshot.pressure.as_ref().map(|p| p.replicas.clone()).unwrap_or_default(),
-        "operations": snapshot.operations,
+        "operations": snapshot.operations.without_activity(),
         "oldest_open_transaction": snapshot.pressure.as_ref().and_then(|p| p.oldest_transaction.as_ref()).map(|t| json!({
             "session": t.session, "open_for": format::duration(t.seconds * 1000.0), "state": t.state, "program": t.program,
         })),
-    })
+    });
+    if let Some(activity) = activity {
+        response["activity"] = activity;
+    }
+    response
 }
 
 pub fn sample(s: &WaitSample) -> Value {
@@ -101,6 +120,47 @@ pub fn sample(s: &WaitSample) -> Value {
 mod tests {
     use super::*;
     use culprit_core::{Engine, SignalScope, SignalUnit};
+
+    #[test]
+    fn activity_output_is_bounded_and_does_not_repeat_raw_history_or_invent_durations() {
+        let mut data: Report =
+            serde_json::from_str(include_str!("../../../fixtures/yugabyte-demo.report.json")).unwrap();
+        data.snapshot.operations.activity_history = Some(culprit_core::ActivityHistory {
+            period: culprit_core::ActivityPeriod {
+                source: "native test samples".into(),
+                requested_start: "2026-10-01T00:00:00Z".into(),
+                requested_end: "2026-10-08T00:00:00Z".into(),
+                first_sample: None,
+                last_sample: None,
+                scope: culprit_core::CounterScope::Node,
+                nodes: vec![],
+                observations: 20_000.0,
+                weighted_observations: 40_000.0,
+                partial: false,
+                notes: vec!["Task weights are not elapsed time".into()],
+            },
+            events: (0..20_000)
+                .map(|i| culprit_core::ActivityEvent {
+                    node: Some("recorded-node".into()),
+                    category: "rpc".into(),
+                    component: "YSQL".into(),
+                    wait_event: "TableRead".into(),
+                    query_id: Some((i + 100).to_string()),
+                    observations: 1.0,
+                    weighted_observations: 2.0,
+                })
+                .collect(),
+        });
+        let result = report(&data);
+        assert!(result["activity"]["period"]["partial"].as_bool().unwrap());
+        let category = &result["activity"]["categories"][0];
+        assert_eq!(category["events"].as_array().unwrap().len(), 8);
+        assert_eq!(category["queries"].as_array().unwrap().len(), 5);
+        assert_eq!(category["weighted_observations"], 20_000.0);
+        assert!(category.get("time").is_none());
+        assert!(result["operations"].get("activity_history").is_none());
+        assert!(serde_json::to_vec(&result).unwrap().len() < 20_000);
+    }
 
     #[test]
     fn waits_consumers_receive_the_measured_value_without_display_rounding() {

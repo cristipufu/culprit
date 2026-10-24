@@ -2,6 +2,19 @@ use culprit_core::{Capability, Engine, Error, Result, ServerInfo};
 use culprit_postgres::wire::query_one;
 use tokio_postgres::Client;
 
+pub(crate) const ALL_STATS: &str = "(EXISTS(SELECT 1 FROM pg_roles WHERE rolname=current_user AND rolsuper) OR pg_has_role(current_user,'pg_read_all_stats','USAGE'))";
+
+pub(crate) async fn require_all_stats(client: &Client) -> Result<()> {
+    if query_one(client, &format!("SELECT {ALL_STATS} AS allowed")).await?.is_some_and(|r| r.flag("allowed")) {
+        Ok(())
+    } else {
+        Err(Error::new(
+            culprit_core::ErrorCode::PermissionDenied,
+            "The monitoring privilege changed while native history was being read; collect again with the current role",
+        ))
+    }
+}
+
 pub(crate) struct Probe {
     pub now: String,
     pub started: Option<String>,
@@ -65,8 +78,7 @@ pub(crate) async fn read(client: &Client) -> Result<Probe> {
         current_setting('yb_enable_pg_stat_statements_docdb_metrics',true) AS metrics,
         current_setting('yb_enable_pg_stat_statements_rpc_stats',true) AS rpc_metrics,
         (SELECT oid::text FROM pg_roles WHERE rolname=current_user) AS role_oid,
-        (EXISTS(SELECT 1 FROM pg_roles WHERE rolname=current_user AND rolsuper)
-          OR pg_has_role(current_user,'pg_read_all_stats','USAGE')) AS all_stats",
+        {ALL_STATS} AS all_stats",
             timestamp("clock_timestamp()"),
             timestamp("pg_postmaster_start_time()")
         ),

@@ -70,11 +70,13 @@ pub async fn run(ws: &Workspace, args: WaitsArgs, out: &Out) -> Result<u8> {
     };
     let waits = culprit_engine::explain_waits(&snapshot);
     match out.format() {
-        Format::Json => println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({ "connection": name, "waits": waits, "pressure": snapshot.pressure, "operations": snapshot.operations }))
-                .unwrap_or_default()
-        ),
+        Format::Json => {
+            let mut value = json!({ "connection": name, "waits": waits, "pressure": snapshot.pressure, "operations": snapshot.operations.without_activity() });
+            if let Some(reason) = snapshot.source_problem(&[culprit_core::source_id::DOCDB_ACTIVITY_HISTORY]) {
+                value["notes"] = json!([reason]);
+            }
+            println!("{}", serde_json::to_string_pretty(&value).unwrap_or_default());
+        }
         _ => print_report(&name, &snapshot, waits.as_ref()),
     }
     Ok(0)
@@ -88,8 +90,53 @@ fn bar(share: f64) -> String {
 fn print_report(name: &str, snapshot: &Snapshot, waits: Option<&WaitsReport>) {
     match waits {
         Some(w) => {
-            println!("Where {name}'s database time goes · {}", w.source);
+            println!(
+                "{} · {}",
+                if w.activity.is_some() {
+                    format!("{name}'s retained active-task samples")
+                } else {
+                    format!("Where {name}'s database time goes")
+                },
+                w.source
+            );
             println!();
+            if let Some(activity) = &w.activity {
+                println!(
+                    "{} retained observations; {} weighted observations. {}",
+                    format::count(activity.period.observations),
+                    format::count(activity.period.weighted_observations),
+                    if activity.period.partial { "Partial read." } else { "" }
+                );
+                for c in &activity.categories {
+                    println!(
+                        "{:>5}  {}  {:<22} weight {}",
+                        format::percent(c.share),
+                        bar(c.share),
+                        c.label,
+                        format::count(c.weighted_observations)
+                    );
+                    for e in c.events.iter().take(5) {
+                        println!(
+                            "{:>29}{} · {} · node {}{} · weight {}",
+                            "",
+                            e.component,
+                            e.wait_event,
+                            e.node.as_deref().unwrap_or("unknown"),
+                            e.query_id.as_ref().map(|id| format!(" · query {id}")).unwrap_or_default(),
+                            format::count(e.weighted_observations)
+                        );
+                    }
+                    for q in c.queries.iter().take(3) {
+                        println!(
+                            "{:>29}{} of this category's sample weight · query {} {}",
+                            "",
+                            format::percent(q.share_of_category),
+                            q.id,
+                            q.text.as_deref().map(|s| short(s, 70)).unwrap_or_default()
+                        );
+                    }
+                }
+            }
             for c in &w.categories {
                 println!(
                     "{:>5}  {}  {:<22} {:>9}   {}",
@@ -119,6 +166,9 @@ fn print_report(name: &str, snapshot: &Snapshot, waits: Option<&WaitsReport>) {
         }
         None => {
             println!("{name}'s latest scan recorded no waits.");
+            if let Some(reason) = snapshot.source_problem(&[culprit_core::source_id::DOCDB_ACTIVITY_HISTORY]) {
+                println!("Recorded activity unavailable: {reason}");
+            }
             println!("Sample what it waits on right now: culprit waits {name} --now");
         }
     }

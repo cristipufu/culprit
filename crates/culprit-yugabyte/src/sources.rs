@@ -36,6 +36,11 @@ pub const PLAN_HISTORY: Source = Source {
     reads: "retained native QPM plan counts and timings, independently of statement-statistics epochs",
     delivers: &[],
 };
+pub const ACTIVITY_HISTORY: Source = Source {
+    name: source_id::DOCDB_ACTIVITY_HISTORY,
+    reads: "bounded native active-task observations in their own database, role, node and time scope",
+    delivers: &[],
+};
 pub const EPOCHS: Source = Source {
     name: source_id::DOCDB_EPOCHS,
     reads: "statement reset epochs for every contributing YB-TServer",
@@ -59,6 +64,7 @@ pub const ALL: &[Source] = &[
     WORKLOAD,
     COSTS,
     PLAN_HISTORY,
+    ACTIVITY_HISTORY,
     EPOCHS,
     SETTINGS,
     INDEX_USAGE,

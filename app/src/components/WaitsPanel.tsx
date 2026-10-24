@@ -9,6 +9,7 @@ import { count, duration, percent } from "../lib/format";
 import { changeRequest, setState, useStore } from "../lib/store";
 import { WAIT_LABEL, foldWaits, startSample, useSample, waitColor } from "../lib/waits";
 import { CloudLimits } from "./CloudLimits";
+import { ActivityHistoryView } from "./ActivityHistory";
 import { HealthTab, SignalTile } from "./Health";
 import type { WaitsTab } from "./Waits";
 import type { Engine } from "../gen/Engine";
@@ -61,6 +62,8 @@ export default function WaitsPanel({
   }, []);
 
   const categories = loaded.status === "ready" ? (loaded.report?.categories ?? []) : [];
+  const activity = loaded.status === "ready" ? loaded.report?.activity : undefined;
+  const navigation = activity?.categories ?? categories;
   const current = categories.find((c) => c.key === selected) ?? categories[0];
 
   const onKey = (e: React.KeyboardEvent) => {
@@ -75,24 +78,24 @@ export default function WaitsPanel({
     }
     const n = Number(e.key);
     if (n >= 1 && n <= tabs.length) setTab(tabs[n - 1]!.key);
-    if (tab === "waits" && categories.length && (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "j" || e.key === "k")) {
+    if (tab === "waits" && navigation.length && (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "j" || e.key === "k")) {
       e.preventDefault();
-      const at = Math.max(0, categories.findIndex((c) => c.key === current?.key));
-      const next = e.key === "ArrowDown" || e.key === "j" ? Math.min(categories.length - 1, at + 1) : Math.max(0, at - 1);
-      setSelected(categories[next]!.key);
+      const at = Math.max(0, navigation.findIndex((c) => c.key === selected));
+      const next = e.key === "ArrowDown" || e.key === "j" ? Math.min(navigation.length - 1, at + 1) : Math.max(0, at - 1);
+      setSelected(navigation[next]!.key);
     }
     if (e.key === "r" && tab === "now") void startSample(connection, 30);
   };
 
   return (
     <div className="waits-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="waits-sheet" role="dialog" aria-modal="true" aria-label="Where database time goes" tabIndex={-1} ref={sheet} onKeyDown={onKey}>
+      <div className="waits-sheet" role="dialog" aria-modal="true" aria-label={activity ? "Recorded database activity" : "Where database time goes"} tabIndex={-1} ref={sheet} onKeyDown={onKey}>
         <header className="waits-header">
           <div>
-            <h2>Where database time goes</h2>
+            <h2>{activity ? "Recorded database activity" : "Where database time goes"}</h2>
             <div className="waits-sub">
               {connection} · {engine}
-              {loaded.status === "ready" && loaded.report ? ` · ${loaded.report.source}` : ""}
+              {loaded.status === "ready" && loaded.report ? ` · ${activity?.period.source ?? loaded.report.source}` : ""}
             </div>
           </div>
           <button className="icon-btn" onClick={onClose} title="Close (Esc)" aria-label="Close">
@@ -102,7 +105,7 @@ export default function WaitsPanel({
         <nav className="waits-tabs" role="tablist">
           {tabs.map((t, i) => (
             <button key={t.key} role="tab" aria-selected={tab === t.key} className={tab === t.key ? "on" : ""} onClick={() => setTab(t.key)}>
-              {t.label}
+              {t.key === "waits" && activity ? "Recorded activity" : t.label}
               <span className="kbd">{i + 1}</span>
             </button>
           ))}
@@ -116,8 +119,10 @@ export default function WaitsPanel({
                 <h3>{loaded.error.message}</h3>
                 {loaded.error.hint && <p>{loaded.error.hint}</p>}
               </div>
+            ) : activity ? (
+              <ActivityHistoryView activity={activity} selected={selected} onSelect={setSelected} onClose={onClose} />
             ) : !loaded.report || !current ? (
-              <NoHistory engine={report.snapshot.server.engine} product={report.snapshot.server.product} onSample={sampling ? () => setTab("now") : undefined} />
+              <NoHistory engine={report.snapshot.server.engine} product={report.snapshot.server.product} reason={report.snapshot.sources?.find((s) => s.source === "docdb-activity-history")?.reason} onSample={sampling ? () => setTab("now") : undefined} />
             ) : (
               <WaitsView report={loaded.report} current={current} onSelect={setSelected} onClose={onClose} onSample={() => setTab("now")} />
             ))}
@@ -166,11 +171,12 @@ const NO_WAIT_HISTORY: Record<Engine, string> = {
   sqlite: "SQLite has no server, so nothing records what it waits on. Waiting for the write lock shows up in the application, as SQLITE_BUSY or slow commits.",
 };
 
-function NoHistory({ engine, product, onSample }: { engine: Engine; product: string; onSample?: () => void }) {
+function NoHistory({ engine, product, reason, onSample }: { engine: Engine; product: string; reason?: string | null; onSample?: () => void }) {
   return (
     <div className="waits-empty">
       <h3>This scan has no record of what queries waited on</h3>
       <p>{isMariadb(engine, product) ? NO_WAIT_HISTORY.mysql.replace("performance_schema", "MariaDB's performance_schema") : NO_WAIT_HISTORY[engine]}</p>
+      {reason && <p className="muted">{reason}</p>}
       {onSample && (
         <button className="btn primary" onClick={onSample}>
           <Radio size={13} /> Sample right now

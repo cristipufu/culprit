@@ -416,7 +416,7 @@ function WaitsTile({ tile, onOpen, sample }: { tile: Tile; onOpen: (tab: WaitsTa
   const items = tile.items;
   const top = items.find((i) => i.id !== "other") ?? items[0];
   return (
-    <Frame tile={tile} action="Where time goes" onOpen={() => onOpen("waits", top?.id)}>
+    <Frame tile={tile} action={tile.title} onOpen={() => onOpen("waits", top?.id)}>
       <div className="dash-stack" role="img" aria-label={items.map((i) => `${i.label} ${i.value}`).join(", ")}>
         {items.map((i) => (
           <span

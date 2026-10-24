@@ -15,6 +15,28 @@ pub struct OperationalStats {
     pub multixacts: Vec<FreezeAge>,
     pub sqlite: Option<SqliteFileHealth>,
     pub cluster: Option<ClusterHealth>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub activity_history: Option<crate::waits::ActivityHistory>,
+}
+
+impl OperationalStats {
+    /// Wait surfaces serialize their bounded activity projection separately. Borrow the remaining evidence so
+    /// omitting raw samples does not first serialize or clone the entire history just to discard it.
+    pub fn without_activity(&self) -> impl Serialize + '_ {
+        #[derive(Serialize, TS)]
+        struct Counters<'a> {
+            log_failures: &'a [LoggedFailure],
+            spaces: &'a [SpaceUsage],
+            counters: &'a [OperationalCounter],
+            sequences: &'a [SequenceCapacity],
+            multixacts: &'a [FreezeAge],
+            sqlite: &'a Option<SqliteFileHealth>,
+            cluster: &'a Option<ClusterHealth>,
+        }
+        let Self { log_failures, spaces, counters, sequences, multixacts, sqlite, cluster, activity_history: _ } = self;
+        Counters { log_failures, spaces, counters, sequences, multixacts, sqlite, cluster }
+    }
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
