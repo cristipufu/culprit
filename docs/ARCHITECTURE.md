@@ -487,6 +487,8 @@ native provider, Workspace progress/actions and suggested termination SQL use th
 then verifies the current database, node, backend start and direct-client ownership before signaling a session.
 
 YugabyteDB command progress also pins the statement start time before reading native index, ANALYZE or COPY views.
+Targeted global activity/progress predicates compare the native `server_uuid` directly with a constant UUID: wrapping the
+column in text normalization prevents node pruning and makes a targeted read depend on unrelated nodes.
 The shared SQL lexer selects the current command: YSQL's progress function can expose retained COPY counters through
 other command views. A COPY row must still be IN PROGRESS; hidden activity and reusable pooled workers cannot
 authorize counters. Index totals remain estimates of table rows, and COPY transfer/transaction counters never become

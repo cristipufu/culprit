@@ -103,7 +103,8 @@ pub(crate) async fn read_session(
     let p = probe::read(&session.client).await?;
     let relation = if p.global { "pg_catalog.\"gv$pg_stat_activity\"" } else { "pg_catalog.pg_stat_activity" };
     let node_guard = if p.global {
-        format!("replace(a.server_uuid::text,'-','')={}", literal(&node))
+        // Keep the native UUID column bare so the global FDW prunes unrelated nodes during planning.
+        format!("a.server_uuid={}::uuid", literal(&node))
     } else {
         format!("replace(yb_get_local_tserver_uuid()::text,'-','')={}", literal(&node))
     };
@@ -158,8 +159,7 @@ pub(crate) async fn read_session(
         let view = command.view();
         let command_relation =
             if p.global { format!("pg_catalog.\"gv${view}\"") } else { format!("pg_catalog.{view}") };
-        let guard =
-            if p.global { format!(" AND replace(server_uuid::text,'-','')={}", literal(&node)) } else { String::new() };
+        let guard = if p.global { format!(" AND server_uuid={}::uuid", literal(&node)) } else { String::new() };
         let before = session.notices();
         let phase = query_one(
             &session.client,

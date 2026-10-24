@@ -85,6 +85,37 @@ temporary login are removed afterward. Temporary PostgreSQL-local tables cannot 
 
 ## Cluster-view verification
 
+The separate [three-node fixture](cluster.compose.yml) uses the same pinned release, without touching the one-node
+demo above. Each container is capped at two CPUs and 2 GiB; it publishes only loopback YSQL ports:
+55436/55437/55438 for direct connections and 55439 for Connection Manager on node three.
+
+Start and seed a fresh disposable cluster:
+
+```sh
+docker compose -f dev/yugabyte/cluster.compose.yml up -d --wait --wait-timeout 240
+docker compose -f dev/yugabyte/cluster.compose.yml exec -T yb1 bin/ysqlsh -h culprit-yb-cluster-1 -X -v ON_ERROR_STOP=1 -c 'CREATE DATABASE culprit_cluster;'
+docker compose -f dev/yugabyte/cluster.compose.yml exec -T yb1 bin/ysqlsh -h culprit-yb-cluster-1 -d culprit_cluster -X -v ON_ERROR_STOP=1 < dev/yugabyte/cluster-seed.sql
+CULPRIT_YSQL_CLUSTER_TEST=1 cargo test --locked -p culprit-yugabyte --lib cluster_tests:: -- --ignored
+```
+
+The database creation command is for a fresh cluster; the seed itself can be repeated. The fixture explicitly enables
+global views for its monitoring role and adds the reset/settings views. Production collection does neither.
+Its remote-query timeout is set to one second **at startup** to bound failure tests; changing the TServer flag at
+runtime did not update existing PostgreSQL backends on the verified release. This test setting is not a production
+tuning recommendation.
+
+The cases check 1+2+3 calls aggregated across three nodes, a single-node reset that invalidates subtraction,
+unknown index history dates, shared resources, and actual pooled-worker refusal through a direct connection to
+the worker's node. Failure cases pause only the uniquely labelled `yb3` fixture container. A drop guard resumes it
+even if an assertion fails. They verify warnings and incomplete source evidence, recovery, and that a targeted
+session read does not contact an unrelated failed peer. These are local correctness checks, not a scale benchmark.
+
+Remove only this disposable cluster when finished (its synthetic data is discarded):
+
+```sh
+docker compose -f dev/yugabyte/cluster.compose.yml down
+```
+
 Verify native node resource observations and their distinct administrative permissions:
 
 ```sh

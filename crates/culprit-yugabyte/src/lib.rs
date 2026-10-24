@@ -1,6 +1,8 @@
 //! Native YSQL catalogs and DocDB measurements, sharing only PostgreSQL wire transport and SQL execution.
 mod ash;
 mod catalog;
+#[cfg(test)]
+mod cluster_tests;
 mod collect;
 mod global;
 mod history;

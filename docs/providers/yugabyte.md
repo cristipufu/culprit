@@ -227,8 +227,11 @@ the YugabyteDB provider retain the correct engine; a plain external PostgreSQL-s
 for automatic detection. Approximate table DDL preserves known primary-key sharding and colocation, but tablespaces,
 placement, tablegroups and range split boundaries require a native schema export before recreation.
 
-The live global-view verification so far uses a one-node cluster. Multi-node failure/reset and Connection Manager
-scenarios need additional verification before claiming that deployment coverage.
+The disposable three-node suite verifies query aggregation, independent node resets, shared resource inventory,
+scoped progress and Connection Manager worker refusal. It also pauses one labelled fixture node, checks skipped-node
+warnings and partial workload/index/ASH/termination/plan/resource evidence, then resumes the node and verifies recovery.
+Targeted progress compares native UUIDs directly so unrelated nodes are pruned before reading global views.
+This is a local-cluster verification, not a multi-region latency or large-cluster performance benchmark.
 
 See [dev/yugabyte](../../dev/yugabyte/README.md) for the disposable database, seed workload and opt-in checks.
 

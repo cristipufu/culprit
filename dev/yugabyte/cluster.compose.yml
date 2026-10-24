@@ -1,0 +1,63 @@
+name: culprit-yugabyte-cluster
+
+x-node: &node
+  image: yugabytedb/yugabyte@sha256:e604d9e273a1fc3fccaf6ecbfe6ac6e3b93d2b4f06a075c461e3d73676d183fc
+  cpus: 2
+  mem_limit: 2g
+  labels:
+    dev.culprit.fixture: yugabyte-cluster
+  healthcheck:
+    test: [CMD-SHELL, 'bin/ysqlsh -h "$${HOSTNAME}" -p 5433 -X -At -c "SELECT 1" >/dev/null 2>&1']
+    interval: 3s
+    timeout: 5s
+    retries: 60
+
+services:
+  yb1:
+    <<: *node
+    hostname: culprit-yb-cluster-1
+    ports: ["127.0.0.1:55436:5433"]
+    command:
+      - bin/yugabyted
+      - start
+      - --advertise_address=culprit-yb-cluster-1
+      - --background=false
+      - --callhome=false
+      - --ui=false
+      - --ysql_port=5433
+      - --tserver_flags=memory_limit_hard_bytes=1073741824,remote_pg_query_execution_rpc_timeout_ms=1000
+      - --master_flags=memory_limit_hard_bytes=268435456
+  yb2:
+    <<: *node
+    hostname: culprit-yb-cluster-2
+    ports: ["127.0.0.1:55437:5433"]
+    depends_on:
+      yb1: {condition: service_healthy}
+    command:
+      - bin/yugabyted
+      - start
+      - --advertise_address=culprit-yb-cluster-2
+      - --join=culprit-yb-cluster-1
+      - --background=false
+      - --callhome=false
+      - --ui=false
+      - --ysql_port=5433
+      - --tserver_flags=memory_limit_hard_bytes=1073741824,remote_pg_query_execution_rpc_timeout_ms=1000
+      - --master_flags=memory_limit_hard_bytes=268435456
+  yb3:
+    <<: *node
+    hostname: culprit-yb-cluster-3
+    ports: ["127.0.0.1:55438:5433", "127.0.0.1:55439:5434"]
+    depends_on:
+      yb2: {condition: service_healthy}
+    command:
+      - bin/yugabyted
+      - start
+      - --advertise_address=culprit-yb-cluster-3
+      - --join=culprit-yb-cluster-1
+      - --background=false
+      - --callhome=false
+      - --ui=false
+      - --ysql_port=5433
+      - --tserver_flags=memory_limit_hard_bytes=1073741824,remote_pg_query_execution_rpc_timeout_ms=1000,enable_ysql_conn_mgr=true,ysql_conn_mgr_port=5434
+      - --master_flags=memory_limit_hard_bytes=268435456
