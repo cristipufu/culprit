@@ -65,9 +65,9 @@ export function Connections() {
             <div className="eyebrow" style={{ marginBottom: 8 }}>
               {ENVIRONMENT_LABEL[group.environment]}
             </div>
-            {group.items.map((c) => (
-              <ConnectionCard key={c.name} connection={c} />
-            ))}
+            <div className="conn-grid">
+              {group.items.map((c) => <ConnectionCard key={c.name} connection={c} />)}
+            </div>
           </section>
         ))}
       </div>

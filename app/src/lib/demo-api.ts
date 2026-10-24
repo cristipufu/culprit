@@ -29,7 +29,7 @@ import type { Api, UpdateProgress } from "./api";
 import { demoCloud } from "./demo-cloud";
 import { demoRows } from "./demo-rows";
 import { signalsSample, withSignals } from "./demo-signals";
-import { can, refusal, sessionActions, waitingState } from "./engines";
+import { can, connectFacts, refusal, sessionActions, waitingState } from "./engines";
 
 /** The capabilities query history comes from (mirrors `Snapshot::no_workload_reason`). */
 /** A scan's window in minutes, also for scans from before windows could be hours. */
@@ -259,8 +259,8 @@ export async function demoApi(): Promise<Api> {
       name: r.snapshot.connection,
       engine: r.snapshot.server.engine,
       environment: r.snapshot.environment,
-      host: { mssql: "localhost,1433", postgres: "localhost:5432", yugabyte: "localhost:5433", mysql: "localhost:3306", sqlite: "" }[r.snapshot.server.engine],
-      port: null,
+      host: connectFacts(r.snapshot.server.engine).file ? r.snapshot.server.database : "localhost",
+      port: { mssql: 1433, postgres: 5432, yugabyte: 5433, mysql: 3306, sqlite: null }[r.snapshot.server.engine],
       database: r.snapshot.server.database,
       user: null,
       auth: can(r.snapshot.server.engine, "sign_in") ? "password" : "none",

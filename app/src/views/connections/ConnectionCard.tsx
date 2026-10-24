@@ -1,11 +1,11 @@
-import { ArrowRight, Bot, Check, ChevronDown, FileText, KeyRound, Pencil } from "lucide-react";
+import { ArrowRight, Bot, Check, ChevronDown, Clock3, FileText, KeyRound, Pencil } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { EngineBadge } from "../../components/EngineBadge";
 import type { AgentAccess } from "../../gen/AgentAccess";
 import type { AuthKind } from "../../gen/AuthKind";
 import type { ConnectionInfo } from "../../gen/ConnectionInfo";
 import { api, errorMessage, isDesktop } from "../../lib/api";
-import { serverName } from "../../lib/engines";
+import { connectFacts, serverName } from "../../lib/engines";
 import { ago } from "../../lib/format";
 import { loadConnections, openConnection, renameConnection } from "../../lib/store";
 
@@ -17,6 +17,16 @@ export function ConnectionCard({ connection: c }: { connection: ConnectionInfo }
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const submitted = useRef(false);
+
+  const nameId = useId();
+  const product = serverName(c.engine, c.last_report?.product);
+  const file = connectFacts(c.engine).file;
+  const database = c.database ?? (file ? c.host.split(/[\\/]/).pop() : null);
+  const host = c.host.includes(":") && !c.host.startsWith("[") ? `[${c.host}]` : c.host;
+  const endpoint = file ? c.display : `${host}${c.port ? `:${c.port}` : ""}`;
+  const headline = c.last_report
+    ? c.last_report.no_workload ? `No query history: ${c.last_report.no_workload}` : (takeaway(c.last_report.headline) ?? NO_TAKEAWAY)
+    : null;
 
   const save = async () => {
     if (submitted.current) return;
@@ -37,85 +47,61 @@ export function ConnectionCard({ connection: c }: { connection: ConnectionInfo }
 
   if (editing) {
     return (
-      <div className="conn-card">
+      <article className="conn-card conn-card-editing">
         <EngineBadge engine={c.engine} environment={c.environment} product={c.last_report?.product} size="md" />
-        <input
-          className="alias-input"
-          autoFocus
-          value={alias}
-          readOnly={saving}
-          aria-label={`Rename ${c.name}`}
-          aria-busy={saving}
-          onChange={(e) => setAlias(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              void save();
-            }
-            if (e.key === "Escape" && !submitted.current) {
-              e.preventDefault();
-              submitted.current = true;
-              setEditing(false);
-            }
-          }}
-          onBlur={save}
-        />
-        <span className="last muted">{saving ? "Saving…" : "Enter to save"}</span>
-        <span className="sub">{error ?? `${serverName(c.engine, c.last_report?.product)} · ${c.display}`}</span>
-      </div>
+        <div className="conn-edit-name">
+          <label htmlFor={nameId}>Connection name</label>
+          <input id={nameId} className="alias-input" autoFocus value={alias} readOnly={saving}
+            aria-label={`Rename ${c.name}`} aria-busy={saving}
+            onChange={(event) => setAlias(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") { event.preventDefault(); void save(); }
+              if (event.key === "Escape" && !submitted.current) {
+                event.preventDefault(); submitted.current = true; setEditing(false);
+              }
+            }} onBlur={save} />
+          <span className="muted">{saving ? "Saving…" : "Enter to save · Escape to cancel"}</span>
+          {error && <span className="error" role="alert">{error}</span>}
+        </div>
+      </article>
     );
   }
 
   return (
-    <div className="conn-card" role="button" tabIndex={0} onClick={() => openConnection(c.name)} onKeyDown={(e) => e.key === "Enter" && openConnection(c.name)}>
-      <EngineBadge engine={c.engine} environment={c.environment} product={c.last_report?.product} size="md" />
-      <span className="name">
-        {c.name}
-        <button
-          className="rename"
-          title="Rename"
-          onClick={(e) => {
-            e.stopPropagation();
-            submitted.current = false;
-            setAlias(c.name);
-            setError(null);
-            setEditing(true);
-          }}
-        >
-          <Pencil size={12} />
-        </button>
-      </span>
-      <span className="last">
-        {c.last_report ? (
-          <>
-            <span className="conn-count">
-              <b>{c.last_report.opportunities}</b> {c.last_report.opportunities === 1 ? "opportunity" : "opportunities"}
-            </span>
-            <span className={`conn-when ${stale(c.last_report.taken_at) ? "stale" : ""}`} title={stale(c.last_report.taken_at) ? "Scanned more than a day ago; open to scan again" : c.last_report.taken_at}>
-              {stale(c.last_report.taken_at) ? `Stale · ${ago(c.last_report.taken_at)}` : ago(c.last_report.taken_at)}
-            </span>
-          </>
-        ) : (
-          <span className="conn-scan">
-            First scan <ArrowRight size={12} />
-          </span>
-        )}
-      </span>
-      <span className="sub">
-        {serverName(c.engine, c.last_report?.product)} · {AUTH_LABEL[c.auth] ? `${AUTH_LABEL[c.auth]} · ` : ""}
-        {c.display}
-      </span>
-      {c.last_report && (
-        <span className="conn-headline">
-          {c.last_report.no_workload ? `No query history: ${c.last_report.no_workload}` : (takeaway(c.last_report.headline) ?? NO_TAKEAWAY)}
+    <article className="conn-card">
+      <button type="button" className="conn-open" onClick={() => openConnection(c.name)}>
+        <EngineBadge engine={c.engine} environment={c.environment} product={c.last_report?.product} size="md" />
+        <span className="conn-identity">
+          <strong>{c.name}</strong>
+          <span className="conn-meta">{product}{database && <> · {database}</>}</span>
         </span>
-      )}
-      <span className="conn-tools">
-        {c.auth === "password" && !c.has_secret && <SetPassword name={c.name} />}
-        {(c.engine === "sqlite" || c.query_log) && <QueryLogSetting connection={c} />}
-        <AgentAccessMenu connection={c} />
-      </span>
-    </div>
+        <span className="conn-count">
+          {c.last_report ? <><b>{c.last_report.opportunities}</b><span>{c.last_report.opportunities === 1 ? "opportunity" : "opportunities"}</span></>
+            : <span className="conn-scan">First scan <ArrowRight size={12} /></span>}
+        </span>
+        <span className="conn-endpoint" title={c.display}>
+          <span>{file ? "File" : "Host"}</span><span>{endpoint}</span>
+          {AUTH_LABEL[c.auth] && <span className="conn-auth">{AUTH_LABEL[c.auth]}</span>}
+        </span>
+        {headline && <span className="conn-summary" title={headline}>{headline}</span>}
+      </button>
+      <div className="conn-card-footer">
+        <span className={`conn-when ${c.last_report && stale(c.last_report.taken_at) ? "stale" : ""}`}
+          title={c.last_report ? `${c.last_report.taken_at}${stale(c.last_report.taken_at) ? " · Open to refresh this saved report" : ""}` : undefined}>
+          <Clock3 size={12} aria-hidden="true" />
+          {c.last_report ? `Scanned ${ago(c.last_report.taken_at)}` : "No saved report"}
+        </span>
+        <span className="conn-tools">
+          {c.auth === "password" && !c.has_secret && <SetPassword name={c.name} />}
+          {(file || c.query_log) && <QueryLogSetting connection={c} />}
+          <AgentAccessMenu connection={c} />
+          <button type="button" className="btn ghost conn-rename" title={`Rename ${c.name}`} aria-label={`Rename ${c.name}`}
+            onClick={() => { submitted.current = false; setAlias(c.name); setError(null); setEditing(true); }}>
+            <Pencil size={12} />
+          </button>
+        </span>
+      </div>
+    </article>
   );
 }
 
@@ -247,19 +233,9 @@ function QueryLogSetting({ connection: c }: { connection: ConnectionInfo }) {
       setError(errorMessage(e).message);
     }
   };
-  if (isDesktop() && !open && !c.query_log) {
-    return (
-      <span style={{ display: "inline-flex", gap: 6, marginLeft: 8, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
-        <button className="btn ghost" style={{ height: 22 }} title="Read the statements and their times from the log your framework writes (Rails, Django, EF Core, Phoenix)" onClick={choose}>
-          <FileText size={12} /> Add query log
-        </button>
-        {error && <span className="muted">{error}</span>}
-      </span>
-    );
-  }
   if (isDesktop() && open) {
     return (
-      <span style={{ display: "inline-flex", gap: 6, marginLeft: 8, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+      <span className="conn-settings-editor" onClick={(e) => e.stopPropagation()}>
         <span className="muted mono" title={c.query_log ?? ""}>
           {file}
         </span>
@@ -279,21 +255,21 @@ function QueryLogSetting({ connection: c }: { connection: ConnectionInfo }) {
   if (!open) {
     return (
       <button
-        className="btn ghost"
-        style={{ marginLeft: 8, height: 22 }}
+        className="btn ghost conn-log"
+        aria-label={c.query_log ? `Query log for ${c.name}: ${file}` : `Add query log for ${c.name}`}
         title={c.query_log ? `Scans read the statements from ${c.query_log}` : "Read the statements and their times from the log your framework writes (Rails, Django, EF Core, Phoenix)"}
         onClick={(e) => {
           e.stopPropagation();
-          setPath(c.query_log ?? "");
-          setOpen(true);
+          if (isDesktop() && !c.query_log) void choose();
+          else { setPath(c.query_log ?? ""); setOpen(true); }
         }}
       >
-        <FileText size={12} /> {file ? `Query log: ${file}` : "Add query log"}
+        <FileText size={12} />
       </button>
     );
   }
   return (
-    <span style={{ display: "inline-flex", gap: 6, marginLeft: 8, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+    <span className="conn-settings-editor" onClick={(e) => e.stopPropagation()}>
       <input
         className="alias-input"
         autoFocus
@@ -337,19 +313,18 @@ function SetPassword({ name }: { name: string }) {
   if (!open) {
     return (
       <button
-        className="btn ghost"
-        style={{ marginLeft: 8, height: 22 }}
+        className="btn ghost conn-key" title="Set password" aria-label={`Set password for ${name}`}
         onClick={(e) => {
           e.stopPropagation();
           setOpen(true);
         }}
       >
-        <KeyRound size={12} /> Set password
+        <KeyRound size={12} />
       </button>
     );
   }
   return (
-    <span style={{ display: "inline-flex", gap: 6, marginLeft: 8, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+    <span className="conn-settings-editor" onClick={(e) => e.stopPropagation()}>
       <input
         className="alias-input"
         type="password"

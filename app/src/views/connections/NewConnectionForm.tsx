@@ -1,13 +1,14 @@
-import { Check, ChevronDown, Database, FolderOpen } from "lucide-react";
+import { Check, Database, FolderOpen } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
-import { EngineBadge } from "../../components/EngineBadge";
 import type { Engine } from "../../gen/Engine";
 import type { Environment } from "../../gen/Environment";
 import type { ParsedConnection } from "../../gen/ParsedConnection";
 import { api, errorMessage, type ApiError } from "../../lib/api";
 import { connectFacts, ENGINES } from "../../lib/engines";
+import { LatestRequest } from "../../lib/requests";
 import { loadConnections, openConnection } from "../../lib/store";
 import { remember, remembered } from "./DiscoverPanel";
+import { EnginePicker } from "./EnginePicker";
 
 const ENVIRONMENTS: Environment[] = ["production", "staging", "development", "local"];
 
@@ -37,6 +38,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
   const [switched, setSwitched] = useState(false);
   const [input, setInput] = useState("");
   const [parsed, setParsed] = useState<ParsedConnection | null>(null);
+  const parsedInput = useRef("");
   const [parseError, setParseError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
@@ -49,6 +51,13 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
   const focusInput = useRef(engine !== null);
   const ids = useId();
   const facts = engine ? connectFacts(engine) : null;
+  const action = useRef(new LatestRequest());
+
+  useEffect(() => {
+    action.current.invalidate();
+    setTest({ status: "idle" });
+    return () => action.current.invalidate();
+  }, [input, engine, name, environment, user, password]);
 
   useEffect(() => {
     if (!input.trim()) {
@@ -68,6 +77,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
           setEngine(p.engine);
           return;
         }
+        parsedInput.current = input;
         setParsed(p);
         setParseError(null);
         if (!nameTouched) setName(p.suggested_name);
@@ -84,7 +94,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
     };
   }, [input, engine, nameTouched, environmentTouched]);
 
-  // Restore the input on opening or after paste detection. Native selection keeps focus for arrow keys and Tab.
+  // Restore the input on opening or after paste detection. Manual selection keeps focus in the picker for Tab.
   useEffect(() => {
     if (engine && focusInput.current) {
       field.current?.focus();
@@ -103,7 +113,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
 
   // Before an engine is picked, a pasted connection string picks its own.
   const onPaste = (e: React.ClipboardEvent) => {
-    if (engine) return;
+    if (engine || e.target === field.current) return;
     const text = e.clipboardData.getData("text").trim();
     if (!text) return;
     e.preventDefault();
@@ -111,16 +121,17 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
   };
 
   const onChoose = async () => {
+    const current = action.current.start();
     try {
       const chosen = await (await api()).chooseDatabaseFile();
-      if (chosen) setInput(chosen);
+      if (current() && chosen) setInput(chosen);
     } catch (err) {
-      setParseError(errorMessage(err).message);
+      if (current()) setParseError(errorMessage(err).message);
     }
   };
 
   // What was read is the picked engine's: the details and the buttons follow.
-  const ready = !!parsed && !!engine && parsed.engine === engine;
+  const ready = !!parsed && !!engine && parsed.engine === engine && parsedInput.current === input;
   const needsUser = ready && parsed.auth === "password" && !parsed.user;
   const needsPassword = ready && parsed.auth === "password" && !parsed.has_password;
 
@@ -137,27 +148,34 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
   });
 
   const onTest = async () => {
+    const current = action.current.start();
     setTest({ status: "busy" });
     try {
       const server = await (await api()).testConnection(request());
-      setTest({ status: "ok", label: `${server.product} · ${server.database}` });
+      if (current()) setTest({ status: "ok", label: `${server.product} · ${server.database}` });
     } catch (e) {
-      setTest({ status: "error", error: errorMessage(e) });
+      if (current()) setTest({ status: "error", error: errorMessage(e) });
     }
   };
 
   const onSave = async () => {
+    const current = action.current.start();
+    const candidate = request();
     setTest({ status: "busy" });
     try {
       const client = await api();
-      await client.testConnection(request());
-      const saved = await client.addConnection(request());
+      if (!current()) return;
+      await client.testConnection(candidate);
+      if (!current()) return;
+      const saved = await client.addConnection(candidate);
+      if (!current()) return;
       if (engine) remember(ENGINE_KEY, engine);
       await loadConnections();
+      if (!current()) return;
       onDone();
       openConnection(saved.name);
     } catch (e) {
-      setTest({ status: "error", error: errorMessage(e) });
+      if (current()) setTest({ status: "error", error: errorMessage(e) });
     }
   };
 
@@ -174,79 +192,42 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
       }}
     >
       <div className="eyebrow">New connection</div>
-      <div className="new-conn-field">
-        <label htmlFor={`${ids}-engine`}>Database type</label>
-        <div className="engine-select">
-          <span className="engine-select-icon" aria-hidden="true">
-            {engine ? <EngineBadge engine={engine} /> : <Database size={16} />}
-          </span>
-          <select
-            id={`${ids}-engine`}
-            value={engine ?? ""}
-            autoFocus={!engine}
-            aria-describedby={!engine ? `${ids}-engine-help` : undefined}
-            onChange={(e) => pick(e.currentTarget.value as Engine)}
-          >
-            <option value="" disabled>Choose a database…</option>
-            {ENGINES.map((e) => <option key={e} value={e}>{connectFacts(e).choice}</option>)}
-          </select>
-          <ChevronDown size={14} aria-hidden="true" />
-        </div>
-      </div>
-
-      {!engine && (
-        <p id={`${ids}-engine-help`} className="new-conn-help">
-          {input.trim() && !parseError
-            ? "Choose a database type for this connection string."
-            : parseError ?? "Choose a database type, or paste a connection string to detect it."}
-        </p>
-      )}
-
-      {engine && facts && (
+      <div className="new-conn-connect">
         <div className="new-conn-field">
-          <label htmlFor={`${ids}-input`}>{facts.file ? "Database file" : "Connection string"}</label>
+          <label htmlFor={`${ids}-engine`}>Database type</label>
+          <EnginePicker id={`${ids}-engine`} value={engine} onChange={pick} autoFocus={!engine} />
+        </div>
+        <div className="new-conn-field">
+          <label htmlFor={`${ids}-input`}>{facts?.file ? "Database file" : "Connection string"}</label>
           <div className="smart-input">
             <Database size={16} color="var(--text-3)" aria-hidden />
-            <input
-              ref={field}
-              id={`${ids}-input`}
-              value={input}
-              spellCheck={false}
-              autoComplete="off"
-              autoCapitalize="off"
-              placeholder={facts.example}
+            <input ref={field} id={`${ids}-input`} value={input} spellCheck={false}
+              autoComplete="off" autoCapitalize="off" placeholder={facts?.example ?? "Paste a connection string…"}
               aria-describedby={`${ids}-help`}
-              onChange={(e) => {
-                setInput(e.target.value);
-                setSwitched(false);
-              }}
-            />
-            {/* A file is chosen in the system's own dialog rather than typed. */}
-            {facts.file && (
+              onChange={(event) => { setInput(event.target.value); setSwitched(false); setTest({ status: "idle" }); }} />
+            {facts?.file && (
               <button type="button" className={`btn ${input.trim() ? "" : "primary"}`} onClick={onChoose}>
                 <FolderOpen size={13} /> Choose file…
               </button>
             )}
           </div>
-          <p id={`${ids}-help`} className={`new-conn-help ${parseError ? "error" : ""}`}>
-            {parseError ? (
-              parseError
-            ) : ready && !facts.file ? (
-              <>
-                <Check size={12} className="read" aria-hidden />
-                {switched && <b>Switched to {facts.choice}, which the text names. </b>}
-                <span className="mono">{parsed.display}</span>
-                {parsed.auth === "entra" && " · Microsoft Entra ID through your az login, no password kept"}
-              </>
-            ) : (
-              <>
-                {switched && <b>Switched to {facts.choice}, which the text names. </b>}
-                {facts.accepts}
-              </>
-            )}
-          </p>
         </div>
-      )}
+      </div>
+      <p id={`${ids}-help`} className={`new-conn-help ${parseError ? "error" : ""}`}>
+        {parseError ? parseError : ready && !facts?.file ? (
+          <>
+            <Check size={12} className="read" aria-hidden />
+            {switched && <b>Switched to {facts?.choice}, which the text names. </b>}
+            <span className="mono">{parsed.display}</span>
+            {parsed.auth === "entra" && " · Microsoft Entra ID through your az login, no password kept"}
+          </>
+        ) : (
+          <>
+            {switched && <b>Switched to {facts?.choice}, which the text names. </b>}
+            {facts?.accepts ?? "Paste a connection string to detect the database, or select a type."}
+          </>
+        )}
+      </p>
 
       {ready && (
         <div className="form-grid">
