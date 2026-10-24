@@ -127,7 +127,7 @@ export default function WaitsPanel({
             ) : (
               <WaitsView report={loaded.report} current={current} onSelect={setSelected} onClose={onClose} onSample={() => setTab("now")} />
             ))}
-          {tab === "now" && <RightNow connection={connection} history={loaded.status === "ready" ? loaded.report : null} engine={engine} />}
+          {tab === "now" && <RightNow connection={connection} history={loaded.status === "ready" ? loaded.report : null} engine={report.snapshot.server.engine} />}
           {tab === "health" && (
             <>
               <HealthTab report={report} pressure={report.snapshot.pressure ?? null} resources={report.snapshot.resources} engineLabel={engine} engine={report.snapshot.server.engine} />
@@ -309,10 +309,11 @@ function WaitsView({
 
 const LENGTHS = [10, 30, 60];
 
-function RightNow({ connection, history, engine }: { connection: string; history: WaitsReport | null; engine: string }) {
+function RightNow({ connection, history, engine }: { connection: string; history: WaitsReport | null; engine: Engine }) {
   const state = useSample(connection);
   const [seconds, setSeconds] = useState(30);
   const [now, setNow] = useState(Date.now());
+  const sessionSamples = engine === "postgres" || engine === "yugabyte";
   useEffect(() => {
     if (state.status !== "running") return;
     const id = setInterval(() => setNow(Date.now()), 250);
@@ -330,7 +331,7 @@ function RightNow({ connection, history, engine }: { connection: string; history
         </div>
         <h3>Sampling what {connection} waits on…</h3>
         <p className="muted">
-          {engine === "PostgreSQL"
+          {sessionSamples
             ? `Looking at every busy session once a second for ${state.seconds} seconds.`
             : `Reading the server's wait counters at the start and end of ${state.seconds} seconds.`}{" "}
           You can close this panel; the sample keeps running and appears here when it's done.
@@ -345,7 +346,7 @@ function RightNow({ connection, history, engine }: { connection: string; history
         <div>
           <h3>{state.status === "done" ? "What it waited on just now" : "What is it waiting on right now?"}</h3>
           <p className="muted">
-            {engine === "PostgreSQL"
+            {sessionSamples
               ? "Culprit looks at every busy session once a second and counts what each one waits on. Read-only and safe on production."
               : "Culprit reads the server's wait counters twice and shows the difference. Read-only and safe on production."}
           </p>
