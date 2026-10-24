@@ -14,7 +14,8 @@ pub(crate) async fn collect(
     options: &SnapshotOptions,
     coverage: &mut Coverage,
 ) -> Option<ActivityHistory> {
-    let result = read(session, probe, options, MAX_SAMPLES).await;
+    let result =
+        crate::deadline(culprit_core::limits::OBSERVE_TIMEOUT, read(session, probe, options, MAX_SAMPLES)).await;
     let history = coverage.read(&sources::ACTIVITY_HISTORY, result)?;
     coverage.completed(&sources::ACTIVITY_HISTORY, history.period.observations as usize);
     if history.period.partial {
