@@ -4,6 +4,8 @@ import type { EngineAbilities } from "./EngineAbilities";
 import type { Refusal } from "./Refusal";
 import type { SessionAction } from "./SessionAction";
 import type { SqlSyntax } from "./SqlSyntax";
+import type { StatementMetrics } from "./StatementMetrics";
+import type { WaitSampling } from "./WaitSampling";
 
 /**
  * Everything the app needs to know about an engine without a connection: written to `app/src/gen/engines.json`.
@@ -12,4 +14,4 @@ export type EngineFacts = { label: string, abilities: EngineAbilities, session_a
 /**
  * The reason for every ability it lacks, by ability.
  */
-refusals: { [key in string]: Refusal }, sql_syntax: SqlSyntax, };
+refusals: { [key in string]: Refusal }, sql_syntax: SqlSyntax, statement_metrics: StatementMetrics, wait_sampling: WaitSampling | null, };

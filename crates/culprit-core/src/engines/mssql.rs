@@ -7,6 +7,21 @@ use crate::model::Capability;
 pub(super) struct Mssql;
 
 impl EngineSpec for Mssql {
+    fn statement_metrics(&self) -> StatementMetrics {
+        StatementMetrics {
+            planning_label: "Compiling".into(),
+            compilation_history: true,
+            lock_time: true,
+            write_rows_label: Some("Rows per run".into()),
+            errors_note: Some(
+                "Query Store counts errors but doesn't keep them; the finding shows how to capture them.".into(),
+            ),
+            ..StatementMetrics::BASIC
+        }
+    }
+    fn wait_sampling(&self) -> Option<WaitSampling> {
+        Some(WaitSampling::Counters)
+    }
     fn sql_syntax(&self) -> SqlSyntax {
         SqlSyntax::Mssql
     }

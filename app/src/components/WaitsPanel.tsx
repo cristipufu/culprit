@@ -13,7 +13,7 @@ import { ActivityHistoryView } from "./ActivityHistory";
 import { HealthTab, SignalTile } from "./Health";
 import type { WaitsTab } from "./Waits";
 import type { Engine } from "../gen/Engine";
-import { can, isMariadb, serverName } from "../lib/engines";
+import { can, isMariadb, serverName, waitSampling } from "../lib/engines";
 
 type Loaded = { status: "loading" } | { status: "ready"; report: WaitsReport | null } | { status: "error"; error: ApiError };
 
@@ -313,7 +313,7 @@ function RightNow({ connection, history, engine }: { connection: string; history
   const state = useSample(connection);
   const [seconds, setSeconds] = useState(30);
   const [now, setNow] = useState(Date.now());
-  const sessionSamples = engine === "postgres" || engine === "yugabyte";
+  const sessionSamples = waitSampling(engine) === "sessions";
   useEffect(() => {
     if (state.status !== "running") return;
     const id = setInterval(() => setNow(Date.now()), 250);

@@ -7,6 +7,17 @@ use crate::model::Capability;
 pub(super) struct Mysql;
 
 impl EngineSpec for Mysql {
+    fn statement_metrics(&self) -> StatementMetrics {
+        StatementMetrics {
+            write_rows_label: None,
+            lock_time: true,
+            missing_costs_note: Some("{engine} keeps no planning time or redo bytes per statement.".into()),
+            ..StatementMetrics::BASIC
+        }
+    }
+    fn wait_sampling(&self) -> Option<WaitSampling> {
+        Some(WaitSampling::Counters)
+    }
     fn sql_syntax(&self) -> SqlSyntax {
         SqlSyntax::Mysql
     }

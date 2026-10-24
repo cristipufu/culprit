@@ -13,6 +13,7 @@ mod yugabyte;
 
 pub use yugabyte::session_target as ysql_session_target;
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,10 @@ pub struct SettingChange {
 /// One engine, as checks and every surface see it.
 pub trait EngineSpec: Send + Sync {
     fn sql_syntax(&self) -> SqlSyntax;
+    /// Meaning and presentation of statement counters, independently of SQL grammar or storage.
+    fn statement_metrics(&self) -> StatementMetrics;
+    /// How a live wait sample is collected. Required so a new engine cannot inherit another engine's description.
+    fn wait_sampling(&self) -> Option<WaitSampling>;
     fn mutating_function(&self, _name: &str) -> bool {
         false
     }
@@ -121,6 +126,54 @@ pub enum SqlSyntax {
     Sqlite,
 }
 
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export)]
+pub enum WaitSampling {
+    Sessions,
+    Counters,
+}
+
+/// Counter semantics shared with the app. Optional facts describe support; a particular scan may still lack data.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq, Eq)]
+#[ts(export)]
+pub struct StatementMetrics {
+    pub planning_label: Cow<'static, str>,
+    pub planning_setting: Option<Cow<'static, str>>,
+    pub compilation_history: bool,
+    pub write_rows_label: Option<Cow<'static, str>>,
+    pub lock_time: bool,
+    pub log_name: Cow<'static, str>,
+    pub log_label: Cow<'static, str>,
+    /// `{engine}` is replaced by the server's display name, including product variants such as MariaDB.
+    pub missing_costs_note: Option<Cow<'static, str>>,
+    pub errors_note: Option<Cow<'static, str>>,
+}
+
+impl StatementMetrics {
+    const BASIC: Self = Self {
+        planning_label: Cow::Borrowed("Planning"),
+        planning_setting: None,
+        compilation_history: false,
+        write_rows_label: Some(Cow::Borrowed("Rows returned per run")),
+        lock_time: false,
+        log_name: Cow::Borrowed("log"),
+        log_label: Cow::Borrowed("Log written"),
+        missing_costs_note: None,
+        errors_note: None,
+    };
+
+    /// YSQL and PostgreSQL share these statement statistics, without sharing heap or WAL measurements.
+    const PG_STAT_STATEMENTS: Self = Self {
+        planning_setting: Some(Cow::Borrowed("pg_stat_statements.track_planning")),
+        write_rows_label: Some(Cow::Borrowed("Rows changed per run")),
+        missing_costs_note: Some(Cow::Borrowed(
+            "{engine} keeps no error count or lock time per statement; Live shows blocking as it happens.",
+        )),
+        ..Self::BASIC
+    };
+}
+
 /// Why an engine can't do something: the message and, when there's one, what to do instead.
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
 #[ts(export)]
@@ -168,6 +221,8 @@ pub struct EngineFacts {
     /// The reason for every ability it lacks, by ability.
     pub refusals: BTreeMap<String, Refusal>,
     pub sql_syntax: SqlSyntax,
+    pub statement_metrics: StatementMetrics,
+    pub wait_sampling: Option<WaitSampling>,
 }
 
 impl Engine {
@@ -216,6 +271,8 @@ impl Engine {
         let spec = self.spec();
         let abilities = spec.abilities();
         EngineFacts {
+            statement_metrics: spec.statement_metrics(),
+            wait_sampling: spec.wait_sampling(),
             sql_syntax: spec.sql_syntax(),
             label: spec.label().into(),
             abilities,

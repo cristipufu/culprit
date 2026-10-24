@@ -29,7 +29,19 @@
       "Host CPU and filesystem capacity need their own measurements, such as connected cloud telemetry. Backup recoverability and database corruption are not checked by the statistics scan; they need backup/recovery validation and an appropriate integrity investigation."
     ],
     "refusals": {},
-    "sql_syntax": "mssql"
+    "sql_syntax": "mssql",
+    "statement_metrics": {
+      "planning_label": "Compiling",
+      "planning_setting": null,
+      "compilation_history": true,
+      "write_rows_label": "Rows per run",
+      "lock_time": true,
+      "log_name": "log",
+      "log_label": "Log written",
+      "missing_costs_note": null,
+      "errors_note": "Query Store counts errors but doesn't keep them; the finding shows how to capture them."
+    },
+    "wait_sampling": "counters"
   },
   "postgres": {
     "label": "PostgreSQL",
@@ -71,7 +83,19 @@
         "hint": "Its plan doesn't change while it runs: ask for the plan once."
       }
     },
-    "sql_syntax": "postgres"
+    "sql_syntax": "postgres",
+    "statement_metrics": {
+      "planning_label": "Planning",
+      "planning_setting": "pg_stat_statements.track_planning",
+      "compilation_history": false,
+      "write_rows_label": "Rows changed per run",
+      "lock_time": false,
+      "log_name": "WAL",
+      "log_label": "WAL written",
+      "missing_costs_note": "{engine} keeps no error count or lock time per statement; Live shows blocking as it happens.",
+      "errors_note": null
+    },
+    "wait_sampling": "sessions"
   },
   "yugabyte": {
     "label": "YugabyteDB",
@@ -118,7 +142,19 @@
         "hint": "Use a measured plan and native statement/operation progress."
       }
     },
-    "sql_syntax": "postgres"
+    "sql_syntax": "postgres",
+    "statement_metrics": {
+      "planning_label": "Planning",
+      "planning_setting": "pg_stat_statements.track_planning",
+      "compilation_history": false,
+      "write_rows_label": "Rows changed per run",
+      "lock_time": false,
+      "log_name": "log",
+      "log_label": "Log written",
+      "missing_costs_note": "{engine} keeps no error count or lock time per statement; Live shows blocking as it happens.",
+      "errors_note": null
+    },
+    "wait_sampling": "sessions"
   },
   "mysql": {
     "label": "MySQL",
@@ -160,7 +196,19 @@
         "hint": "Its plan doesn't change while it runs: ask for the plan once."
       }
     },
-    "sql_syntax": "mysql"
+    "sql_syntax": "mysql",
+    "statement_metrics": {
+      "planning_label": "Planning",
+      "planning_setting": null,
+      "compilation_history": false,
+      "write_rows_label": null,
+      "lock_time": true,
+      "log_name": "log",
+      "log_label": "Log written",
+      "missing_costs_note": "{engine} keeps no planning time or redo bytes per statement.",
+      "errors_note": null
+    },
+    "wait_sampling": "counters"
   },
   "sqlite": {
     "label": "SQLite",
@@ -232,6 +280,18 @@
         "hint": "Run it with the sqlite3 shell or from the application, then scan again to see the effect."
       }
     },
-    "sql_syntax": "sqlite"
+    "sql_syntax": "sqlite",
+    "statement_metrics": {
+      "planning_label": "Planning",
+      "planning_setting": null,
+      "compilation_history": false,
+      "write_rows_label": "Rows returned per run",
+      "lock_time": false,
+      "log_name": "log",
+      "log_label": "Log written",
+      "missing_costs_note": null,
+      "errors_note": null
+    },
+    "wait_sampling": null
   }
 }

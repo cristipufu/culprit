@@ -39,6 +39,16 @@ const USER_SETTINGS: &[&str] = &[
 ];
 
 impl EngineSpec for Postgres {
+    fn statement_metrics(&self) -> StatementMetrics {
+        StatementMetrics {
+            log_name: "WAL".into(),
+            log_label: "WAL written".into(),
+            ..StatementMetrics::PG_STAT_STATEMENTS
+        }
+    }
+    fn wait_sampling(&self) -> Option<WaitSampling> {
+        Some(WaitSampling::Sessions)
+    }
     fn sql_syntax(&self) -> SqlSyntax {
         SqlSyntax::Postgres
     }

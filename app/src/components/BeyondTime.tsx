@@ -6,7 +6,7 @@ import type { QueryStat } from "../gen/QueryStat";
 import type { Replica } from "../gen/Replica";
 import type { Report } from "../gen/Report";
 import type { TableStat } from "../gen/TableStat";
-import { serverName } from "../lib/engines";
+import { serverName, statementMetrics } from "../lib/engines";
 import { bytes, count, duration, percent, rowCount, when } from "../lib/format";
 import { waitKey } from "../lib/waits";
 import { querySignalStatus, replicaStatus, storageStatus, tableSignalWarning, worstFinding } from "../lib/health";
@@ -36,7 +36,7 @@ function lockMs(q: QueryStat): number {
 }
 
 function costRows(report: Report, q: QueryStat): Row[] {
-  const engine = report.snapshot.server.engine;
+  const metrics = statementMetrics(report.snapshot.server.engine);
   const c = q.costs ?? null;
   const runs = Math.max(1, q.executions);
   const rows: Row[] = [];
@@ -66,19 +66,19 @@ function costRows(report: Report, q: QueryStat): Row[] {
     const plans = Math.max(1, c.plans ?? 1);
     rows.push({
       key: "planning",
-      label: engine === "postgres" ? "Planning" : "Compiling",
+      label: metrics.planning_label,
       value: `${percent(share)} of its time`,
       note: `${duration(c.plan_ms / plans)} per plan · ${plans >= runs * 0.9 ? "a new plan every run" : `each plan reused about ${count(runs / plans)} times`}`,
       status: "info",
-      takeaway: `Planning takes ${percent(share)} of its time`,
+      takeaway: `${metrics.planning_label} takes ${percent(share)} of its time`,
     });
-  } else if (engine === "postgres") {
-    const tracking = report.snapshot.settings.find((s) => s.name === "pg_stat_statements.track_planning");
+  } else if (metrics.planning_setting) {
+    const tracking = report.snapshot.settings.find((s) => s.name === metrics.planning_setting);
     if (tracking && tracking.value !== "on")
-      rows.push({ key: "planning", label: "Planning", value: "not measured", note: "pg_stat_statements.track_planning is off", status: "info" });
+      rows.push({ key: "planning", label: metrics.planning_label, value: "not measured", note: `${metrics.planning_setting} is off`, status: "info" });
   }
 
-  if (engine === "mssql" && c?.plan_ms == null) {
+  if (metrics.compilation_history && c?.plan_ms == null) {
     const history = c?.compile_history;
     rows.push({
       key: "compile-history", label: "Compilation history",
@@ -101,7 +101,7 @@ function costRows(report: Report, q: QueryStat): Row[] {
   }
 
   const lock = lockMs(q);
-  if (lock > 0 && engine !== "postgres") {
+  if (lock > 0 && metrics.lock_time) {
     const share = Math.min(1, lock / Math.max(1, q.total_time_ms));
     rows.push({
       key: "lock",
@@ -115,11 +115,11 @@ function costRows(report: Report, q: QueryStat): Row[] {
 
   const writes = ["insert", "update", "delete", "merge", "copy", "replace"].includes(verb(q.text));
   if (c?.log_bytes != null && (writes || c.log_bytes / runs >= 65_536)) {
-    const log = engine === "postgres" ? "WAL" : "log";
+    const log = metrics.log_name;
     const perRow = q.rows != null && q.rows >= 1 ? c.log_bytes / q.rows : null;
     rows.push({
       key: "log",
-      label: engine === "postgres" ? "WAL written" : "Log written",
+      label: metrics.log_label,
       value: `${bytes(c.log_bytes / runs)} per run`,
       note: [c.log_share != null ? `${percent(c.log_share)} of all ${log}` : null, perRow != null ? `${bytes(perRow)} per row` : null].filter(Boolean).join(" · ") || "",
       status: "info",
@@ -148,15 +148,9 @@ function costRows(report: Report, q: QueryStat): Row[] {
 }
 
 function notKept(report: Report, q: QueryStat): string | null {
-  const name = engineName(report);
-  switch (report.snapshot.server.engine) {
-    case "postgres":
-      return `${name} keeps no error count or lock time per statement; Live shows blocking as it happens.`;
-    case "mysql":
-      return `${name} keeps no planning time or redo bytes per statement.`;
-    default:
-      return (q.costs?.failed ?? 0) > 0 ? "Query Store counts errors but doesn't keep them; the finding shows how to capture them." : null;
-  }
+  const metrics = statementMetrics(report.snapshot.server.engine);
+  const note = metrics.missing_costs_note ?? ((q.costs?.failed ?? 0) > 0 ? metrics.errors_note : null);
+  return note?.replaceAll("{engine}", engineName(report)) ?? null;
 }
 
 /** The query detail's "beyond run time" block: one sentence, then one row per signal the engine keeps. */

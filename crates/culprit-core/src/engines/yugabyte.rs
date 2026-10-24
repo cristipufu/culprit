@@ -29,6 +29,12 @@ pub fn session_target(session: &str) -> crate::Result<(String, i32, String)> {
 }
 
 impl EngineSpec for Yugabyte {
+    fn statement_metrics(&self) -> StatementMetrics {
+        StatementMetrics::PG_STAT_STATEMENTS
+    }
+    fn wait_sampling(&self) -> Option<WaitSampling> {
+        Some(WaitSampling::Sessions)
+    }
     fn sql_syntax(&self) -> SqlSyntax {
         SqlSyntax::Postgres
     }

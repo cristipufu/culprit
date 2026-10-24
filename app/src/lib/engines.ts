@@ -13,6 +13,8 @@ const FACTS = engines as Record<Engine, EngineFacts>;
 /** Every engine, in the order the engine files list them (`Engine::ALL`). */
 export const ENGINES = Object.keys(FACTS) as Engine[];
 export const sqlSyntax = (engine: Engine) => FACTS[engine].sql_syntax;
+export const statementMetrics = (engine: Engine) => FACTS[engine].statement_metrics;
+export const waitSampling = (engine: Engine) => FACTS[engine].wait_sampling;
 
 const LABEL = Object.fromEntries(Object.entries(FACTS).map(([e, f]) => [e, f.label])) as Record<Engine, string>;
 

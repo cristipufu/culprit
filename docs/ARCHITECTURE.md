@@ -136,6 +136,11 @@ in `rows.rs`. The public provider traits and PostgreSQL's SQL helper exports ret
 YugabyteDB has its own probe, catalogs, workload, native DIST plan reader and live sources. The shared `wire` boundary
 in `culprit-postgres` supplies authenticated/TLS sessions, planning ownership checks and bounded SQL execution.
 `EngineSpec::sql_syntax` shares YSQL's PostgreSQL grammar without inheriting heap, buffer-cache or vacuum measurements.
+`EngineSpec::statement_metrics` separately declares planning terminology and settings, write-row counts, per-statement
+lock timing, log terminology and missing measurements. The UI consumes these generated facts rather than identifying
+an engine by name. `wait_sampling` describes session sampling versus counter deltas. Each engine must declare both;
+cross-engine tests cover the declarations and query-cost rendering. Shared statement statistics do not imply shared
+WAL, heap or server-wide measurement semantics.
 Native index hash groups remain separate from ordered keys. Distributed workload comparisons bind the contributing
 node set and each node's reset epoch through `CounterSet`; partial contributors or unknown epochs cannot establish a
 continuous counter history. Local index zeros cannot establish cluster-wide absence.

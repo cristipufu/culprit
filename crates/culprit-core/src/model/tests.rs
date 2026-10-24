@@ -59,6 +59,29 @@ fn engine_facts_are_exported_for_the_app() {
 }
 
 #[test]
+fn statement_and_sampling_semantics_cover_every_engine_and_round_trip() {
+    use crate::engines::{EngineFacts, WaitSampling};
+    let cases = [
+        (Engine::Mssql, "Compiling", Some("Rows per run"), "log", Some(WaitSampling::Counters)),
+        (Engine::Postgres, "Planning", Some("Rows changed per run"), "WAL", Some(WaitSampling::Sessions)),
+        (Engine::Yugabyte, "Planning", Some("Rows changed per run"), "log", Some(WaitSampling::Sessions)),
+        (Engine::Mysql, "Planning", None, "log", Some(WaitSampling::Counters)),
+        (Engine::Sqlite, "Planning", Some("Rows returned per run"), "log", None),
+    ];
+    assert_eq!(cases.map(|c| c.0), Engine::ALL, "Declare the semantics of each new engine explicitly");
+    for (engine, planning, rows, log, sampling) in cases {
+        let facts = engine.facts();
+        assert_eq!(facts.statement_metrics.planning_label, planning);
+        assert_eq!(facts.statement_metrics.write_rows_label.as_deref(), rows);
+        assert_eq!(facts.statement_metrics.log_name, log);
+        assert_eq!(facts.wait_sampling, sampling);
+        assert_eq!(facts.wait_sampling.is_some(), facts.abilities.wait_sample);
+        let loaded: EngineFacts = serde_json::from_value(serde_json::to_value(&facts).unwrap()).unwrap();
+        assert_eq!(loaded.statement_metrics, facts.statement_metrics);
+    }
+}
+
+#[test]
 fn how_often_never_extrapolates_a_short_window() {
     let w = |hours: f64, windowed: bool| Workload {
         counter_set: None,

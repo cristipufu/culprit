@@ -7,6 +7,12 @@ use crate::dialect::{NewIndex, keys, unique};
 pub(super) struct Sqlite;
 
 impl EngineSpec for Sqlite {
+    fn statement_metrics(&self) -> StatementMetrics {
+        StatementMetrics::BASIC
+    }
+    fn wait_sampling(&self) -> Option<WaitSampling> {
+        None
+    }
     fn sql_syntax(&self) -> SqlSyntax {
         SqlSyntax::Sqlite
     }
