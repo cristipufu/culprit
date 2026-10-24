@@ -1,18 +1,17 @@
 import { Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { EngineBadge } from "../../components/EngineBadge";
 import type { Cloud as CloudKind } from "../../gen/Cloud";
-import type { DiscoveredDatabase } from "../../gen/DiscoveredDatabase";
 import type { ImportCandidate } from "../../gen/ImportCandidate";
 import type { ImportSource } from "../../gen/ImportSource";
 import { api, errorMessage, type ApiError } from "../../lib/api";
 import { engineLabel } from "../../lib/engines";
+import { DISCOVERY_LIMIT, discoveryKey, discoveryPage, preselectedDiscoveries, type DiscoveryPage } from "../../lib/discovery-results";
+import { LatestRequest } from "../../lib/requests";
 import { loadConnections } from "../../lib/store";
 
 const TERMS_KEY: Record<CloudKind, string> = { azure: "culprit.discover.terms", aws: "culprit.discover.aws.terms" };
 const REGIONS_KEY = "culprit.discover.aws.regions";
-/** Tick results for the person only when a search has narrowed the list down; never pre-tick a whole subscription. */
-const PRESELECT_LIMIT = 10;
 
 export function remembered(key: string): string {
   try {
@@ -45,7 +44,7 @@ const CLOUD_COPY: Record<CloudKind, { heading: string; login: string; busy: stri
   },
 };
 
-type DiscoverState = { status: "idle" } | { status: "busy" } | { status: "done"; items: DiscoveredDatabase[] } | { status: "error"; error: ApiError };
+type DiscoverState = { status: "idle" } | { status: "busy" } | ({ status: "done" } & DiscoveryPage) | { status: "error"; error: ApiError };
 
 export function DiscoverPanel({ cloud, onDone }: { cloud: CloudKind; onDone: () => void }) {
   const copy = CLOUD_COPY[cloud];
@@ -56,63 +55,79 @@ export function DiscoverPanel({ cloud, onDone }: { cloud: CloudKind; onDone: () 
   const [aliases, setAliases] = useState<Record<string, string>>({});
   const [adding, setAdding] = useState(false);
 
-  const keyOf = (d: DiscoveredDatabase) => `${d.cloud}/${d.host}/${d.database}`;
+  const requests = useRef(new LatestRequest());
+  const keyOf = discoveryKey;
+
+  const resetResults = () => {
+    requests.current.invalidate();
+    setDiscover({ status: "idle" });
+    setPicked({});
+    setAliases({});
+  };
 
   const search = async () => {
     remember(TERMS_KEY[cloud], terms);
     if (cloud === "aws") remember(REGIONS_KEY, regions);
+    const current = requests.current.start();
     setDiscover({ status: "busy" });
+    setPicked({});
+    setAliases({});
     try {
       const client = await api();
+      if (!current()) return;
       const items = cloud === "aws" ? await client.discoverAws(words(terms), words(regions)) : await client.discoverAzure(words(terms));
-      setDiscover({ status: "done", items });
-      const candidates = items.filter((d) => !d.saved_as && d.environment !== "production");
-      const narrowedDown = terms.trim() !== "" && candidates.length <= PRESELECT_LIMIT;
-      setPicked(narrowedDown ? Object.fromEntries(candidates.map((d) => [keyOf(d), true])) : {});
-      setAliases(Object.fromEntries(items.map((d) => [keyOf(d), d.alias])));
+      if (!current()) return;
+      const page = discoveryPage(items);
+      setDiscover({ status: "done", ...page });
+      setPicked(preselectedDiscoveries(page, terms));
     } catch (e) {
-      setDiscover({ status: "error", error: errorMessage(e) });
+      if (current()) setDiscover({ status: "error", error: errorMessage(e) });
     }
   };
 
   useEffect(() => {
-    search();
+    void search();
+    return () => requests.current.invalidate();
   }, []);
 
   const selected = state.status === "done" ? state.items.filter((d) => picked[keyOf(d)] && !d.saved_as) : [];
 
   const add = async () => {
+    const current = requests.current.start();
     setAdding(true);
     try {
       await (await api()).addDiscovered(selected.map((d) => ({ ...d, alias: aliases[keyOf(d)] ?? d.alias })));
       await loadConnections();
-      onDone();
+      if (current()) onDone();
     } catch (e) {
-      setDiscover({ status: "error", error: errorMessage(e) });
+      if (current()) setDiscover({ status: "error", error: errorMessage(e) });
     } finally {
-      setAdding(false);
+      if (current()) setAdding(false);
     }
   };
 
   return (
-    <div style={{ marginTop: 18 }}>
+    <div className="cloud-discovery" style={{ marginTop: 18 }}>
       <div className="eyebrow" style={{ marginBottom: 8 }}>
         {copy.heading} <span className="mono">{copy.login}</span> can see
       </div>
-      <label className="smart-input">
+      <label className="smart-input discovery-search">
         <Search size={16} color="var(--text-3)" />
-        <input value={terms} placeholder="Words in the database or server name, e.g. shop stg" onChange={(e) => setTerms(e.target.value)} onKeyDown={(e) => e.key === "Enter" && search()} />
+        <input value={terms} aria-label="Search databases" disabled={adding} placeholder="Words in the database or server name, e.g. shop stg"
+          onChange={(e) => { resetResults(); setTerms(e.target.value); }} onKeyDown={(e) => e.key === "Enter" && !adding && search()} />
         {cloud === "aws" && (
           <input
             value={regions}
-            style={{ flex: "0 0 190px", borderLeft: "1px solid var(--border)", paddingLeft: 10 }}
+            aria-label="AWS regions"
+            disabled={adding}
+            className="discovery-regions"
             placeholder="All enabled regions"
             title="Regions to search, e.g. us-east-1 eu-central-1"
-            onChange={(e) => setRegions(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && search()}
+            onChange={(e) => { resetResults(); setRegions(e.target.value); }}
+            onKeyDown={(e) => e.key === "Enter" && !adding && search()}
           />
         )}
-        <button className="btn" onClick={search}>
+        <button className="btn" disabled={adding} onClick={search}>
           Search
         </button>
       </label>
@@ -133,16 +148,21 @@ export function DiscoverPanel({ cloud, onDone }: { cloud: CloudKind; onDone: () 
       {state.status === "done" && (
         <div className="discover-list">
           {state.items.length === 0 && <div className="muted" style={{ padding: 12 }}>No databases match.</div>}
+          {state.total > DISCOVERY_LIMIT && (
+            <p className="discover-more muted" role="status">
+              Showing the first {DISCOVERY_LIMIT} matches · +{(state.total - DISCOVERY_LIMIT).toLocaleString()} more. Refine your search to narrow the results.
+            </p>
+          )}
           {state.items.map((d) => {
             const key = keyOf(d);
             return (
               <label key={key} className={`discover-row ${d.saved_as ? "saved" : ""}`}>
-                <input type="checkbox" disabled={!!d.saved_as} checked={!!d.saved_as || !!picked[key]} onChange={(e) => setPicked((p) => ({ ...p, [key]: e.target.checked }))} />
+                <input type="checkbox" disabled={!!d.saved_as || adding} checked={!!d.saved_as || !!picked[key]} onChange={(e) => setPicked((p) => ({ ...p, [key]: e.target.checked }))} />
                 <EngineBadge engine={d.engine} environment={d.environment} />
                 {d.saved_as ? (
                   <span className="alias">{d.saved_as}</span>
                 ) : (
-                  <input className="alias-input" value={aliases[key] ?? d.alias} onChange={(e) => setAliases((a) => ({ ...a, [key]: e.target.value }))} />
+                  <input className="alias-input" disabled={adding} value={aliases[key] ?? d.alias} onChange={(e) => setAliases((a) => ({ ...a, [key]: e.target.value }))} />
                 )}
                 <span className="where muted" title={d.host}>
                   {d.cloud === "aws"
@@ -154,7 +174,7 @@ export function DiscoverPanel({ cloud, onDone }: { cloud: CloudKind; onDone: () 
             );
           })}
           {state.items.length > 0 && (
-            <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "10px 4px 2px" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: "10px 4px 2px" }}>
               <button className="btn primary" disabled={selected.length === 0 || adding} onClick={add}>
                 Add {selected.length} {selected.length === 1 ? "connection" : "connections"}
               </button>

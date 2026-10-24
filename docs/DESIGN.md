@@ -46,6 +46,7 @@ Connections (start)
 - The database type and connection string share a row, stacking only when space is limited. A searchable dropdown shows provider logos in a bounded list; Arrow keys and Enter select, Escape closes the list, and Tab moves to the connection field. A pasted connection string can still select its own engine.
 - Engine badges show the provider's logo with a separate environment dot. The app and website bundle the same transparent SVG assets locally. Product identities, including MariaDB and TimescaleDB, come from the core engine specifications.
 - Environment tag is required and drives safety rules.
+- Cloud discovery retains and shows at most 20 matching databases, with the remaining match count and a prompt to refine the search. Azure/AWS searches still cover the full inventory available to discovery; hidden rows cannot be preselected or added. Editing terms clears the old results, and newer searches own their results.
 - **Find Azure SQL databases**: lists databases the Azure CLI login can see (Resource Graph, metadata only), with suggested aliases and environments inferred from names (`prd` → production, `alp`/`stg` → staging). Saved with Entra ID, so nothing secret is stored. Production entries are unticked by default.
 - Saved connections also live in the sidebar, grouped by environment, so switching is one click from anywhere.
 - Secrets live in the OS keychain. Connection metadata lives in `~/.config/culprit/connections.toml`, shared with the CLI.

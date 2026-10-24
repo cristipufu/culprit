@@ -2169,6 +2169,55 @@ table.grid td.sqlcell {
   text-overflow: ellipsis;
 }
 
+.discovery-search input {
+  min-width: 0;
+}
+.discovery-search .discovery-regions {
+  flex: 0 0 190px;
+  border-left: 1px solid var(--border);
+  padding-left: 10px;
+}
+.cloud-discovery .discover-row {
+  grid-template-columns: auto auto minmax(100px, 240px) minmax(0, 1fr) auto;
+}
+.cloud-discovery .alias-input {
+  min-width: 0;
+  width: 100%;
+}
+.discover-more {
+  padding: 10px 4px 4px;
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+}
+@container (max-width: 560px) {
+  .discovery-search {
+    flex-wrap: wrap;
+    height: auto;
+    padding: 10px 12px;
+  }
+  .discovery-search > input:first-of-type {
+    flex-basis: calc(100% - 32px);
+  }
+  .discovery-search .discovery-regions {
+    flex: 1;
+    border-left: 0;
+    padding-left: 0;
+  }
+  .cloud-discovery .discover-row {
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    gap: 6px 10px;
+  }
+  .cloud-discovery .discover-row .where {
+    grid-column: 3 / -1;
+    grid-row: 2;
+  }
+  .cloud-discovery .discover-row > span:last-child {
+    grid-column: 4;
+    grid-row: 1;
+  }
+}
+
 /* ───────── editor ───────── */
 
 .editor-view {
