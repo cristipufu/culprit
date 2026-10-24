@@ -4468,14 +4468,14 @@
         "title": "Health"
       },
       {
-        "detail": "Scan again to read the last day of deadlocks.",
+        "detail": "DocDB's distributed deadlock detection is not PostgreSQL's heap lock accounting. A PostgreSQL deadlock counter does not establish this database's distributed deadlocks. Correlate YSQL errors and the YB-TServer logs for the affected transaction.",
         "fix_sql": null,
         "items": [],
         "key": "deadlocks",
         "metrics": [],
-        "next": "culprit deadlocks yugabyte-demo",
+        "next": null,
         "status": "unavailable",
-        "takeaway": "This scan didn't read deadlocks.",
+        "takeaway": "Deadlock history is unavailable.",
         "title": "Deadlocks"
       },
       {

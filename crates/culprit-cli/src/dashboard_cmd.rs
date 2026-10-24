@@ -56,6 +56,9 @@ pub async fn run(ws: &Workspace, args: DashboardArgs, out: &Out) -> Result<u8> {
 /// The command that shows more of what a tile is about; none where the engine has nothing more to say (SQLite has no
 /// server to ask about sessions, waits or deadlocks, and no history to compare periods of).
 fn next(tile: &Tile, connection: &str, engine: culprit_core::Engine) -> Option<String> {
+    if tile.key == TileKey::Deadlocks && !engine.abilities().deadlocks {
+        return None;
+    }
     let c = shell_word(connection);
     if !engine.has_server() {
         return match tile.key {
@@ -205,5 +208,20 @@ fn print_markdown(d: &Dashboard) {
                 println!("  `{sql}`");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dashboard_never_suggests_an_unsupported_deadlock_command() {
+        let tile = Tile::new(TileKey::Deadlocks, TileStatus::Unavailable, "History unavailable");
+        assert!(next(&tile, "native", culprit_core::Engine::Yugabyte).is_none());
+        assert_eq!(
+            next(&tile, "postgres", culprit_core::Engine::Postgres).as_deref(),
+            Some("culprit deadlocks postgres")
+        );
     }
 }

@@ -41,6 +41,24 @@ fn missing_query_data_is_not_assessed_healthy() {
 }
 
 #[test]
+fn native_deadlock_history_is_unavailable_without_promising_a_rescan_or_reporting_zero() {
+    let report = culprit_checks::analyze(snapshot(Engine::Yugabyte));
+    let dashboard = culprit_checks::dashboard(&report);
+    let tile = dashboard.tile(culprit_core::TileKey::Deadlocks).unwrap();
+    assert_eq!(tile.status, culprit_core::TileStatus::Unavailable);
+    assert!(tile.takeaway.contains("unavailable"));
+    assert!(tile.detail.as_deref().unwrap().contains("distributed deadlocks"));
+    assert!(tile.detail.as_deref().unwrap().contains("YB-TServer logs"));
+    assert!(!tile.detail.as_deref().unwrap().contains("Scan again"));
+    assert!(tile.metrics.is_empty(), "unavailable history cannot establish a zero count");
+
+    let mut available_engine = snapshot(Engine::Postgres);
+    available_engine.deadlocks = None;
+    let dashboard = culprit_checks::dashboard(&culprit_checks::analyze(available_engine));
+    assert!(dashboard.tile(culprit_core::TileKey::Deadlocks).unwrap().takeaway.contains("didn't read"));
+}
+
+#[test]
 fn file_capacity_separates_growth_room_hard_limits_and_shared_context() {
     let mut s = snapshot(Engine::Mssql);
     let space = SpaceUsage {

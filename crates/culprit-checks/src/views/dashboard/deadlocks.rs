@@ -6,6 +6,15 @@ pub(super) fn deadlocks(report: &Report) -> Tile {
     let s = &report.snapshot;
     let family = family(&s.server);
     let Some(d) = &s.deadlocks else {
+        if s.server.engine.has_server() && !s.server.engine.spec().abilities().deadlocks {
+            let mut tile = Tile::new(TileKey::Deadlocks, TileStatus::Unavailable, "Deadlock history is unavailable.");
+            let refusal = s.server.engine.refused(culprit_core::Ability::Deadlocks);
+            tile.detail = Some(match refusal.hint {
+                Some(hint) => format!("{} {hint}", refusal.message),
+                None => refusal.message,
+            });
+            return tile;
+        }
         let headline = if s.server.engine.has_server() {
             "This scan didn't read deadlocks.".to_string()
         } else {
