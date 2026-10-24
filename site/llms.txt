@@ -11,7 +11,7 @@ Key facts:
 - Safe on production: scans read statistics and catalog views only; statements run as reads only when Culprit can prove they only read; anything else on production asks first; fixes are shown, never applied.
 - Logins need read access to statistics: SQL Server `VIEW SERVER STATE` (`VIEW DATABASE STATE` on Azure SQL Database), PostgreSQL/TimescaleDB `pg_read_all_stats` or `pg_monitor` plus access to the TimescaleDB APIs; YugabyteDB `pg_read_all_stats` for broader statement visibility and `yb_db_admin` or superuser for node resources; MySQL and MariaDB `PROCESS` and `SELECT` on `performance_schema`; SQLite only read access to the file.
 - Supported: SQL Server 2022 and Azure SQL Database; PostgreSQL 15 to 18 including Amazon RDS; MySQL 5.7 to 8.4; MariaDB 10.5 to 11.8; SQLite 3 files (opened read-only; no live sessions or server counters).
-- New on main, available from source (not included in the published 0.4.4 release): YugabyteDB 2026.1.2.0 (YSQL 15.12), with native DocDB counters, DIST plans, sharding, retained activity/plan history and scoped node resources; TimescaleDB 2.31.0 on PostgreSQL 17.11, detected automatically through PostgreSQL, with logical hypertable sizes, row estimates and managed/compressed chunks. Optional sources retain their own coverage and limits. Hosted Tiger Cloud has not been verified.
+- YugabyteDB 2026.1.2.0 (YSQL 15.12), with native DocDB counters, DIST plans, sharding, retained activity/plan history and scoped node resources; TimescaleDB 2.31.0 on PostgreSQL 17.11, detected automatically through PostgreSQL, with logical hypertable sizes, row estimates and managed/compressed chunks. Optional sources retain their own coverage and limits. Hosted Tiger Cloud has not been verified.
 
 ## Docs
 
@@ -30,4 +30,4 @@ Key facts:
 ## Optional
 
 - [Design](https://culpritsql.com/docs/design.md): how the product behaves and why
-- [Everything in one file](https://culpritsql.com/llms-full.txt): the overview, guide, coding agents, engine parity and new provider docs concatenated
+- [Everything in one file](https://culpritsql.com/llms-full.txt): the overview, guide, coding agents, engine parity and provider docs concatenated

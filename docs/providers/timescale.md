@@ -2,7 +2,7 @@
 
 Choose **PostgreSQL** when connecting to TimescaleDB or Tiger Cloud. Culprit detects the `timescaledb` extension and displays its version alongside PostgreSQL's version. PostgreSQL connection strings, TLS settings, password/keychain handling, query execution, live sessions, explain/analyze, saved scans, exports and plan comparisons use the PostgreSQL provider.
 
-This support is in the development tree; version 0.4.4 predates it. Local verification used TimescaleDB **2.31.0** on PostgreSQL **17.11**, including real hypertables, compressed chunks and an ordinary table. Tiger Cloud hostnames are recognized, but a hosted Tiger Cloud account has not been tested. [Reproduce the local database and workload](../../dev/timescale/README.md).
+Local verification used TimescaleDB **2.31.0** on PostgreSQL **17.11**, including real hypertables, compressed chunks and an ordinary table. Tiger Cloud hostnames are recognized, but a hosted Tiger Cloud account has not been tested. [Reproduce the local database and workload](../../dev/timescale/README.md).
 
 ## What a scan reads
 
@@ -23,9 +23,7 @@ The captured example has `public.sensor_readings` with **120,000 rows, 14 chunks
 - The DDL tab does not pretend an ordinary `CREATE TABLE` can recreate a hypertable. Use a TimescaleDB-aware schema export for partitioning, compression and policies.
 - Legacy distributed hypertables and older extension versions have not been verified. Missing APIs follow the same partial-coverage path rather than substituting parent heap measurements. Managed-service permission restrictions may also make individual sources unavailable.
 
-No vendor documentation PR is included. Screenshots for an upstream guide must be retaken against the release that includes this feature and verified with that release; the checked-in development captures document this implementation only.
-
-## Development captures
+## Screenshots
 
 These are actual rendered views of the live-collected report, with its own captured sessions rather than another demo database's activity:
 

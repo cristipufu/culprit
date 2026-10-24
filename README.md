@@ -243,8 +243,6 @@ Live sessions turn a wall of lock waits into one sentence and a tree: which sess
 | **MariaDB** | MariaDB 10.5 to 11.8 | `performance_schema`, the slow query log, user statistics, `ANALYZE FORMAT=JSON`, `SHOW ANALYZE` |
 | **SQLite** | SQLite 3 files | The file itself, opened read-only: schema, `sqlite_stat1`, `dbstat`, pragmas, `EXPLAIN QUERY PLAN`. No changes to your app. SQLite is a file (no live sessions or wait counters); workload comes from the log your framework already writes (Rails, Django, EF Core, Phoenix, OpenTelemetry and structured `.jsonl` logs), found beside the database or chosen once, or a [one-line-per-query log](docs/sqlite.md#logging-queries-yourself) you write |
 
-**YugabyteDB and TimescaleDB support is available from source on `main`; the published 0.4.4 release predates both additions.** For TimescaleDB, choose PostgreSQL and use its usual connection string; the extension is detected automatically. For YugabyteDB, choose YugabyteDB or use a `yugabyte://` URL.
-
 When a source is switched off (Query Store, `pg_stat_statements`, `performance_schema`), Culprit shows the one statement that turns it on and what you'll get once it's on.
 
 ## How it works

@@ -1,7 +1,7 @@
 # YugabyteDB
 
 Culprit has a dedicated `yugabyte` provider for YSQL over DocDB. PostgreSQL supplies the wire transport and SQL grammar;
-its heap, buffer-cache and vacuum collectors are not used. This support is in the development tree after 0.4.4.
+its heap, buffer-cache and vacuum collectors are not used.
 
 Choose **YugabyteDB** before pasting a PostgreSQL URL, or use a native URL:
 
@@ -261,8 +261,7 @@ See [dev/yugabyte](../../dev/yugabyte/README.md) for the disposable database, se
 
 ## Verified UI
 
-These screenshots show the development UI reading the live fixture described above. They are not screenshots of the
-published 0.4.4 build.
+These screenshots show the UI reading the live fixture described above.
 
 ![YSQL workload scope and dashboard](../screenshots/yugabyte-dashboard.png)
 ![Native recorded task activity, independent sample weights and observation nodes](../screenshots/yugabyte-activity.png)
