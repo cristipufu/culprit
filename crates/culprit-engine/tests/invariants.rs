@@ -568,8 +568,13 @@ fn verify_on_running_totals_compares_two_scans_with_what_they_show() {
             if f.verify.iter().any(|v| v.contains("keeps running totals"))
                 && !f.verify.iter().any(|v| v.contains("this finding should be gone"))
             {
-                let md = culprit_engine::export::finding_markdown(&report, f, &Default::default());
-                assert!(!md.contains("culprit verify"), "{name} {}: {md}", f.id);
+                for redact in [true, false] {
+                    let options = culprit_engine::export::ExportOptions { redact, ..Default::default() };
+                    let md = culprit_engine::export::finding_markdown(&report, f, &options);
+                    assert!(!md.contains("culprit verify"), "{name} {}: {md}", f.id);
+                    let html = culprit_engine::export::finding_html(&report, f, &options);
+                    assert!(!html.contains("culprit verify"), "{name} {}: {html}", f.id);
+                }
             }
         }
     }

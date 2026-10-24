@@ -443,7 +443,7 @@ fn finding_section(
             let _ = writeln!(out, "{}. {step}", i + 1);
         }
         // Only where a re-scan can show it gone: not for statements that stopped, nor on running totals.
-        if culprit_checks::gone_after_rescan(report, finding) {
+        if culprit_checks::gone_after_rescan(shared.unwrap_or(report), finding) {
             let _ = writeln!(
                 out,
                 "{}. After it ships: `culprit verify <connection> {}` re-scans and reports whether it's gone.",

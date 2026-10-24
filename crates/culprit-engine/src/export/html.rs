@@ -602,7 +602,7 @@ fn finding_body(
             let _ = write!(out, "<li>{}</li>", escape(step));
         }
         // Only where a re-scan can show it gone: not for statements that stopped, nor on running totals.
-        if culprit_checks::gone_after_rescan(report, finding) {
+        if culprit_checks::gone_after_rescan(shared.unwrap_or(report), finding) {
             let _ = write!(
                 out,
                 "<li>After it ships, <code>culprit verify &lt;connection&gt; {}</code> re-scans and reports whether it's gone.</li>",
