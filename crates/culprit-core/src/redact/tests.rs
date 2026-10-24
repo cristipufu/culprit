@@ -2,6 +2,26 @@ use super::plan::is_measurement;
 use super::*;
 
 #[test]
+fn ysql_literals_are_redacted_without_losing_parameters_or_subplan_references() {
+    let sql = "SELECT $$private-canary$$, $tag$it's private-canary$tag$, 'private-canary', $1";
+    assert_eq!(redact_sql(sql, Engine::Yugabyte), "SELECT '?', '?', '?', $1");
+    let mut snapshot: Snapshot = serde_json::from_str(include_str!("../../../../fixtures/yugabyte-demo.json")).unwrap();
+    snapshot.tables[0].definition = Some(format!("CREATE VIEW sample AS {sql}"));
+    snapshot.columns[0].default = Some("$tag$it's private-canary$tag$".into());
+    snapshot.indexes[0].filter = Some("value=$$private-canary$$".into());
+    let q = &mut snapshot.workload.as_mut().unwrap().queries[0];
+    q.text = sql.into();
+    let plan = q.plan.as_mut().unwrap();
+    plan.statement = Some(sql.into());
+    plan.root.predicate = Some("EXISTS(SubPlan 1) AND value=$tag$it's private-canary$tag$ AND n=42".into());
+    let shared = redact_snapshot(&snapshot);
+    assert!(!serde_json::to_string(&shared).unwrap().contains("private-canary"));
+    let q = &shared.workload.as_ref().unwrap().queries[0];
+    assert!(q.text.ends_with("$1"));
+    assert_eq!(q.plan.as_ref().unwrap().root.predicate.as_deref(), Some("EXISTS(SubPlan 1) AND value='?' AND n=?"));
+}
+
+#[test]
 fn retained_plan_bodies_are_redacted_with_their_parent_snapshot() {
     let mut snapshot: Snapshot = serde_json::from_str(include_str!("../../../../fixtures/mssql-demo.json")).unwrap();
     let q = snapshot.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.plan.is_some()).unwrap();

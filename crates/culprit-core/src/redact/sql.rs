@@ -191,7 +191,7 @@ fn redact(text: &str, engine: Engine, numbers: bool) -> String {
                 last_word.clear();
                 i = end;
             }
-            '$' if engine == Engine::Postgres => {
+            '$' if engine.sql_syntax() == crate::SqlSyntax::Postgres => {
                 if let Some(tag_end) = dollar_tag(&chars, i) {
                     let tag: Vec<char> = chars[i..=tag_end].to_vec();
                     let close = find(&chars, tag_end + 1, &tag).map_or(chars.len(), |p| p + tag.len());

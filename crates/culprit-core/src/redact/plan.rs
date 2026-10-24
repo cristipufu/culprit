@@ -74,7 +74,11 @@ fn redact_plan_expression(text: &str) -> String {
 /// (`raw`) is dropped; use [`redact_native`] for that.
 pub fn redact_plan(plan: &Plan) -> Plan {
     fn text(t: &str, engine: Engine) -> String {
-        let t = if engine == Engine::Postgres { redact_plan_expression(t) } else { redact_sql(t, engine) };
+        let t = if engine.sql_syntax() == crate::SqlSyntax::Postgres {
+            redact_plan_expression(t)
+        } else {
+            redact_sql(t, engine)
+        };
         if engine == Engine::Mssql { strip_database(&t) } else { t }
     }
     fn node(n: &PlanNode, engine: Engine) -> PlanNode {
