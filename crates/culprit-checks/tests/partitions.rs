@@ -47,6 +47,21 @@ fn ids(s: Snapshot) -> Vec<String> {
 }
 
 #[test]
+fn unused_hypertable_index_advice_describes_the_generated_locking_behavior() {
+    let mut s = snapshot();
+    s.pressure.get_or_insert_with(Default::default).uptime_hours = Some(24.0 * 40.0);
+    s.tables.iter_mut().find(|t| t.name == "orders").unwrap().kind = Some("hypertable".into());
+    let i = index(&s, "orders", "events_unused", &["total"]);
+    s.indexes.push(i);
+    let report = analyze(s);
+    let f = report.findings.iter().find(|f| f.id == "unused-index:public.orders").unwrap();
+    let fix = f.fix.as_ref().unwrap();
+    assert!(!fix.sql.as_deref().unwrap().contains("CONCURRENTLY"));
+    assert!(fix.summary.contains("maintenance window"));
+    assert!(!fix.summary.contains("writes aren't blocked"));
+}
+
+#[test]
 fn an_index_with_another_operator_class_is_not_a_duplicate() {
     let mut s = snapshot();
     let plain = index(&s, "orders", "orders_note_idx", &["note"]);

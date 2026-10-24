@@ -145,6 +145,7 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                 summary: match engine {
                     Engine::Yugabyte => "Save its native definition and sharding keys before dropping it. Check a complete cluster-wide business cycle of usage, and measure the affected queries after the change.".into(),
                     Engine::Mssql => "Disable first: the definition stays, nothing reads it, and `ALTER INDEX … REBUILD` brings it back. Drop it after a full business cycle without complaints.".into(),
+                    Engine::Postgres if snapshot.table(&schema, &table).and_then(|t| t.kind.as_deref()).is_some_and(|kind| matches!(kind, "hypertable" | "timescale-chunk" | "timescale-unresolved")) => "Save the definition first so you can recreate it. TimescaleDB does not support dropping hypertable indexes concurrently; schedule the drop for a maintenance window.".into(),
                     Engine::Postgres => "Drop it concurrently so writes aren't blocked. Save the definition first so you can recreate it.".into(),
                     Engine::Mysql if snapshot.server.is_mariadb() && crate::index_health::mariadb_can_ignore(&snapshot.server) => "Have the optimizer ignore it first: it stays maintained, and `ALTER INDEX … NOT IGNORED` brings it back instantly. Drop it after a full business cycle without complaints.".into(),
                     Engine::Mysql if snapshot.server.is_mariadb() => "Save its definition, then drop it: this MariaDB version can't hide an index (ignored indexes arrived in 10.6).".into(),

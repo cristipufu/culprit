@@ -152,7 +152,7 @@ pub fn query_family(snapshot: &Snapshot) -> Vec<Finding> {
         }
         // pg_stat_statements keeps an entry for each copy until it is evicted or reset: a deploy stops new ones, and
         // the old ones stay counted.
-        f.verify = vec![if engine == Engine::Postgres {
+        f.verify = vec![if engine.sql_syntax() == culprit_core::SqlSyntax::Postgres {
             format!(
                 "After a deploy, no new copies should appear: pg_stat_statements keeps an entry for each copy until it evicts it or its statistics are reset, so compare the family's copies in a scan taken when the change ships and one a day or more later ({} in this scan): the count should stay as it is, or fall.",
                 format::count(family.variants)

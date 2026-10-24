@@ -205,11 +205,13 @@ pub(super) fn leading_wildcard(cx: &Cx) -> Vec<Draft> {
                     .to_string()
             }
         };
-        d.fix_sql = (cx.engine() == Engine::Postgres).then(|| {
+        let facts = n.facts();
+        let kind = facts.table_kind.as_deref();
+        d.fix_sql = (cx.engine() == Engine::Postgres && kind != Some("timescale-unresolved")).then(|| {
+            let concurrently = if matches!(kind, Some("hypertable" | "timescale-chunk")) { "" } else { " CONCURRENTLY" };
             format!(
-                "CREATE EXTENSION IF NOT EXISTS pg_trgm;\nCREATE INDEX CONCURRENTLY ix_{}_{}_trgm\n    ON {} USING gin ({} gin_trgm_ops);",
-                table_leaf(&table).to_ascii_lowercase(),
-                column.to_ascii_lowercase(),
+                "CREATE EXTENSION IF NOT EXISTS pg_trgm;\nCREATE INDEX{concurrently} {}\n    ON {} USING gin ({} gin_trgm_ops);",
+                quote(Engine::Postgres, &format!("ix_{}_{}_trgm", table_leaf(&table).to_ascii_lowercase(), column.to_ascii_lowercase())),
                 qualified(Engine::Postgres, &table),
                 quote(Engine::Postgres, &column)
             )
@@ -230,7 +232,7 @@ pub(super) fn cross_joins(cx: &Cx) -> Vec<u32> {
     if ids.is_empty() && cx.plan.warnings.contains(&PlanWarning::NoJoinPredicate) {
         ids.extend(cx.nodes.iter().filter(|n| n.kind == NodeKind::Join).take(1).map(|n| n.id));
     }
-    if cx.engine() == Engine::Postgres {
+    if cx.engine().sql_syntax() == crate::SqlSyntax::Postgres {
         for n in cx.nodes.iter().filter(|n| n.op == "Nested Loop" && n.children.len() == 2) {
             let inner = &n.children[1];
             // Anywhere under the inner side: a LATERAL subquery's condition sits below its Limit and Sort

@@ -1681,6 +1681,42 @@ fn copies_with_the_same_text_are_no_literal_family() {
     assert!(!analyze(pg).findings.iter().any(|f| f.check == "query-family"));
 }
 
+#[test]
+fn ysql_families_verify_new_entries_instead_of_promising_old_entries_disappear() {
+    let mut s = snapshot("yugabyte-demo.json");
+    s.query_families = vec![family("SELECT id FROM public.orders WHERE id IN ($1, $2)", &[])];
+    let f = analyze(s).findings.into_iter().find(|f| f.check == "query-family").unwrap();
+    assert!(f.verify[0].contains("keeps an entry for each copy"));
+    assert!(f.verify[0].contains("no new copies should appear"));
+}
+
+#[test]
+fn ysql_unstable_writes_describe_key_share_locks_and_cumulative_spreads() {
+    let mut s = snapshot("yugabyte-demo.json");
+    let (mean, sd, max, n) = spread_of(&[(2.0, 9900.0), (5000.0, 100.0)]);
+    let w = s.workload.as_mut().unwrap();
+    w.queries.truncate(1);
+    let q = &mut w.queries[0];
+    let id = q.id.clone();
+    q.text = "INSERT INTO public.orders (id, customer_id) VALUES ($1, $2)".into();
+    let mut p = insert_plan_into("public.orders");
+    p.engine = culprit_core::Engine::Yugabyte;
+    q.plan = Some(p);
+    q.plans.clear();
+    q.trend = None;
+    q.executions = n;
+    q.mean_time_ms = mean;
+    q.stddev_time_ms = Some(sd);
+    q.max_time_ms = Some(max);
+    q.total_time_ms = n * mean;
+    w.total_time_ms = q.total_time_ms;
+    let report = analyze(s);
+    let f = find(&report.findings, &format!("unstable-query:{id}")).unwrap();
+    assert!(f.summary.contains("FOR KEY SHARE"), "{}", f.summary);
+    assert!(f.summary.contains("deletes or changes the key of"), "{}", f.summary);
+    assert!(f.caveats.iter().any(|c| c.contains("could be from any time")));
+}
+
 // ── tuning-advice: a forced plan that scans ──────────────────────────────────────────────────────
 
 /// Automatic tuning forced plan 9 for the demo's query 9 on Oct 3; the plan scans order_items for an order id, and an

@@ -19,6 +19,28 @@ fn snapshot(engine: Engine) -> Snapshot {
 }
 
 #[test]
+fn ysql_foreign_keys_normalize_compatible_text_aliases() {
+    let mut s = snapshot(Engine::Yugabyte);
+    let fk = s.foreign_keys[0].clone();
+    for (schema, table, name, data_type) in [
+        (&fk.schema, &fk.table, &fk.columns[0], "character varying(64)"),
+        (&fk.ref_schema, &fk.ref_table, &fk.ref_columns[0], "text"),
+    ] {
+        s.columns.iter_mut().find(|c| &c.schema == schema && &c.table == table && &c.name == name).unwrap().data_type =
+            data_type.into();
+    }
+    let id = format!("unindexed-fk:type-mismatch:{}.{}({})", fk.schema, fk.table, fk.columns[0]);
+    let report = culprit_checks::analyze(s.clone());
+    assert!(!report.findings.iter().any(|f| f.id == id));
+    s.columns
+        .iter_mut()
+        .find(|c| c.schema == fk.schema && c.table == fk.table && c.name == fk.columns[0])
+        .unwrap()
+        .data_type = "bigint".into();
+    assert!(culprit_checks::analyze(s).findings.iter().any(|f| f.id == id));
+}
+
+#[test]
 fn unavailable_indexes_do_not_prove_missing_foreign_key_indexes() {
     let mut s = snapshot(Engine::Postgres);
     s.indexes.clear();

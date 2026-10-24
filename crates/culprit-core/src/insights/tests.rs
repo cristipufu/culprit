@@ -116,6 +116,49 @@ use super::*;
 use crate::model::Properties;
 
 #[test]
+fn trigram_advice_respects_managed_storage_and_native_engine_support() {
+    let mut scan = node(1, "Seq Scan", NodeKind::Scan);
+    scan.object = Some("public.events".into());
+    scan.predicate = Some("message LIKE '%private%'".into());
+    scan.table_rows = Some(100000.0);
+    scan.est_rows = 10.0;
+    scan.self_cost = 100.0;
+    for kind in [None, Some("hypertable"), Some("timescale-chunk"), Some("timescale-unresolved")] {
+        let mut p = plan(Engine::Postgres, scan.clone());
+        p.root.facts_mut().table_kind = kind.map(str::to_string);
+        let advice = insights(&p).into_iter().find(|i| i.rule == "leading-wildcard").unwrap();
+        if kind == Some("timescale-unresolved") {
+            assert!(advice.fix_sql.is_none());
+        } else {
+            let sql = advice.fix_sql.unwrap();
+            assert_eq!(sql.contains("CONCURRENTLY"), kind.is_none(), "{sql}");
+            assert!(sql.contains("USING gin"));
+        }
+    }
+    let advice = insights(&plan(Engine::Yugabyte, scan)).into_iter().find(|i| i.rule == "leading-wildcard").unwrap();
+    assert!(advice.fix_sql.is_none());
+    assert!(advice.fix.contains("not assumed for DocDB"));
+}
+
+#[test]
+fn native_nested_loops_detect_cartesian_products_and_rules_advertise_ysql_support() {
+    let mut join = node(0, "Nested Loop", NodeKind::Join);
+    let mut outer = node(1, "Seq Scan", NodeKind::Scan);
+    outer.est_rows = 100.0;
+    let mut inner = outer.clone();
+    inner.id = 2;
+    join.children = vec![outer, inner];
+    join.est_rows = 10000.0;
+    let mut p = plan(Engine::Yugabyte, join);
+    assert!(rules(&p).contains(&"no-join-predicate".into()));
+    p.root.children[1].seek_predicate = Some("id = outer.id".into());
+    assert!(!rules(&p).contains(&"no-join-predicate".into()));
+    for rule in ["scan-filter", "leading-wildcard", "slow-compile", "correlated-subquery", "no-join-predicate"] {
+        assert!(RULES.iter().find(|(id, _, _)| *id == rule).unwrap().1.contains(&Engine::Yugabyte), "{rule}");
+    }
+}
+
+#[test]
 fn separately_opened_plans_receive_the_same_catalog_facts_as_snapshot_plans() {
     for engine in [Engine::Mssql, Engine::Mysql] {
         let mut snapshot: crate::Snapshot =

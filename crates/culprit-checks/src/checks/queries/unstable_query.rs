@@ -177,7 +177,7 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
                 },
             });
             f.verify = vec![verify_new_runs(snapshot)];
-            if snapshot.server.engine == Engine::Postgres {
+            if snapshot.server.engine.sql_syntax() == culprit_core::SqlSyntax::Postgres {
                 let since = q
                     .first_seen
                     .as_deref()
@@ -190,7 +190,7 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
                     "which values were slow or how many calls were"
                 };
                 f.caveats.push(format!(
-                    "PostgreSQL keeps one minimum, average, maximum and standard deviation per statement {since}, so the slowest runs could be from any time in that span (a lock wait during a migration counts too), and Culprit can't tell {unknown}."
+                    "{} keeps one minimum, average, maximum and standard deviation per statement {since}, so the slowest runs could be from any time in that span (a lock wait during a migration counts too), and Culprit can't tell {unknown}.", snapshot.server.engine.label()
                 ));
             }
             Some(f)
@@ -337,7 +337,7 @@ impl<'a> WriteWaits<'a> {
                 format::list(&columns),
                 if one { "s" } else { "" },
                 self.parents(),
-                if engine == Engine::Postgres { " (FOR KEY SHARE)" } else { "" }
+                if engine.sql_syntax() == culprit_core::SqlSyntax::Postgres { " (FOR KEY SHARE)" } else { "" }
             )
         });
         let same_work = "the captured plan does not show all work in triggers, constraints or called functions";
@@ -400,7 +400,7 @@ impl<'a> WriteWaits<'a> {
     /// change of the row.
     fn referenced(&self, engine: Engine) -> String {
         let holders = match engine {
-            Engine::Postgres => "locks (SELECT … FOR UPDATE), deletes or changes the key of",
+            Engine::Postgres | Engine::Yugabyte => "locks (SELECT … FOR UPDATE), deletes or changes the key of",
             _ => "locks, updates or deletes",
         };
         format!("{holders} the referenced row of {}", self.parents())

@@ -145,20 +145,24 @@ pub const RULES: &[(&str, &[Engine], &str)] = &[
     ("missing-statistics", &[Engine::Mssql], "Columns without statistics"),
     ("optimizer-timeout", &[Engine::Mssql], "The optimizer stopped before finding the best plan"),
     ("legacy-ce", &[Engine::Mssql], "Planned with the legacy cardinality estimator"),
-    ("slow-compile", &[Engine::Mssql, Engine::Postgres], "Planning takes long, or longer than running"),
+    (
+        "slow-compile",
+        &[Engine::Mssql, Engine::Postgres, Engine::Yugabyte],
+        "Planning takes long, or longer than running",
+    ),
     ("many-to-many", &[Engine::Mssql], "A many-to-many merge join working through tempdb"),
     ("remote-query", &[Engine::Mssql], "Rows pulled from a linked server"),
     ("heap-fetches", &[Engine::Postgres], "An index-only scan that still visits the table"),
     ("lossy-bitmap", &[Engine::Postgres], "A bitmap scan that ran out of work_mem"),
     ("workers-short", &[Engine::Postgres], "Fewer parallel workers started than planned"),
     ("jit", &[Engine::Postgres], "JIT compilation taking a large share of the run"),
-    ("correlated-subquery", &[Engine::Postgres, Engine::Mysql], "A subquery run once per outer row"),
+    ("correlated-subquery", &[Engine::Postgres, Engine::Yugabyte, Engine::Mysql], "A subquery run once per outer row"),
     ("join-buffer", &[Engine::Mysql], "A join without an index (join buffer / hash join over a scan)"),
     ("temp-table-sort", &[Engine::Mysql], "Grouping in a temporary table, then a filesort"),
     ("index-ignored", &[Engine::Mysql], "An index was possible but the whole table was read"),
 ];
 
-const ALL: &[Engine] = &[Engine::Mssql, Engine::Postgres, Engine::Mysql];
+const ALL: &[Engine] = &[Engine::Mssql, Engine::Postgres, Engine::Yugabyte, Engine::Mysql];
 
 /// Rows of the lookups/loops a rule needs before it's worth saying anything.
 const MANY_RUNS: f64 = 1_000.0;

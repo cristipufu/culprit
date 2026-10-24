@@ -296,7 +296,7 @@ fn canonical_fk_type(engine: Engine, raw: &str) -> Option<String> {
         "float8" | "double precision" | "double" | "float" => "float",
         "bool" | "boolean" => "boolean",
         "character varying" | "varchar" | "character" | "char" | "bpchar" | "text" | "citext"
-            if engine == Engine::Postgres =>
+            if engine.sql_syntax() == culprit_core::SqlSyntax::Postgres =>
         {
             "text"
         }
