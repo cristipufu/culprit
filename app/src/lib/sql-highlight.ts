@@ -7,7 +7,7 @@ const KEYWORDS = new Set(
 export type Token = { kind: "k" | "s" | "n" | "c" | "p" | "t"; text: string };
 
 const PATTERN =
-  /(--[^\n]*|\/\*[\s\S]*?\*\/)|('(?:[^']|'')*')|(\$\d+|@@?[A-Za-z_][\w]*|:[A-Za-z_]\w*|\?)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_][\w$]*)|(\s+|[^\sA-Za-z_\d'$@:?-]+|-)/g;
+  /(--[^\n]*|\/\*[\s\S]*?\*\/)|('(?:[^']|'')*')|(\$\d+|@@?[A-Za-z_][\w]*|:[A-Za-z_]\w*|\?)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_][\w$]*)|(\s+|::|[^\sA-Za-z_\d'$@:?-]+|-)|[\s\S]/gu;
 
 export function tokenize(sql: string): Token[] {
   const out: Token[] = [];
