@@ -1,4 +1,5 @@
 import { lazyResource } from "./requests";
+import { discoveryRequests } from "./discovery-requests";
 import type { Catalog } from "../gen/Catalog";
 import type { ChangeRequest } from "../gen/ChangeRequest";
 import type { Changes } from "../gen/Changes";
@@ -61,8 +62,8 @@ export interface Api {
   addConnection(input: NewConnection): Promise<ConnectionInfo>;
   removeConnection(name: string): Promise<void>;
   renameConnection(old: string, next: string): Promise<ConnectionInfo>;
-  discoverAzure(terms: string[]): Promise<DiscoveryResult>;
-  discoverAws(terms: string[], regions: string[]): Promise<DiscoveryResult>;
+  discoverAzure(terms: string[], signal?: AbortSignal): Promise<DiscoveryResult>;
+  discoverAws(terms: string[], regions: string[], signal?: AbortSignal): Promise<DiscoveryResult>;
   setPassword(name: string, password: string): Promise<ConnectionInfo>;
   addDiscovered(items: DiscoveredDatabase[]): Promise<ConnectionInfo[]>;
   importCandidates(source: ImportSource | null): Promise<ImportCandidate[]>;
@@ -163,6 +164,7 @@ export function isDesktop(): boolean {
 
 async function desktopApi(): Promise<Api> {
   const { invoke } = await import("@tauri-apps/api/core");
+  const discover = discoveryRequests(invoke);
   return {
     kind: "desktop",
     connections: () => invoke("connections"),
@@ -171,8 +173,8 @@ async function desktopApi(): Promise<Api> {
     addConnection: (input) => invoke("add_connection", { input }),
     removeConnection: (name) => invoke("remove_connection", { name }),
     renameConnection: (old, next) => invoke("rename_connection", { old, new: next }),
-    discoverAzure: (terms) => invoke("discover_azure", { terms }),
-    discoverAws: (terms, regions) => invoke("discover_aws", { terms, regions }),
+    discoverAzure: (terms, signal) => discover("discover_azure", { terms }, signal),
+    discoverAws: (terms, regions, signal) => discover("discover_aws", { terms, regions }, signal),
     setPassword: (name, password) => invoke("set_password", { name, password }),
     addDiscovered: (items) => invoke("add_discovered", { items }),
     importCandidates: (source) => invoke("import_candidates", { source }),

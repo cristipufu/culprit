@@ -549,6 +549,12 @@ results or errors, clear a newer spinner, or launch another scan. Connection and
 owners. API initialization is shared and retries after rejection. View-local effects retire their callbacks on cleanup.
 This ownership governs UI publication; the desktop invocation itself remains bounded by the backend execution policy.
 
+Cloud search also cancels its native work when its inputs change, a new search replaces it, or its panel closes.
+The desktop API registers each request before dispatching the async search; registrations preserve user order.
+`app/src-tauri/src/discovery.rs` keeps one owner per window and drops superseded futures, releasing the shared search
+gate and terminating their owned CLI process trees. A late invocation or cancellation cannot replace or cancel a newer
+request. Window destruction retires its search too; other windows and CLI searches remain independent.
+
 ## Extending Culprit
 
 Implemented provider coverage is indexed in [Engine parity](parity.md). The unimplemented

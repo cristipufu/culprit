@@ -56,10 +56,13 @@ export function DiscoverPanel({ cloud, onDone }: { cloud: CloudKind; onDone: () 
   const [adding, setAdding] = useState(false);
 
   const requests = useRef(new LatestRequest());
+  const pending = useRef<AbortController | null>(null);
   const keyOf = discoveryKey;
 
   const resetResults = () => {
     requests.current.invalidate();
+    pending.current?.abort();
+    pending.current = null;
     setDiscover({ status: "idle" });
     setPicked({});
     setAliases({});
@@ -69,24 +72,33 @@ export function DiscoverPanel({ cloud, onDone }: { cloud: CloudKind; onDone: () 
     remember(TERMS_KEY[cloud], terms);
     if (cloud === "aws") remember(REGIONS_KEY, regions);
     const current = requests.current.start();
+    pending.current?.abort();
+    const controller = new AbortController();
+    pending.current = controller;
     setDiscover({ status: "busy" });
     setPicked({});
     setAliases({});
     try {
       const client = await api();
       if (!current()) return;
-      const page = cloud === "aws" ? await client.discoverAws(words(terms), words(regions)) : await client.discoverAzure(words(terms));
+      const page = cloud === "aws" ? await client.discoverAws(words(terms), words(regions), controller.signal) : await client.discoverAzure(words(terms), controller.signal);
       if (!current()) return;
       setDiscover({ status: "done", ...page });
       setPicked(preselectedDiscoveries(page, terms));
     } catch (e) {
       if (current()) setDiscover({ status: "error", error: errorMessage(e) });
+    } finally {
+      if (pending.current === controller) pending.current = null;
     }
   };
 
   useEffect(() => {
     void search();
-    return () => requests.current.invalidate();
+    return () => {
+      requests.current.invalidate();
+      pending.current?.abort();
+      pending.current = null;
+    };
   }, []);
 
   const selected = state.status === "done" ? state.items.filter((d) => picked[keyOf(d)] && !d.saved_as) : [];

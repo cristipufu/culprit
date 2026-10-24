@@ -17,6 +17,7 @@ use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
+mod discovery;
 mod screenshot;
 
 type Ws<'a> = State<'a, Arc<Workspace>>;
@@ -64,13 +65,44 @@ async fn rename_connection(ws: Ws<'_>, old: String, new: String) -> Result<Conne
 }
 
 #[tauri::command]
-async fn discover_azure(ws: Ws<'_>, terms: Vec<String>) -> Result<culprit_engine::DiscoveryResult> {
-    ws.discover_azure(&terms).await
+fn begin_discovery(
+    window: tauri::WebviewWindow,
+    requests: State<'_, discovery::DiscoveryRequests>,
+    request_id: String,
+) -> Result<()> {
+    requests.begin(window.label(), request_id)
 }
 
 #[tauri::command]
-async fn discover_aws(ws: Ws<'_>, terms: Vec<String>, regions: Vec<String>) -> Result<culprit_engine::DiscoveryResult> {
-    ws.discover_aws(&regions, &terms).await
+fn cancel_discovery(
+    window: tauri::WebviewWindow,
+    requests: State<'_, discovery::DiscoveryRequests>,
+    request_id: String,
+) {
+    requests.cancel(window.label(), &request_id);
+}
+
+#[tauri::command]
+async fn discover_azure(
+    ws: Ws<'_>,
+    window: tauri::WebviewWindow,
+    requests: State<'_, discovery::DiscoveryRequests>,
+    terms: Vec<String>,
+    request_id: String,
+) -> Result<culprit_engine::DiscoveryResult> {
+    requests.run(window.label(), &request_id, ws.discover_azure(&terms)).await
+}
+
+#[tauri::command]
+async fn discover_aws(
+    ws: Ws<'_>,
+    window: tauri::WebviewWindow,
+    requests: State<'_, discovery::DiscoveryRequests>,
+    terms: Vec<String>,
+    regions: Vec<String>,
+    request_id: String,
+) -> Result<culprit_engine::DiscoveryResult> {
+    requests.run(window.label(), &request_id, ws.discover_aws(&regions, &terms)).await
 }
 
 #[tauri::command]
@@ -690,6 +722,12 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .manage(Announced::default())
         .manage(SignIn::default())
         .manage(PendingUpdate::default())
+        .manage(discovery::DiscoveryRequests::default())
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                window.state::<discovery::DiscoveryRequests>().close(window.label());
+            }
+        })
         .setup(move |app| {
             let handle = app.handle().clone();
             let workspace = workspace.with_sign_in_handler(Arc::new(move |event: SignInEvent| {
@@ -725,6 +763,8 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
             add_connection,
             remove_connection,
             rename_connection,
+            begin_discovery,
+            cancel_discovery,
             discover_azure,
             discover_aws,
             set_password,
