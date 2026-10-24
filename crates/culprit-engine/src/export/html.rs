@@ -376,6 +376,8 @@ fn diff_marks(diff: &PlanDiff) -> (HashMap<u32, Mark>, HashMap<u32, Mark>) {
 /// both diagrams with identical regions tinted alike.
 pub fn diff_html(a: &Plan, b: &Plan, diff: &PlanDiff, name_a: &str, name_b: &str, options: &ExportOptions) -> String {
     let (a, b) = (prepared(a, options), prepared(b, options));
+    let redacted_diff = options.redact.then(|| culprit_core::plan_diff_named(&a, name_a, &b, name_b));
+    let diff = redacted_diff.as_ref().unwrap_or(diff);
     let title = format!("{name_a} → {name_b}");
     let mut body = String::new();
     let _ = write!(body, "<h1>Plan comparison: {}</h1>", escape(&title));

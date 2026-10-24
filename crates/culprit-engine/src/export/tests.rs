@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn comparison_exports_rebuild_scenarios_from_redacted_plans() {
+    let snapshot: culprit_core::Snapshot =
+        serde_json::from_str(include_str!("../../../../fixtures/mssql-demo.json")).unwrap();
+    let mut a = snapshot.queries().iter().find_map(|q| q.plan.clone()).unwrap();
+    let mut b = a.clone();
+    a.facts_mut().compiled_parameters = Some("@p0 = N'private-first-canary'".into());
+    b.facts_mut().compiled_parameters = Some("@p0 = N'private-second-canary'".into());
+    let diff = culprit_core::plan_diff_named(&a, "A", &b, "B");
+    assert!(serde_json::to_string(&diff).unwrap().contains("private-first-canary"));
+    for redacted in [true, false] {
+        let options = ExportOptions { redact: redacted, ..Default::default() };
+        for output in [diff_html(&a, &b, &diff, "A", "B", &options), diff_markdown(&a, &b, &diff, "A", "B", &options)] {
+            assert_eq!(output.contains("private-first-canary"), !redacted);
+            assert_eq!(output.contains("private-second-canary"), !redacted);
+        }
+    }
+}
+
+#[test]
 fn file_names_are_short_safe_and_lowercase() {
     assert_eq!(
         file_stem("A type mismatch on customers.email stops a read"),

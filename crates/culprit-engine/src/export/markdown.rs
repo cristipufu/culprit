@@ -214,6 +214,8 @@ pub fn diff_markdown(
     options: &ExportOptions,
 ) -> String {
     let (a, b) = (prepared(a, options), prepared(b, options));
+    let redacted_diff = options.redact.then(|| culprit_core::plan_diff_named(&a, name_a, &b, name_b));
+    let diff = redacted_diff.as_ref().unwrap_or(diff);
     let mut out = String::new();
     let _ = writeln!(out, "## Plan comparison: {name_a} → {name_b}\n");
     redaction_note(&mut out, options);
