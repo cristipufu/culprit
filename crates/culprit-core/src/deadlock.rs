@@ -376,7 +376,7 @@ pub fn classify(engine: Engine, deadlock: &mut Deadlock) {
                 "A deadlock victim can be retried safely; the application should catch {} and run the transaction again.",
                 match engine {
                     Engine::Mssql => "error 1205",
-                    Engine::Postgres => "SQLSTATE 40P01",
+                    Engine::Postgres | Engine::Yugabyte => "SQLSTATE 40P01",
                     Engine::Mysql => "error 1213",
                     Engine::Sqlite => "SQLITE_BUSY",
                 }

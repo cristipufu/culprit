@@ -50,6 +50,7 @@ pub fn held_cleanup(snapshot: &Snapshot) -> Vec<Finding> {
         subject(SubjectKind::Database, snapshot.server.database.clone()),
     );
     f.title = match (engine, holder) {
+        (Engine::Yugabyte, _) => return Vec::new(),
         (Engine::Mssql, _) => match t.held_bytes {
             Some(b) if b > 0.0 => format!(
                 "Session {} has kept a transaction open for {open}; this database's version store holds {}",
@@ -91,6 +92,7 @@ pub fn held_cleanup(snapshot: &Snapshot) -> Vec<Finding> {
         String::new()
     };
     f.summary = match (engine, holder) {
+        (Engine::Yugabyte, _) => return Vec::new(),
         (Engine::Mssql, _) => {
             let mut parts = Vec::new();
             if snapshot_reader {

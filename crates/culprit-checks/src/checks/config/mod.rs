@@ -41,6 +41,7 @@ pub fn config(snapshot: &Snapshot) -> Vec<Finding> {
     match snapshot.server.engine {
         Engine::Mssql => mssql::check(snapshot),
         Engine::Postgres => postgres::check(snapshot),
+        Engine::Yugabyte => Vec::new(),
         Engine::Mysql => mysql::check(snapshot),
         Engine::Sqlite => sqlite::check(snapshot),
     }

@@ -629,6 +629,7 @@
         "engines": [
           "mssql",
           "postgres",
+          "yugabyte",
           "mysql",
           "sqlite"
         ],

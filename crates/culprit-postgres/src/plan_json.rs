@@ -1,6 +1,8 @@
 use culprit_core::{Engine, Error, NodeKind, NodeRuntime, Plan, PlanKind, PlanNode, PlanWarning, Properties, Result};
 use serde_json::{Map, Value};
 
+pub use crate::tables::parameter_guess;
+
 /// Fields mapped onto `PlanNode` directly, or too bulky to keep as properties.
 const CONSUMED: &[&str] = &[
     "Plans",
@@ -457,7 +459,7 @@ fn prop_text(value: &Value) -> Option<String> {
 /// Say on a generic plan what it can't know, so what reads it can weigh it: no parameter values, and partitions pruned
 /// only when it runs. Without a value the planner still estimates `= $n` from statistics (as an average value of the
 /// column); only a range or pattern on `$n` (a fixed share) and `ANY($n)` (an array of guessed length) are guesses.
-pub(crate) fn mark_generic(plan: &mut culprit_core::Plan) {
+pub fn mark_generic(plan: &mut culprit_core::Plan) {
     let reason = "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.";
     plan.facts_mut().generic_plan_reason = Some(reason.into());
     plan.props.insert("Generic Plan".into(), reason.into());

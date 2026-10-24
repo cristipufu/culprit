@@ -34,7 +34,7 @@ fn resource(engine: Engine) -> &'static str {
         Engine::Mssql => "https://database.windows.net/",
         Engine::Postgres | Engine::Mysql => "https://ossrdbms-aad.database.windows.net",
         // A file has no server to sign in to.
-        Engine::Sqlite => "",
+        Engine::Yugabyte | Engine::Sqlite => "",
     }
 }
 

@@ -129,7 +129,33 @@ pub fn writes_table(q: &QueryStat, engine: Engine, schema: &str, table: &str) ->
 
 /// Statements reading the engine's own catalogs (monitoring tools, IDEs, migrations' introspection): real load, but not the application's to fix.
 pub fn is_monitoring_query(q: &QueryStat) -> bool {
-    is_monitoring_text(&q.text)
+    q.plan.as_ref().map_or_else(|| is_monitoring_text(&q.text), |plan| is_monitoring_statement(&q.text, plan.engine))
+}
+
+/// Native YSQL size functions can record their internal, unqualified catalog reads without the caller's query tag.
+/// Resolve relation tokens rather than treating a catalog name in a string or an application column as monitoring.
+fn is_monitoring_statement(text: &str, engine: Engine) -> bool {
+    is_monitoring_text(text)
+        || (engine.sql_syntax() == culprit_core::SqlSyntax::Postgres
+            // tables_in folds identifiers; quoted, case-sensitive application names stay unclassified here.
+            && !text.contains('"')
+            && text.to_ascii_lowercase().contains("pg_")
+            && culprit_core::sql::tables_in(text, engine).iter().any(|table| {
+                matches!(
+                    table.as_str(),
+                    "pg_class"
+                        | "pg_attribute"
+                        | "pg_namespace"
+                        | "pg_index"
+                        | "pg_constraint"
+                        | "pg_type"
+                        | "pg_proc"
+                        | "pg_database"
+                        | "pg_settings"
+                        | "pg_roles"
+                        | "pg_extension"
+                )
+            }))
 }
 
 /// Statements that read the server's own catalog and statistics (monitoring tools, audits, Culprit-like agents), in
@@ -168,7 +194,7 @@ pub fn is_monitoring_text(text: &str) -> bool {
 
 /// The application's queries in the snapshot, without monitoring and catalog statements.
 pub fn app_queries(snapshot: &Snapshot) -> impl Iterator<Item = &QueryStat> {
-    snapshot.queries().iter().filter(|q| !is_monitoring_query(q))
+    snapshot.queries().iter().filter(|q| !is_monitoring_statement(&q.text, snapshot.server.engine))
 }
 
 pub fn mentions_word(text: &str, word: &str) -> bool {

@@ -28,7 +28,7 @@ pub fn plan_insights_info() -> CheckInfo {
         id: "plan-insights".into(),
         title: "Plan insights".into(),
         category: Category::Queries,
-        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Yugabyte, Engine::Mysql, Engine::Sqlite],
         requires: vec![Capability::QueryPlans],
         description: "Key lookups, functions on filtered columns, leading wildcards, NOT IN, scalar functions, eager spools, misestimates and repeated loops in the plans of queries that matter.".into(),
     }

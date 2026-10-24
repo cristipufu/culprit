@@ -62,7 +62,10 @@ async fn on_catalog(
     sql: &str,
     params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
 ) -> Result<Option<tokio_postgres::Row>> {
-    client.batch_execute(&tagged(&format!("BEGIN READ ONLY; {CATALOG_PATH}"))).await.map_err(map_error)?;
+    client
+        .batch_execute(&format!("{}; {}", tagged("BEGIN READ ONLY"), tagged(CATALOG_PATH)))
+        .await
+        .map_err(map_error)?;
     let row = client.query_opt(tagged(sql).as_str(), params).await.map_err(map_error);
     let _ = client.batch_execute(&tagged("ROLLBACK")).await;
     row
@@ -144,9 +147,24 @@ pub async fn own_text(client: &Client, query_id: &str) -> Result<Option<String>>
     let Some(schema) = schema else { return Ok(None) };
     let sql = format!(
         "SELECT query FROM {}.pg_stat_statements
-          WHERE queryid = $1 AND pg_catalog.pg_get_userbyid(userid) = session_user AND current_user = session_user LIMIT 1",
+          WHERE queryid = $1 AND dbid = (SELECT oid FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database())
+            AND pg_catalog.pg_get_userbyid(userid) = session_user AND current_user = session_user LIMIT 1",
         crate::rows::quote_ident(&schema)
     );
+    Ok(on_catalog(client, &sql, &[&id]).await?.and_then(|r| r.try_get::<_, String>("query").ok()))
+}
+
+/// YSQL's global statistics can prove ownership of this login's own copy on another node. Never plan the
+/// representative text picked while aggregating other roles; retrieve the authenticated role's copy instead.
+pub async fn own_ysql_text(client: &Client, query_id: &str, cluster: bool) -> Result<Option<String>> {
+    if !cluster {
+        return own_text(client, query_id).await;
+    }
+    let Ok(id) = query_id.trim().parse::<i64>() else { return Ok(None) };
+    let relation = "pg_catalog.\"gv$pg_stat_statements\"";
+    let sql = format!("SELECT query FROM {relation}
+        WHERE queryid = $1 AND dbid = (SELECT oid FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database())
+          AND pg_catalog.pg_get_userbyid(userid) = session_user AND current_user = session_user LIMIT 1");
     Ok(on_catalog(client, &sql, &[&id]).await?.and_then(|r| r.try_get::<_, String>("query").ok()))
 }
 
@@ -165,7 +183,10 @@ pub async fn session_is_own(client: &Client, pid: i32) -> Result<bool> {
 /// [`CATALOG_PATH`]); then the database's own search_path for the statement. Whatever planning does next, [`end`]
 /// follows.
 pub async fn begin(client: &Client, elevated: bool) -> Result<()> {
-    client.batch_execute(&tagged(&format!("BEGIN READ ONLY; {CATALOG_PATH}"))).await.map_err(map_error)?;
+    client
+        .batch_execute(&format!("{}; {}", tagged("BEGIN READ ONLY"), tagged(CATALOG_PATH)))
+        .await
+        .map_err(map_error)?;
     if elevated {
         let refused = match foreign_code(client).await {
             Ok(owners) if owners.is_empty() => None,

@@ -88,9 +88,9 @@ A 14 MB app that opens in under a second and shows the last report instantly whi
 </td>
 <td valign="top">
 
-**🧭 One tool, five engines**
+**🧭 One tool, six databases**
 
-The same views, wording and workflow on SQL Server, PostgreSQL, MySQL, MariaDB and SQLite. When an engine can't show something, Culprit says why in one sentence.
+The same views, wording and workflow on SQL Server, PostgreSQL, MySQL, MariaDB, SQLite and YugabyteDB. When an engine can't show something, Culprit says why in one sentence.
 
 </td>
 <td valign="top">
@@ -235,6 +235,7 @@ Live sessions turn a wall of lock waits into one sentence and a tree: which sess
 |---|---|---|
 | **SQL Server** | SQL Server 2022, Azure SQL Database | Query Store, plan cache, DMVs, the deadlock history in extended events |
 | **PostgreSQL** | PostgreSQL 15 to 18, including Amazon RDS | `pg_stat_statements`, statistics views, `EXPLAIN` (generic plans from version 12), `hypopg` (virtual index testing) |
+| **YugabyteDB** | 2026.1.2.0 (YSQL 15.12) | Dedicated YSQL/DocDB collection, native DIST plans, hash/range sharding, optional cluster-wide statistics; [coverage and limits](docs/providers/yugabyte.md). Development support after 0.4.4 |
 | **MySQL** | MySQL 5.7 to 8.4 | `performance_schema`, `sys`, `EXPLAIN FORMAT=JSON` |
 | **MariaDB** | MariaDB 10.5 to 11.8 | `performance_schema`, the slow query log, user statistics, `ANALYZE FORMAT=JSON`, `SHOW ANALYZE` |
 | **SQLite** | SQLite 3 files | The file itself, opened read-only: schema, `sqlite_stat1`, `dbstat`, pragmas, `EXPLAIN QUERY PLAN`. No changes to your app. SQLite is a file (no live sessions or wait counters); workload comes from the log your framework already writes (Rails, Django, EF Core, Phoenix, OpenTelemetry and structured `.jsonl` logs), found beside the database or chosen once, or a [one-line-per-query log](docs/sqlite.md#logging-queries-yourself) you write |
@@ -250,7 +251,7 @@ Sources ──► Snapshot ──► Prepare ──► Detect (68 checks) ──
 - **Offline-first snapshots (`culprit-core`).** Collectors read catalog and statistics views into a self-contained `Snapshot`. Every check, view, diff and migration lint is a pure function of that snapshot—replayable offline in CI or on another machine without a database connection.
 - **Evidence rules, not guesses (`culprit-checks`).** Checks never flag a query from a plan's shape alone when the server has runtime counters. Rates require at least an hour of counter history, "unused" index claims require a week, unavailable sources lock their dependent checks instead of reporting zero issues, and the refinement pass merges related symptoms into one root-cause finding.
 - **One declarative spec per engine (`EngineSpec`).** Capabilities, SQL dialect rules, setting thresholds and refusals live in one spec per engine (`crates/culprit-core/src/engines/`), shared by the Rust analyzer and the TypeScript UI.
-- **Embeddable Rust workspace.** The core model (`culprit-core`), analyzer (`culprit-checks`), workspace and secrets engine (`culprit-engine`), query-log parser (`culprit-querylog`), MCP server (`culprit-mcp`), CLI (`culprit-cli`) and engine providers (`culprit-postgres`, `culprit-mssql`, `culprit-mysql`, `culprit-sqlite`) can be embedded as a library, with custom `Check`s or runtime providers plugged in without forking.
+- **Embeddable Rust workspace.** The core model (`culprit-core`), analyzer (`culprit-checks`), workspace and secrets engine (`culprit-engine`), query-log parser (`culprit-querylog`), MCP server (`culprit-mcp`), CLI (`culprit-cli`) and engine providers (`culprit-postgres`, `culprit-mssql`, `culprit-mysql`, `culprit-sqlite`, `culprit-yugabyte`) can be embedded as a library, with custom `Check`s or runtime providers plugged in without forking.
 
 ## Get started
 

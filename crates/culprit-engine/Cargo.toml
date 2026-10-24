@@ -12,9 +12,10 @@ autotests = false
 doctest = false
 
 [features]
-default = ["mssql", "postgres", "mysql", "sqlite"]
+default = ["mssql", "postgres", "yugabyte", "mysql", "sqlite"]
 mssql = ["dep:culprit-mssql"]
 postgres = ["dep:culprit-postgres"]
+yugabyte = ["dep:culprit-yugabyte"]
 mysql = ["dep:culprit-mysql"]
 sqlite = ["dep:culprit-sqlite"]
 
@@ -29,6 +30,7 @@ culprit-core.workspace = true
 culprit-checks.workspace = true
 culprit-mssql = { workspace = true, optional = true }
 culprit-postgres = { workspace = true, optional = true }
+culprit-yugabyte = { workspace = true, optional = true }
 culprit-mysql = { workspace = true, optional = true }
 culprit-sqlite = { workspace = true, optional = true }
 culprit-querylog.workspace = true

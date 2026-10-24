@@ -8,7 +8,7 @@ pub fn unindexed_fk_info() -> CheckInfo {
         id: "unindexed-fk".into(),
         title: "Foreign keys without an index".into(),
         category: Category::Indexes,
-        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Yugabyte, Engine::Mysql, Engine::Sqlite],
         requires: vec![Capability::TableStats],
         description: "Foreign key columns with no index starting with them, which makes deletes on the parent and joins from the child slow.".into(),
     }
@@ -33,6 +33,7 @@ pub(crate) fn fk_is_indexed(snapshot: &Snapshot, fk: &culprit_core::ForeignKey) 
 pub(super) fn leads_with(i: &IndexStat, columns: &[String]) -> bool {
     let keys = i.key_names();
     keys.len() >= columns.len()
+        && i.can_seek(columns)
         && lower_set(&keys[..columns.len()].iter().map(|s| s.to_string()).collect::<Vec<_>>()) == lower_set(columns)
 }
 
@@ -405,6 +406,7 @@ fn uuid_text_indexed_columns(snapshot: &Snapshot) -> Vec<Finding> {
         return Vec::new();
     }
     let (native_type, native_note) = match engine {
+        Engine::Yugabyte => ("uuid", "YSQL's native 16-byte `uuid` type"),
         Engine::Postgres => ("uuid", "PostgreSQL's native 16-byte `uuid` type"),
         Engine::Mssql => ("uniqueidentifier", "SQL Server's native 16-byte `uniqueidentifier` type"),
         Engine::Mysql => ("binary(16)", "MySQL's 16-byte `binary(16)` (with `UUID_TO_BIN` / `BIN_TO_UUID`)"),

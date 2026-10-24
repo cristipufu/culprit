@@ -3,7 +3,7 @@ import type { Environment } from "../gen/Environment";
 import { engineLabel, isMariadb } from "../lib/engines";
 
 /** Each engine's initials on its badge (its name comes from the engine facts). */
-const ABBR: Record<Engine, string> = { mssql: "MS", postgres: "Pg", mysql: "My", sqlite: "Sq" };
+const ABBR: Record<Engine, string> = { mssql: "MS", postgres: "Pg", yugabyte: "YB", mysql: "My", sqlite: "Sq" };
 
 /**
  * The database engine at a glance: a small badge in the engine's color with its initials, and the environment as a

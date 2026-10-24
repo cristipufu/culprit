@@ -5,6 +5,12 @@ use crate::{Engine, Period, Snapshot, Workload, WorkloadKind, format::epoch_seco
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+fn counter_generation(value: &impl Serialize) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let encoded = serde_json::to_vec(value).ok()?;
+    Some(Sha256::digest(encoded).iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 #[ts(export)]
@@ -270,7 +276,7 @@ impl MeasurementContext {
         taken_at: &str,
         requested_minutes: Option<u32>,
     ) -> Self {
-        let source = workload
+        let mut source = workload
             .kind()
             .map(MeasurementSource::Workload)
             .unwrap_or_else(|| MeasurementSource::Named(workload.source.clone()));
@@ -283,7 +289,7 @@ impl MeasurementContext {
         let invalid_bounds = bounds.as_ref().is_some_and(|p| p.hours() <= 0.0);
         let hours = hours.filter(|_| !invalid_bounds);
         let span = bounds.filter(|p| hours.is_some() && p.hours() > 0.0);
-        let period = if workload.windowed {
+        let mut period = if workload.windowed {
             MeasurementPeriod::Window {
                 span,
                 hours,
@@ -301,13 +307,34 @@ impl MeasurementContext {
                 hours,
             }
         };
-        let reset = if workload.windowed || !matches!(workload.kind(), Some(WorkloadKind::StatementStats)) {
+        let mut reset = if workload.windowed || !matches!(workload.kind(), Some(WorkloadKind::StatementStats)) {
             // The oldest cached plan/digest is not a source-wide reset marker.
             ResetMarker::Unknown
         } else {
             workload.window_start.clone().map(ResetMarker::At).unwrap_or(ResetMarker::Unknown)
         };
-        Self { database: identity, source, scope: MeasurementScope::Database, period, reset }
+        let mut scope = MeasurementScope::Database;
+        if let Some(counters) = &workload.counter_set {
+            let members: Vec<_> = counters.members.keys().collect();
+            source = MeasurementSource::Named(format!(
+                "{}:{:?}:{}",
+                workload.source,
+                counters.scope,
+                counter_generation(&members).unwrap_or_default()
+            ));
+            let known = counters.epochs_known();
+            if known {
+                reset =
+                    counter_generation(&counters.members).map(ResetMarker::Generation).unwrap_or(ResetMarker::Unknown);
+            } else {
+                reset = ResetMarker::Unknown;
+                scope = MeasurementScope::Unknown;
+                if let MeasurementPeriod::Cumulative { hours, .. } = &mut period {
+                    *hours = None;
+                }
+            }
+        }
+        Self { database: identity, source, scope, period, reset }
     }
 
     pub fn series_comparison(&self, other: &Self) -> Comparison {
@@ -584,6 +611,52 @@ impl crate::Digest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn distributed_counter_sets_survive_identity_binding_and_compare_each_native_epoch() {
+        let mut before: Snapshot = serde_json::from_str(include_str!("../../../fixtures/postgres-demo.json")).unwrap();
+        before.server.engine = Engine::Yugabyte;
+        before.taken_at = "2026-10-23T00:00:00Z".into();
+        let w = before.workload.as_mut().unwrap();
+        w.source = "YSQL cluster statements".into();
+        w.counter_set = Some(crate::CounterSet {
+            scope: crate::CounterScope::Cluster,
+            complete: true,
+            members: [
+                ("node-a".into(), Some("2026-10-01T00:00:00Z".into())),
+                ("node-b".into(), Some("2026-10-02T00:00:00Z".into())),
+            ]
+            .into(),
+        });
+        let identity =
+            DatabaseIdentity::server(Engine::Yugabyte, &before.server.database, "cluster.example", 5433, None);
+        before.bind_identity(identity.clone());
+        let a = before.workload_measurement().unwrap();
+        let mut later = before.clone();
+        later.taken_at = "2026-10-24T00:00:00Z".into();
+        later.bind_identity(identity.clone());
+        assert_eq!(a.counter_transition(&later.workload_measurement().unwrap()), CounterTransition::Continued);
+        later
+            .workload
+            .as_mut()
+            .unwrap()
+            .counter_set
+            .as_mut()
+            .unwrap()
+            .members
+            .insert("node-b".into(), Some("2026-10-23T12:00:00Z".into()));
+        later.bind_identity(identity.clone());
+        assert_eq!(a.counter_transition(&later.workload_measurement().unwrap()), CounterTransition::Reset);
+        later.workload.as_mut().unwrap().counter_set.as_mut().unwrap().members.remove("node-b");
+        later.bind_identity(identity.clone());
+        assert_eq!(
+            a.counter_transition(&later.workload_measurement().unwrap()),
+            CounterTransition::Incompatible(ComparisonReason::DifferentSource)
+        );
+        later.workload.as_mut().unwrap().counter_set.as_mut().unwrap().complete = false;
+        later.bind_identity(identity);
+        assert_eq!(later.workload_measurement().unwrap().scope, MeasurementScope::Unknown);
+        assert_eq!(later.workload.as_ref().unwrap().measurement_hours(), 0.0);
+    }
     fn database(host: &str) -> DatabaseIdentity {
         DatabaseIdentity::server(Engine::Postgres, "shop", host, 5432, None)
     }

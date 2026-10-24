@@ -65,6 +65,9 @@ pub fn explain(snapshot: &Snapshot) -> Option<WaitsReport> {
 
     let mut notes = Vec::new();
     match engine {
+        Engine::Yugabyte => {
+            notes.push("DocDB storage timings and RPC times can overlap; they are not exclusive shares of statement time. Use native metrics or sample YSQL sessions.".into());
+        }
         Engine::Postgres => {
             notes.push("PostgreSQL keeps no history of what sessions waited on. These totals come from per-statement timing; use Right now to sample what sessions wait on at this moment.".into());
             // The setting says whether disk time is measured; a cached database reads nothing from disk with it on.
@@ -130,6 +133,7 @@ fn scope_and_source(snapshot: &Snapshot) -> (WaitScope, String) {
     let uptime = snapshot.pressure.as_ref().and_then(|p| p.uptime_hours).map(span);
     let attributed = app_queries(snapshot).any(|q| q.waits.iter().any(|w| w.wait_ms > 0.0));
     match engine {
+        Engine::Yugabyte => (WaitScope::Statements, "YSQL native metrics in their recorded node/cluster scope".into()),
         Engine::Sqlite => (WaitScope::SinceStartup, "SQLite keeps no waits".into()),
         Engine::Mssql if attributed => (WaitScope::Window, format!("Query Store, last {window}")),
         Engine::Mssql => (
@@ -316,6 +320,7 @@ pub(crate) fn snapshot_with(engine: Engine) -> Snapshot {
         Engine::Postgres => include_str!("../../../../fixtures/postgres-demo.json"),
         Engine::Mysql => include_str!("../../../../fixtures/mysql-demo.json"),
         Engine::Sqlite => panic!("no SQLite snapshot fixture for waits"),
+        Engine::Yugabyte => include_str!("../../../../fixtures/yugabyte-demo.json"),
     };
     let mut snapshot: Snapshot = serde_json::from_str(text).expect("fixture is a snapshot");
     if let Some(w) = snapshot.workload.as_mut() {

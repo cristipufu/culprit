@@ -10,6 +10,8 @@ pub fn sources(engine: Engine) -> &'static [Source] {
         Engine::Mssql => culprit_mssql::sources::ALL,
         #[cfg(feature = "postgres")]
         Engine::Postgres => culprit_postgres::sources::ALL,
+        #[cfg(feature = "yugabyte")]
+        Engine::Yugabyte => culprit_yugabyte::sources::ALL,
         #[cfg(feature = "mysql")]
         Engine::Mysql => culprit_mysql::sources::ALL,
         #[cfg(feature = "sqlite")]
@@ -29,6 +31,8 @@ pub fn provider(spec: &ConnectionSpec) -> Result<Box<dyn Provider>> {
         Engine::Mssql => Ok(Box::new(culprit_mssql::MssqlProvider::new(spec)?)),
         #[cfg(feature = "postgres")]
         Engine::Postgres => Ok(Box::new(culprit_postgres::PostgresProvider::new(spec)?)),
+        #[cfg(feature = "yugabyte")]
+        Engine::Yugabyte => Ok(Box::new(culprit_yugabyte::YugabyteProvider::new(spec)?)),
         #[cfg(feature = "mysql")]
         Engine::Mysql => Ok(Box::new(culprit_mysql::MysqlProvider::new(spec)?)),
         #[cfg(feature = "sqlite")]

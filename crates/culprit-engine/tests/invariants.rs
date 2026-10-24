@@ -1971,7 +1971,7 @@ fn applying_recommended_index_or_drop_resolves_the_finding() {
                     schema,
                     table,
                     name: "ix_culprit_verified".into(),
-                    kind: "btree".into(),
+                    kind: if after.server.engine == culprit_core::Engine::Yugabyte { "lsm" } else { "btree" }.into(),
                     columns: f.facts.index_keys.clone(),
                     include: Vec::new(),
                     filter: None,
@@ -1996,6 +1996,8 @@ fn applying_recommended_index_or_drop_resolves_the_finding() {
                     opclasses: None,
                     counters_since: None,
                     filter_facts: None,
+                    docdb: (after.server.engine == culprit_core::Engine::Yugabyte)
+                        .then_some(culprit_core::signals::DocdbIndex { hash_columns: Vec::new(), tablets: None }),
                 });
                 let next = culprit_checks::analyze(after);
                 assert!(

@@ -62,6 +62,7 @@ impl Platform {
                 Engine::Postgres => "Azure Database for PostgreSQL",
                 Engine::Mysql => "Azure Database for MySQL",
                 Engine::Mssql | Engine::Sqlite => "Azure SQL",
+                Engine::Yugabyte => "YugabyteDB on Azure",
             },
             Platform::GoogleCloudSql => "Google Cloud SQL",
             Platform::GoogleAlloyDb => "Google AlloyDB",

@@ -159,6 +159,7 @@ pub(crate) async fn collect_workload(
     Ok(Some(CollectedWorkload {
         waits: Vec::new(),
         workload: Workload {
+            counter_set: None,
             history_inputs: Vec::new(),
             measurement: None,
             source: "performance_schema".into(),

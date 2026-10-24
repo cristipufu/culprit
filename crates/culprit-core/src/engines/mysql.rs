@@ -7,6 +7,9 @@ use crate::model::Capability;
 pub(super) struct Mysql;
 
 impl EngineSpec for Mysql {
+    fn sql_syntax(&self) -> SqlSyntax {
+        SqlSyntax::Mysql
+    }
     fn deadlock_limitation(&self) -> Option<&'static str> {
         Some(
             "InnoDB keeps only its most recent deadlock. Turn on innodb_print_all_deadlocks to write every one to the error log.",

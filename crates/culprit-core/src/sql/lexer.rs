@@ -1,7 +1,7 @@
 //! Low-level SQL lexical scanning across engine quoting and comment modes, shared by statement safety,
 //! static predicate matching, and plan predicate inspection.
 
-use crate::Engine;
+use crate::{Engine, SqlSyntax};
 
 /// How backslashes behave inside quoted text. MySQL and Postgres both have a server setting that flips this
 /// (NO_BACKSLASH_ESCAPES, standard_conforming_strings).
@@ -31,22 +31,22 @@ pub(crate) struct Mode {
 pub(crate) fn modes(engine: Engine) -> &'static [Mode] {
     use Backslash::*;
     use DoubleQuote::*;
-    match engine {
+    match engine.sql_syntax() {
         // QUOTED_IDENTIFIER ON (the driver default) and OFF.
-        Engine::Mssql => {
+        SqlSyntax::Mssql => {
             &[Mode { backslash: Literal, double_quote: Identifier }, Mode { backslash: Literal, double_quote: String }]
         }
         // standard_conforming_strings on and off (E'…' always escapes).
-        Engine::Postgres => &[
+        SqlSyntax::Postgres => &[
             Mode { backslash: Escapes, double_quote: Identifier },
             Mode { backslash: Literal, double_quote: Identifier },
         ],
         // No backslash escapes. A double-quoted word is a name, or a string when no such name exists (SQLite's legacy rule).
-        Engine::Sqlite => {
+        SqlSyntax::Sqlite => {
             &[Mode { backslash: Literal, double_quote: Identifier }, Mode { backslash: Literal, double_quote: String }]
         }
         // NO_BACKSLASH_ESCAPES × ANSI_QUOTES.
-        Engine::Mysql => &[
+        SqlSyntax::Mysql => &[
             Mode { backslash: Escapes, double_quote: String },
             Mode { backslash: Literal, double_quote: String },
             Mode { backslash: Escapes, double_quote: Identifier },
@@ -104,6 +104,7 @@ fn lex_into<'a>(
     mode: Mode,
     tokens: &mut Vec<Token<'a>>,
 ) -> std::result::Result<(), &'static str> {
+    let engine = engine.sql_syntax();
     let backslash = mode.backslash;
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -117,19 +118,21 @@ fn lex_into<'a>(
                 i += 1;
             }
             // MySQL only treats `--` as a comment when whitespace or a control character follows; `1--1` is arithmetic.
-            b'-' if next == Some(b'-') && (engine != Engine::Mysql || bytes.get(i + 2).is_none_or(|b| *b <= b' ')) => {
+            b'-' if next == Some(b'-')
+                && (engine != SqlSyntax::Mysql || bytes.get(i + 2).is_none_or(|b| *b <= b' ')) =>
+            {
                 i = line_end(bytes, i);
             }
-            b'#' if engine == Engine::Mysql => i = line_end(bytes, i),
+            b'#' if engine == SqlSyntax::Mysql => i = line_end(bytes, i),
             b'/' if next == Some(b'*') => {
-                if engine == Engine::Mysql && matches!(bytes.get(i + 2), Some(b'!') | Some(b'M')) {
+                if engine == SqlSyntax::Mysql && matches!(bytes.get(i + 2), Some(b'!') | Some(b'M')) {
                     // `/*! … */` and MariaDB's `/*M! … */` are executed by the server, so they are code, not comments.
                     let executable = bytes.get(i + 2) == Some(&b'!') || bytes.get(i + 3) == Some(&b'!');
                     if executable {
                         return Err("Executable comments (/*! … */) aren't allowed here");
                     }
                 }
-                i = block_comment_end(bytes, i, engine != Engine::Mysql)?;
+                i = block_comment_end(bytes, i, engine != SqlSyntax::Mysql)?;
             }
             b'\'' => i = quoted_end(bytes, i, b'\'', backslash == Backslash::Escapes)?,
             b'"' => {
@@ -142,17 +145,17 @@ fn lex_into<'a>(
                 }
                 i = end;
             }
-            b'`' if matches!(engine, Engine::Mysql | Engine::Sqlite) => {
+            b'`' if matches!(engine, SqlSyntax::Mysql | SqlSyntax::Sqlite) => {
                 let end = quoted_end(bytes, i, b'`', false)?;
                 tokens.push(Token::Quoted(&text[i + 1..end - 1], b'`'));
                 i = end;
             }
-            b'[' if matches!(engine, Engine::Mssql | Engine::Sqlite) => {
+            b'[' if matches!(engine, SqlSyntax::Mssql | SqlSyntax::Sqlite) => {
                 let end = quoted_end(bytes, i, b']', false)?;
                 tokens.push(Token::Quoted(&text[i + 1..end - 1], b']'));
                 i = end;
             }
-            b'$' if engine == Engine::Postgres => match dollar_tag(bytes, i) {
+            b'$' if engine == SqlSyntax::Postgres => match dollar_tag(bytes, i) {
                 Some(tag) => i = dollar_quoted_end(bytes, i, tag)?,
                 None => {
                     tokens.push(Token::Punct('$'));
@@ -180,7 +183,7 @@ fn lex_into<'a>(
                     );
                 }
                 // Postgres E'…' strings always treat backslashes as escapes.
-                if engine == Engine::Postgres && word.eq_ignore_ascii_case("e") && bytes.get(i) == Some(&b'\'') {
+                if engine == SqlSyntax::Postgres && word.eq_ignore_ascii_case("e") && bytes.get(i) == Some(&b'\'') {
                     i = quoted_end(bytes, i, b'\'', true)?;
                 } else {
                     tokens.push(Token::Word(word));

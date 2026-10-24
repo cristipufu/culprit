@@ -27,7 +27,7 @@ pub fn regression_info() -> CheckInfo {
         id: "regression".into(),
         title: "Queries that got slower".into(),
         category: Category::Queries,
-        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Yugabyte, Engine::Mysql],
         requires: vec![],
         description: "Queries whose runs became much slower at some point in the window, with when it started and whether a plan change coincides. Needs Query Store history or a few earlier scans.".into(),
     }

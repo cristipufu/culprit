@@ -87,7 +87,10 @@ pub fn no_share_reason(plan: &Plan, node: &PlanNode, q: Option<&QueryStat>) -> O
 pub fn finding_no_share_reason(plan: &Plan, node: &PlanNode, q: Option<&QueryStat>) -> Option<String> {
     use culprit_core::insights::CheapPlanRuns;
     let why = no_share_reason(plan, node, q)?;
-    let cheap = plan.uncosted_steps().is_empty() && !plan.has_guess() && !culprit_core::insights::does_real_work(plan);
+    let cheap = plan.uncosted_steps().is_empty()
+        && !plan.has_guess()
+        && !culprit_core::insights::does_real_work(plan)
+        && culprit_core::insights::estimated_work_threshold(plan).is_some();
     let misestimated = matches!(
         culprit_core::insights::cheap_plan_runs(plan, q),
         CheapPlanRuns::MoreRows { .. } | CheapPlanRuns::MoreReads { .. }
@@ -144,6 +147,9 @@ pub fn plan_shares_note(plan: &Plan, q: Option<&QueryStat>) -> Option<String> {
 /// catalog's), or its runs are slow; else the plan is cheap.
 fn cheap_plan_reason(plan: &Plan, q: Option<&QueryStat>) -> String {
     use culprit_core::insights::CheapPlanRuns;
+    if culprit_core::insights::estimated_work_threshold(plan).is_none() {
+        return "The optimizer's cost scale has no calibrated work threshold here, so this estimate establishes neither a cheap run nor a share of statement time. Compare measured operator work and elapsed time.".into();
+    }
     // Whether the plan is cheap rests on its total, and a guess anywhere is in the total.
     if plan.has_guess() {
         return "The plan's costs rest on the planner's default guess for a parameter, so no share of them is put on \

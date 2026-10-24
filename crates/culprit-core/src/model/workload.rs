@@ -78,6 +78,35 @@ pub struct Workload {
     pub measurement: Option<crate::measurement::MeasurementContext>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history_inputs: Vec<crate::BaselineReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub counter_set: Option<CounterSet>,
+}
+
+/// Native contributors to distributed cumulative counters. A missing epoch or skipped node cannot establish
+/// continuity. Node identity is part of the series even when the SQL connection goes through a load balancer.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq, Eq)]
+#[ts(export)]
+pub struct CounterSet {
+    pub scope: CounterScope,
+    pub members: std::collections::BTreeMap<String, Option<String>>,
+    pub complete: bool,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export)]
+pub enum CounterScope {
+    Node,
+    Cluster,
+}
+
+impl CounterSet {
+    pub fn epochs_known(&self) -> bool {
+        self.complete
+            && !self.members.is_empty()
+            && self.members.values().all(|at| at.as_deref().and_then(crate::format::epoch_seconds).is_some())
+    }
 }
 
 /// "7 days", "10 hours", "35 minutes": a window's length in words.

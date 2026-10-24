@@ -1005,6 +1005,7 @@ dependencies = [
  "culprit-postgres",
  "culprit-querylog",
  "culprit-sqlite",
+ "culprit-yugabyte",
  "dirs",
  "keyring",
  "ring",
@@ -1095,6 +1096,19 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "culprit-yugabyte"
+version = "0.4.4"
+dependencies = [
+ "async-trait",
+ "culprit-core",
+ "culprit-postgres",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]

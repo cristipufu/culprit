@@ -204,6 +204,7 @@ async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<Hash
             (
                 (r.string("schema_name"), r.string("table_name")),
                 TableStorage {
+                    docdb: None,
                     hypertable: None,
                     hot_updates: r.number("hot"),
                     new_page_updates: r.number("new_page"),

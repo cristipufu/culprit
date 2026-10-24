@@ -12,7 +12,7 @@ import { ago, bytes, count, oneLine, percent, when } from "../lib/format";
 import { tableSignalWarning } from "../lib/health";
 import { useHotkeys } from "../lib/hotkeys";
 import { indexKey, indexUsage, plannedQueryCount } from "../lib/index-usage";
-import { columnMembership, coveredBy, ddl, previewSql, referenceOf, relations, tableFindings, tableKey } from "../lib/schema-model";
+import { canSeek, columnMembership, coveredBy, ddl, previewSql, referenceOf, relations, tableFindings, tableKey } from "../lib/schema-model";
 import { setState, toast } from "../lib/store";
 
 type Tab = "columns" | "indexes" | "relations" | "data" | "ddl";
@@ -411,14 +411,14 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
   const backs = (i: IndexStat) =>
     links.outgoing.find(({ fk }) => {
       const keys = i.columns.map((c) => c.replace(/\s+(ASC|DESC)$/i, "").toLowerCase());
-      return fk.columns.every((c, n) => keys[n] === c.toLowerCase());
+      return !i.is_disabled && !i.filter && canSeek(i, fk.columns) && fk.columns.every((c, n) => keys[n] === c.toLowerCase());
     })?.fk ?? null;
   const usage = useMemo(() => indexUsage(report), [report]);
   const [open, setOpen] = useState<string | null>(null);
   const planned = plannedQueryCount(report);
   const since = report.snapshot.server.started_at;
-  const hasUsage = report.snapshot.server.capabilities.includes("index-usage");
-  const sinceText = since ? `since ${when(since).short}` : "since the last restart";
+  const hasUsage = indexes.some((index) => index.reads != null || index.writes != null);
+  const sinceText = engine === "yugabyte" ? "across the recorded cluster nodes, with independent reset dates" : since ? `since ${when(since).short}` : "since the last restart";
   // An index that may be less than a week old hasn't had time to be read: the checks don't call it unused yet.
   const takenAt = Date.parse(report.snapshot.taken_at);
   const tooNew = (i: IndexStat) =>
@@ -466,7 +466,8 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
               const wider = coveredBy(i, indexes);
               const redundant = finding(i.name, "duplicate-index");
               const unusedFinding = finding(i.name, "unused-index");
-              const neverRead = i.reads === 0 && !i.is_primary_key;
+              const unprovenNativeAbsence = engine === "yugabyte" && i.reads === 0 && !i.is_primary_key && !unusedFinding;
+              const neverRead = i.reads === 0 && !i.is_primary_key && !unprovenNativeAbsence;
               const expanded = open === i.name && uses.length > 0;
               const reads = i.reads ?? 0;
               const writes = i.writes ?? 0;
@@ -482,6 +483,8 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
                   text: i.state === "invisible" ? "Invisible to the optimizer; still maintained by writes" : i.state === "ignored" ? "Ignored by the optimizer; still maintained by writes" : i.state === "invalid" ? `Invalid: unavailable to the optimizer; ${i.maintained == null ? "maintenance state was not recorded" : i.maintained ? "still maintained by writes" : "not ready for write maintenance"}` : "Disabled: unavailable to the optimizer and not maintained",
                 });
               const serves = backs(i);
+              if (unprovenNativeAbsence)
+                notes.push({ tone: "low", text: `No reads recorded; complete cluster usage with at least a week of known reset history is needed before calling this index unused.${serves ? ` It also supports foreign key ${serves.name}.` : ""}` });
               if (neverRead && serves)
                 notes.push({
                   tone: "low",
@@ -527,6 +530,7 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
                     </td>
                     <td className="ix-keys mono">
                       <span className="ix-key-list" title={i.columns.join(", ")}>{i.columns.join(", ")}</span>
+                      {i.docdb && <div className="muted">{i.docdb.hash_columns.length ? `HASH (${i.docdb.hash_columns.join(", ")})` : "range sharded"}{i.docdb.tablets != null ? ` · ${i.docdb.tablets} tablet${i.docdb.tablets === 1 ? "" : "s"}` : ""}</div>}
                       {i.include.length > 0 && (
                         <div className="muted" title={`INCLUDE (${i.include.join(", ")})`}>
                           + {i.include.join(", ")}
@@ -561,23 +565,23 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
                       {i.reads == null && i.writes == null ? (
                         <span className="muted">—</span>
                       ) : (
-                        <span className="rw" title={`${count(reads)} reads · ${count(writes)} writes ${sinceText}`}>
+                        <span className="rw" title={`${i.reads == null ? "unmeasured" : count(reads)} reads · ${i.writes == null ? "unmeasured" : count(writes)} writes ${sinceText}`}>
                           <span className="rw-bar">
                             <span className="r" style={{ width: `${(reads / rw) * 100}%` }} />
                             <span className="w" style={{ width: `${(writes / rw) * 100}%` }} />
                           </span>
                           <span className="rw-n">
-                            {count(reads)} · {count(writes)}
+                            {count(i.reads)} · {count(i.writes)}
                           </span>
                         </span>
                       )}
                     </td>
                     <td className="r ix-size">
-                      <span className="size-cell">
+                      <span className="size-cell" title={engine === "yugabyte" && i.is_primary_key ? "Primary-key storage is included in the base table; no independent index size is charged" : undefined}>
                         <span className="bar">
                           <span
                             style={{
-                              width: `${Math.max(2, ((i.size_bytes ?? 0) / biggest) * 100)}%`,
+                              width: `${i.size_bytes == null ? 0 : Math.max(2, (i.size_bytes / biggest) * 100)}%`,
                             }}
                           />
                         </span>
@@ -665,7 +669,11 @@ function Relations({ links, onOpenTable }: { links: Links; onOpenTable: (key: st
             </div>
             <div className="rel-meta">
               <span className="muted rel-name" title={fk.name}>{fk.name}</span>
-              {indexed ? (
+              {indexed == null ? (
+                <span className="tag" title="Native sharding metadata was unavailable; lookup support cannot be established">
+                  index support unknown
+                </span>
+              ) : indexed ? (
                 <span className="tag good" title="An index leads with these columns, so joins and parent deletes can seek">
                   indexed
                 </span>

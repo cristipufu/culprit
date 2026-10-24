@@ -211,7 +211,7 @@ pub(crate) fn grade_on_evidence(snapshot: &mut Snapshot) {
         }
         // These counters are shared even when the login connected to just one database.
         let shared = match engine {
-            Engine::Mysql => !matches!(s.key.as_str(), "oldest-transaction"),
+            Engine::Yugabyte | Engine::Mysql => !matches!(s.key.as_str(), "oldest-transaction"),
             Engine::Mssql => {
                 matches!(
                     s.key.as_str(),

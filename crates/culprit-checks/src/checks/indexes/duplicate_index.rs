@@ -8,7 +8,7 @@ pub fn duplicate_index_info() -> CheckInfo {
         id: "duplicate-index".into(),
         title: "Duplicate and redundant indexes".into(),
         category: Category::Indexes,
-        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Yugabyte, Engine::Mysql, Engine::Sqlite],
         requires: vec![Capability::TableStats],
         description: "Indexes with the same keys as another index, or whose keys are a leading part of a wider one."
             .into(),
@@ -88,6 +88,35 @@ pub fn duplicate_index(snapshot: &Snapshot) -> Vec<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn docdb_hash_groups_are_not_equivalent_to_ranges_or_longer_hash_groups() {
+        let mut snapshot: Snapshot =
+            serde_json::from_str(include_str!("../../../../../fixtures/postgres-demo.json")).unwrap();
+        snapshot.server.engine = Engine::Yugabyte;
+        let mut a = snapshot.indexes[0].clone();
+        a.kind = "lsm".into();
+        a.columns = vec!["tenant_id".into()];
+        a.docdb = Some(culprit_core::signals::DocdbIndex { hash_columns: vec!["tenant_id".into()], tablets: Some(3) });
+        a.is_primary_key = false;
+        a.is_unique = false;
+        a.is_clustered = false;
+        a.is_disabled = false;
+        let mut b = a.clone();
+        b.name = format!("{}_second", a.name);
+        b.docdb.as_mut().unwrap().hash_columns.clear();
+        snapshot.indexes = vec![a, b];
+        assert!(redundant_indexes(&snapshot).is_empty(), "HASH and ASC serve different access paths");
+        snapshot.indexes[1].columns.push("id".into());
+        snapshot.indexes[1].docdb.as_mut().unwrap().hash_columns = vec!["tenant_id".into(), "id".into()];
+        assert!(redundant_indexes(&snapshot).is_empty(), "the entire composite hash needs equality");
+        assert!(!snapshot.indexes[1].can_seek(&["tenant_id".into()]));
+        assert!(snapshot.indexes[1].can_seek(&["tenant_id".into(), "id".into()]));
+        snapshot.indexes[1].docdb.as_mut().unwrap().hash_columns.pop();
+        assert_eq!(redundant_indexes(&snapshot).len(), 1, "the same hash plus ordered suffix can cover a prefix");
+        snapshot.indexes[1].docdb = None;
+        assert!(redundant_indexes(&snapshot).is_empty(), "missing native metadata cannot prove equivalence");
+    }
 
     #[test]
     fn removing_a_duplicate_checks_the_retained_index_and_query_performance() {

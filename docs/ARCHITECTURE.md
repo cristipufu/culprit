@@ -22,7 +22,7 @@ with a fixture.
 | Crate | What it owns |
 |---|---|
 | `culprit-core` | The model (`Snapshot`, `Plan`, `Finding`), the `Check` and `Provider` traits, plan insights, `Coverage`. No I/O. |
-| `culprit-mssql`, `culprit-postgres`, `culprit-mysql`, `culprit-sqlite` | Providers: the sources for one engine, and explain, live sessions, deadlocks. SQLite reads a file, read-only: schema, statistics, settings and plans, no sessions or waits. |
+| `culprit-mssql`, `culprit-postgres`, `culprit-yugabyte`, `culprit-mysql`, `culprit-sqlite` | Providers: the sources for one engine, and explain, live sessions, deadlocks where supported. YugabyteDB owns DocDB measurements and shares PostgreSQL wire transport, not its heap collectors. SQLite reads a file, read-only: schema, statistics, settings and plans, no sessions or waits. |
 | `culprit-querylog` | Logs an application's framework already writes (Rails, Django, EF Core, Phoenix/Ecto, JSON lines), read into a `Workload` for an engine that keeps no statement history: one module per format behind a `Format` trait, statements grouped by `culprit_core::fingerprint`. The log's own timestamps are its period (`Workload.log`), never "the last N hours". |
 | `culprit-checks` | The analysis pipeline, every check, the refine rules, and the views built on a report. |
 | `culprit-engine` | Connections and secrets, the provider registry, scans, saved reports and the history between scans. |
@@ -132,6 +132,13 @@ and snapshot assembly. Individual source errors still become notes and unavailab
 PostgreSQL's native parser owns generic-plan and normalized-statement annotations in `plan_json.rs`, so reparsing a
 saved plan does not depend on collection orchestration. Shared identifier quoting stays with the SQL protocol helpers
 in `rows.rs`. The public provider traits and PostgreSQL's SQL helper exports retain their original interfaces.
+
+YugabyteDB has its own probe, catalogs, workload, native DIST plan reader and live sources. The shared `wire` boundary
+in `culprit-postgres` supplies authenticated/TLS sessions, planning ownership checks and bounded SQL execution.
+`EngineSpec::sql_syntax` shares YSQL's PostgreSQL grammar without inheriting heap, buffer-cache or vacuum measurements.
+Native index hash groups remain separate from ordered keys. Distributed workload comparisons bind the contributing
+node set and each node's reset epoch through `CounterSet`; partial contributors or unknown epochs cannot establish a
+continuous counter history. Local index zeros cannot establish cluster-wide absence.
 
 ### Platforms: where a database runs
 

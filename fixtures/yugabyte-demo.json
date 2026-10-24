@@ -1,0 +1,2880 @@
+{
+  "operations": {
+    "log_failures": [],
+    "spaces": [],
+    "counters": [],
+    "sequences": [],
+    "multixacts": [],
+    "sqlite": null,
+    "cluster": null
+  },
+  "format": 1,
+  "id": "20261024T010108.861346Z",
+  "connection": "yugabyte-demo",
+  "environment": "local",
+  "taken_at": "2026-10-24T01:01:08.861346Z",
+  "duration_ms": 4590.887624999999,
+  "server": {
+    "engine": "yugabyte",
+    "product": "YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12)",
+    "version": "2026.1.2.0-b0",
+    "edition": null,
+    "cloud": null,
+    "platform": null,
+    "database": "culprit_yugabyte",
+    "database_size_bytes": null,
+    "started_at": "2026-10-23T20:59:48.624459Z",
+    "read_only_session": true,
+    "capabilities": [
+      "pg-stat-statements",
+      "query-plans",
+      "table-stats",
+      "statistics",
+      "showplan"
+    ],
+    "missing": [
+      {
+        "capability": "index-usage",
+        "reason": "Node-local index counters cannot establish cluster-wide usage",
+        "fix": "Have an administrator configure and authorize YugabyteDB's global views before collecting cluster-wide index usage."
+      }
+    ]
+  },
+  "workload": {
+    "source": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416)",
+    "kind": "statement-stats",
+    "windowed": false,
+    "log": null,
+    "window_start": "2026-10-24T01:01:01.010747Z",
+    "window_end": "2026-10-24T01:01:08.861346Z",
+    "window_hours": 0.002180721958478292,
+    "total_time_ms": 796.474923,
+    "total_cpu_ms": null,
+    "total_executions": 130.0,
+    "query_count": 5.0,
+    "queries": [
+      {
+        "requests": null,
+        "resolved_write_target": null,
+        "id": "8345917977273313509",
+        "query_hash": null,
+        "text": "SELECT id,total FROM public.orders WHERE created_at >= $1::timestamptz ORDER BY created_at LIMIT $2",
+        "parameters": null,
+        "object_name": null,
+        "executions": 30.0,
+        "total_time_ms": 390.40437899999995,
+        "mean_time_ms": 13.013479299999998,
+        "max_time_ms": 22.457015000000002,
+        "stddev_time_ms": 3.978544455437089,
+        "cpu_time_ms": null,
+        "rows": 600.0,
+        "logical_reads": null,
+        "physical_reads": null,
+        "temp_writes": null,
+        "first_seen": null,
+        "last_seen": null,
+        "plans": [],
+        "plan": {
+          "engine": "yugabyte",
+          "kind": "generic",
+          "statement": "SELECT id,total FROM public.orders WHERE created_at >= $1::timestamptz ORDER BY created_at LIMIT $2",
+          "total_cost": 2011.82,
+          "root": {
+            "id": 0,
+            "op": "Limit",
+            "kind": "other",
+            "detail": null,
+            "object": null,
+            "index": null,
+            "seek_predicate": null,
+            "predicate": null,
+            "est_rows": 667.0,
+            "est_executions": 1.0,
+            "act_rows": null,
+            "act_executions": null,
+            "rows_read": null,
+            "table_rows": null,
+            "subtree_cost": 2011.82,
+            "self_cost": 0.0,
+            "act_time_ms": null,
+            "runtime": null,
+            "warnings": [],
+            "props": {
+              "Async Capable": "false",
+              "Parallel Aware": "false",
+              "Plan Width": "22",
+              "Startup Cost": "2010.15"
+            },
+            "facts": {
+              "expression_cache": false,
+              "conditions": [],
+              "conversions": [],
+              "user_functions": [],
+              "columns_without_statistics": [],
+              "possible_index_names": [],
+              "estimated_row_bytes": 22.0
+            },
+            "children": [
+              {
+                "id": 1,
+                "op": "Sort",
+                "kind": "sort",
+                "detail": "sort key: orders.created_at",
+                "object": null,
+                "index": null,
+                "seek_predicate": null,
+                "predicate": null,
+                "est_rows": 6667.0,
+                "est_executions": 1.0,
+                "act_rows": null,
+                "act_executions": null,
+                "rows_read": null,
+                "table_rows": null,
+                "subtree_cost": 2026.82,
+                "self_cost": 440.1199999999999,
+                "act_time_ms": null,
+                "runtime": null,
+                "warnings": [],
+                "props": {
+                  "Async Capable": "false",
+                  "Parallel Aware": "false",
+                  "Parent Relationship": "Outer",
+                  "Plan Width": "22",
+                  "Sort Key": "orders.created_at",
+                  "Startup Cost": "2010.15"
+                },
+                "facts": {
+                  "parent_relationship": {
+                    "kind": "outer"
+                  },
+                  "expression_cache": false,
+                  "conditions": [],
+                  "conversions": [],
+                  "user_functions": [],
+                  "columns_without_statistics": [],
+                  "possible_index_names": [],
+                  "estimated_row_bytes": 22.0
+                },
+                "children": [
+                  {
+                    "id": 2,
+                    "op": "Seq Scan",
+                    "kind": "scan",
+                    "detail": null,
+                    "object": "public.orders",
+                    "index": null,
+                    "seek_predicate": null,
+                    "predicate": "(orders.created_at >= $1)",
+                    "est_rows": 6667.0,
+                    "est_executions": 1.0,
+                    "act_rows": null,
+                    "act_executions": null,
+                    "rows_read": null,
+                    "table_rows": null,
+                    "subtree_cost": 1586.7,
+                    "self_cost": 1586.7,
+                    "act_time_ms": null,
+                    "runtime": null,
+                    "warnings": [],
+                    "props": {
+                      "Alias": "orders",
+                      "Async Capable": "false",
+                      "Parallel Aware": "false",
+                      "Parent Relationship": "Outer",
+                      "Plan Width": "22",
+                      "Startup Cost": "21.09",
+                      "Storage Filter": "(orders.created_at >= $1)"
+                    },
+                    "facts": {
+                      "parent_relationship": {
+                        "kind": "outer"
+                      },
+                      "table_alias": "orders",
+                      "expression_cache": false,
+                      "conditions": [
+                        "(orders.created_at >= $1)"
+                      ],
+                      "conversions": [],
+                      "user_functions": [],
+                      "columns_without_statistics": [],
+                      "possible_index_names": [],
+                      "estimated_row_bytes": 22.0
+                    },
+                    "children": []
+                  }
+                ]
+              }
+            ]
+          },
+          "warnings": [],
+          "index_hints": [],
+          "props": {
+            "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+            "Query Identifier": "-6941871051585356349"
+          },
+          "facts": {
+            "trigger_timings": [],
+            "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+            "conversions": [],
+            "changed_columns": [],
+            "query_identifier": "-6941871051585356349"
+          },
+          "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Limit\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 2010.15,\n      \"Total Cost\": 2011.82,\n      \"Plan Rows\": 667,\n      \"Plan Width\": 22,\n      \"Output\": [\"id\", \"total\", \"created_at\"],\n      \"Plans\": [\n        {\n          \"Node Type\": \"Sort\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Startup Cost\": 2010.15,\n          \"Total Cost\": 2026.82,\n          \"Plan Rows\": 6667,\n          \"Plan Width\": 22,\n          \"Output\": [\"id\", \"total\", \"created_at\"],\n          \"Sort Key\": [\"orders.created_at\"],\n          \"Plans\": [\n            {\n              \"Node Type\": \"Seq Scan\",\n              \"Parent Relationship\": \"Outer\",\n              \"Parallel Aware\": false,\n              \"Async Capable\": false,\n              \"Relation Name\": \"orders\",\n              \"Schema\": \"public\",\n              \"Alias\": \"orders\",\n              \"Startup Cost\": 21.09,\n              \"Total Cost\": 1586.70,\n              \"Plan Rows\": 6667,\n              \"Plan Width\": 22,\n              \"Output\": [\"id\", \"total\", \"created_at\"],\n              \"Storage Filter\": \"(orders.created_at >= $1)\"\n            }\n          ]\n        }\n      ]\n    },\n    \"Query Identifier\": -6941871051585356349\n  }\n]"
+        },
+        "waits": [],
+        "trend": null,
+        "spread": {
+          "min_ms": 7.4642550000000005,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "histogram": [],
+          "lock_ms": null
+        },
+        "costs": {
+          "failed": null,
+          "aborted": null,
+          "aborted_mean_ms": null,
+          "warnings": null,
+          "top_error": null,
+          "plan_ms": null,
+          "plans": null,
+          "jit_ms": null,
+          "jit_functions": null,
+          "log_bytes": null,
+          "log_share": null,
+          "log_full_pages": null,
+          "row_bytes": null,
+          "compile_history": null,
+          "docdb": {
+            "read_requests": 210.0,
+            "write_requests": 0.0,
+            "read_operations": 210.0,
+            "write_operations": 0.0,
+            "rows_scanned": 600000.0,
+            "rows_returned": 211230.0,
+            "read_ms": 215.28299999999996,
+            "write_ms": 0.0,
+            "wait_ms": 281.8461659999999,
+            "catalog_ms": 51.047044,
+            "retries": 0.0,
+            "conflict_retries": 0.0,
+            "read_restarts": 0.0,
+            "obsolete_rows_scanned": 0.0,
+            "seeks": 212.0,
+            "nexts": 600182.0,
+            "prevs": 0.0
+          }
+        },
+        "rows_affected": null,
+        "plan_id": null
+      },
+      {
+        "requests": null,
+        "resolved_write_target": null,
+        "id": "4357247400045295631",
+        "query_hash": null,
+        "text": "SELECT count(*) FROM public.orders WHERE status = $1",
+        "parameters": null,
+        "object_name": null,
+        "executions": 30.0,
+        "total_time_ms": 168.654215,
+        "mean_time_ms": 5.621807166666667,
+        "max_time_ms": 12.022566,
+        "stddev_time_ms": 2.3080068109073673,
+        "cpu_time_ms": null,
+        "rows": 30.0,
+        "logical_reads": null,
+        "physical_reads": null,
+        "temp_writes": null,
+        "first_seen": null,
+        "last_seen": null,
+        "plans": [],
+        "plan": {
+          "engine": "yugabyte",
+          "kind": "generic",
+          "statement": "SELECT count(*) FROM public.orders WHERE status = $1",
+          "total_cost": 1572.93,
+          "root": {
+            "id": 0,
+            "op": "Aggregate",
+            "kind": "aggregate",
+            "detail": null,
+            "object": null,
+            "index": null,
+            "seek_predicate": null,
+            "predicate": null,
+            "est_rows": 1.0,
+            "est_executions": 1.0,
+            "act_rows": null,
+            "act_executions": null,
+            "rows_read": null,
+            "table_rows": null,
+            "subtree_cost": 1572.93,
+            "self_cost": 25.00999999999999,
+            "act_time_ms": null,
+            "runtime": null,
+            "warnings": [],
+            "props": {
+              "Async Capable": "false",
+              "Parallel Aware": "false",
+              "Partial Mode": "Finalize",
+              "Plan Width": "8",
+              "Startup Cost": "1572.92",
+              "Strategy": "Plain"
+            },
+            "facts": {
+              "aggregate_strategy": "Plain",
+              "expression_cache": false,
+              "conditions": [],
+              "conversions": [],
+              "user_functions": [],
+              "columns_without_statistics": [],
+              "possible_index_names": [],
+              "estimated_row_bytes": 8.0
+            },
+            "children": [
+              {
+                "id": 1,
+                "op": "Seq Scan",
+                "kind": "scan",
+                "detail": null,
+                "object": "public.orders",
+                "index": null,
+                "seek_predicate": null,
+                "predicate": "(orders.status = $1)",
+                "est_rows": 10000.0,
+                "est_executions": 1.0,
+                "act_rows": null,
+                "act_executions": null,
+                "rows_read": null,
+                "table_rows": null,
+                "subtree_cost": 1547.92,
+                "self_cost": 1547.92,
+                "act_time_ms": null,
+                "runtime": null,
+                "warnings": [],
+                "props": {
+                  "Alias": "orders",
+                  "Async Capable": "false",
+                  "Parallel Aware": "false",
+                  "Parent Relationship": "Outer",
+                  "Partial Aggregate": "true",
+                  "Plan Width": "0",
+                  "Startup Cost": "21.09",
+                  "Storage Filter": "(orders.status = $1)"
+                },
+                "facts": {
+                  "parent_relationship": {
+                    "kind": "outer"
+                  },
+                  "table_alias": "orders",
+                  "expression_cache": false,
+                  "conditions": [
+                    "(orders.status = $1)"
+                  ],
+                  "conversions": [],
+                  "user_functions": [],
+                  "columns_without_statistics": [],
+                  "possible_index_names": [],
+                  "estimated_row_bytes": 0.0
+                },
+                "children": []
+              }
+            ]
+          },
+          "warnings": [],
+          "index_hints": [],
+          "props": {
+            "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+            "Query Identifier": "-3816874626829003867"
+          },
+          "facts": {
+            "trigger_timings": [],
+            "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+            "conversions": [],
+            "changed_columns": [],
+            "query_identifier": "-3816874626829003867"
+          },
+          "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Aggregate\",\n      \"Strategy\": \"Plain\",\n      \"Partial Mode\": \"Finalize\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 1572.92,\n      \"Total Cost\": 1572.93,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 8,\n      \"Output\": [\"count(*)\"],\n      \"Plans\": [\n        {\n          \"Node Type\": \"Seq Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Relation Name\": \"orders\",\n          \"Schema\": \"public\",\n          \"Alias\": \"orders\",\n          \"Startup Cost\": 21.09,\n          \"Total Cost\": 1547.92,\n          \"Plan Rows\": 10000,\n          \"Plan Width\": 0,\n          \"Storage Filter\": \"(orders.status = $1)\",\n          \"Partial Aggregate\": true\n        }\n      ]\n    },\n    \"Query Identifier\": -3816874626829003867\n  }\n]"
+        },
+        "waits": [],
+        "trend": null,
+        "spread": {
+          "min_ms": 3.586774,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "histogram": [],
+          "lock_ms": null
+        },
+        "costs": {
+          "failed": null,
+          "aborted": null,
+          "aborted_mean_ms": null,
+          "warnings": null,
+          "top_error": null,
+          "plan_ms": null,
+          "plans": null,
+          "jit_ms": null,
+          "jit_functions": null,
+          "log_bytes": null,
+          "log_share": null,
+          "log_full_pages": null,
+          "row_bytes": null,
+          "compile_history": null,
+          "docdb": {
+            "read_requests": 30.0,
+            "write_requests": 0.0,
+            "read_operations": 30.0,
+            "write_operations": 0.0,
+            "rows_scanned": 600000.0,
+            "rows_returned": 30.0,
+            "read_ms": 139.524,
+            "write_ms": 0.0,
+            "wait_ms": 163.826446,
+            "catalog_ms": 7.738046,
+            "retries": 0.0,
+            "conflict_retries": 0.0,
+            "read_restarts": 0.0,
+            "obsolete_rows_scanned": 0.0,
+            "seeks": 30.0,
+            "nexts": 600000.0,
+            "prevs": 0.0
+          }
+        },
+        "rows_affected": null,
+        "plan_id": null
+      },
+      {
+        "requests": null,
+        "resolved_write_target": null,
+        "id": "466454478821061062",
+        "query_hash": null,
+        "text": "SELECT id,status,total FROM public.orders WHERE customer_id = $1 LIMIT $2",
+        "parameters": null,
+        "object_name": null,
+        "executions": 30.0,
+        "total_time_ms": 146.55794600000002,
+        "mean_time_ms": 4.885264866666668,
+        "max_time_ms": 12.385815,
+        "stddev_time_ms": 2.2397893587230877,
+        "cpu_time_ms": null,
+        "rows": 300.0,
+        "logical_reads": null,
+        "physical_reads": null,
+        "temp_writes": null,
+        "first_seen": null,
+        "last_seen": null,
+        "plans": [],
+        "plan": {
+          "engine": "yugabyte",
+          "kind": "generic",
+          "statement": "SELECT id,status,total FROM public.orders WHERE customer_id = $1 LIMIT $2",
+          "total_cost": 148.81,
+          "root": {
+            "id": 0,
+            "op": "Limit",
+            "kind": "other",
+            "detail": null,
+            "object": null,
+            "index": null,
+            "seek_predicate": null,
+            "predicate": null,
+            "est_rows": 1.0,
+            "est_executions": 1.0,
+            "act_rows": null,
+            "act_executions": null,
+            "rows_read": null,
+            "table_rows": null,
+            "subtree_cost": 148.81,
+            "self_cost": 0.0,
+            "act_time_ms": null,
+            "runtime": null,
+            "warnings": [],
+            "props": {
+              "Async Capable": "false",
+              "Parallel Aware": "false",
+              "Plan Width": "22",
+              "Startup Cost": "21.09"
+            },
+            "facts": {
+              "expression_cache": false,
+              "conditions": [],
+              "conversions": [],
+              "user_functions": [],
+              "columns_without_statistics": [],
+              "possible_index_names": [],
+              "estimated_row_bytes": 22.0
+            },
+            "children": [
+              {
+                "id": 1,
+                "op": "Seq Scan",
+                "kind": "scan",
+                "detail": null,
+                "object": "public.orders",
+                "index": null,
+                "seek_predicate": null,
+                "predicate": "(orders.customer_id = $1)",
+                "est_rows": 10.0,
+                "est_executions": 1.0,
+                "act_rows": null,
+                "act_executions": null,
+                "rows_read": null,
+                "table_rows": null,
+                "subtree_cost": 1298.35,
+                "self_cost": 1298.35,
+                "act_time_ms": null,
+                "runtime": null,
+                "warnings": [],
+                "props": {
+                  "Alias": "orders",
+                  "Async Capable": "false",
+                  "Parallel Aware": "false",
+                  "Parent Relationship": "Outer",
+                  "Plan Width": "22",
+                  "Startup Cost": "21.09",
+                  "Storage Filter": "(orders.customer_id = $1)"
+                },
+                "facts": {
+                  "parent_relationship": {
+                    "kind": "outer"
+                  },
+                  "table_alias": "orders",
+                  "expression_cache": false,
+                  "conditions": [
+                    "(orders.customer_id = $1)"
+                  ],
+                  "conversions": [],
+                  "user_functions": [],
+                  "columns_without_statistics": [],
+                  "possible_index_names": [],
+                  "estimated_row_bytes": 22.0
+                },
+                "children": []
+              }
+            ]
+          },
+          "warnings": [],
+          "index_hints": [],
+          "props": {
+            "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+            "Query Identifier": "666094635122827008"
+          },
+          "facts": {
+            "trigger_timings": [],
+            "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+            "conversions": [],
+            "changed_columns": [],
+            "query_identifier": "666094635122827008"
+          },
+          "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Limit\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 21.09,\n      \"Total Cost\": 148.81,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 22,\n      \"Output\": [\"id\", \"status\", \"total\"],\n      \"Plans\": [\n        {\n          \"Node Type\": \"Seq Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Relation Name\": \"orders\",\n          \"Schema\": \"public\",\n          \"Alias\": \"orders\",\n          \"Startup Cost\": 21.09,\n          \"Total Cost\": 1298.35,\n          \"Plan Rows\": 10,\n          \"Plan Width\": 22,\n          \"Output\": [\"id\", \"status\", \"total\"],\n          \"Storage Filter\": \"(orders.customer_id = $1)\"\n        }\n      ]\n    },\n    \"Query Identifier\": 666094635122827008\n  }\n]"
+        },
+        "waits": [],
+        "trend": null,
+        "spread": {
+          "min_ms": 3.063901,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "histogram": [],
+          "lock_ms": null
+        },
+        "costs": {
+          "failed": null,
+          "aborted": null,
+          "aborted_mean_ms": null,
+          "warnings": null,
+          "top_error": null,
+          "plan_ms": null,
+          "plans": null,
+          "jit_ms": null,
+          "jit_functions": null,
+          "log_bytes": null,
+          "log_share": null,
+          "log_full_pages": null,
+          "row_bytes": null,
+          "compile_history": null,
+          "docdb": {
+            "read_requests": 30.0,
+            "write_requests": 0.0,
+            "read_operations": 30.0,
+            "write_operations": 0.0,
+            "rows_scanned": 600000.0,
+            "rows_returned": 300.0,
+            "read_ms": 118.63499999999998,
+            "write_ms": 0.0,
+            "wait_ms": 129.87961199999998,
+            "catalog_ms": 13.605304,
+            "retries": 0.0,
+            "conflict_retries": 0.0,
+            "read_restarts": 0.0,
+            "obsolete_rows_scanned": 0.0,
+            "seeks": 30.0,
+            "nexts": 600000.0,
+            "prevs": 0.0
+          }
+        },
+        "rows_affected": null,
+        "plan_id": null
+      },
+      {
+        "requests": null,
+        "resolved_write_target": null,
+        "id": "-71879613880347319",
+        "query_hash": null,
+        "text": "SELECT o.id,c.name FROM public.orders o JOIN public.customers c ON c.id=o.customer_id WHERE o.id < $1",
+        "parameters": null,
+        "object_name": null,
+        "executions": 10.0,
+        "total_time_ms": 70.063698,
+        "mean_time_ms": 7.0063698,
+        "max_time_ms": 13.22831,
+        "stddev_time_ms": 2.40390933648392,
+        "cpu_time_ms": null,
+        "rows": 200.0,
+        "logical_reads": null,
+        "physical_reads": null,
+        "temp_writes": null,
+        "first_seen": null,
+        "last_seen": null,
+        "plans": [],
+        "plan": {
+          "engine": "yugabyte",
+          "kind": "generic",
+          "statement": "SELECT o.id,c.name FROM public.orders o JOIN public.customers c ON c.id=o.customer_id WHERE o.id < $1",
+          "total_cost": 1805.08,
+          "root": {
+            "id": 0,
+            "op": "Hash Join",
+            "kind": "join",
+            "detail": "Inner join",
+            "object": null,
+            "index": null,
+            "seek_predicate": null,
+            "predicate": "(o.customer_id = c.id)",
+            "est_rows": 6667.0,
+            "est_executions": 1.0,
+            "act_rows": null,
+            "act_executions": null,
+            "rows_read": null,
+            "table_rows": null,
+            "subtree_cost": 1805.08,
+            "self_cost": 116.67000000000007,
+            "act_time_ms": null,
+            "runtime": null,
+            "warnings": [],
+            "props": {
+              "Async Capable": "false",
+              "Hash Cond": "(o.customer_id = c.id)",
+              "Inner Unique": "true",
+              "Join Type": "Inner",
+              "Parallel Aware": "false",
+              "Plan Width": "21",
+              "Startup Cost": "244.43"
+            },
+            "facts": {
+              "expression_cache": false,
+              "conditions": [
+                "(o.customer_id = c.id)"
+              ],
+              "conversions": [],
+              "user_functions": [],
+              "columns_without_statistics": [],
+              "possible_index_names": [],
+              "estimated_row_bytes": 21.0
+            },
+            "children": [
+              {
+                "id": 1,
+                "op": "Seq Scan",
+                "kind": "scan",
+                "detail": null,
+                "object": "public.orders",
+                "index": null,
+                "seek_predicate": null,
+                "predicate": "(o.id < $1)",
+                "est_rows": 6667.0,
+                "est_executions": 1.0,
+                "act_rows": null,
+                "act_executions": null,
+                "rows_read": null,
+                "table_rows": null,
+                "subtree_cost": 1490.06,
+                "self_cost": 1490.06,
+                "act_time_ms": null,
+                "runtime": null,
+                "warnings": [],
+                "props": {
+                  "Alias": "o",
+                  "Async Capable": "false",
+                  "Parallel Aware": "false",
+                  "Parent Relationship": "Outer",
+                  "Plan Width": "12",
+                  "Startup Cost": "21.09",
+                  "Storage Filter": "(o.id < $1)"
+                },
+                "facts": {
+                  "parent_relationship": {
+                    "kind": "outer"
+                  },
+                  "table_alias": "o",
+                  "expression_cache": false,
+                  "conditions": [
+                    "(o.id < $1)"
+                  ],
+                  "conversions": [],
+                  "user_functions": [],
+                  "columns_without_statistics": [],
+                  "possible_index_names": [],
+                  "estimated_row_bytes": 12.0
+                },
+                "children": []
+              },
+              {
+                "id": 2,
+                "op": "Hash",
+                "kind": "other",
+                "detail": null,
+                "object": null,
+                "index": null,
+                "seek_predicate": null,
+                "predicate": null,
+                "est_rows": 2000.0,
+                "est_executions": 1.0,
+                "act_rows": null,
+                "act_executions": null,
+                "rows_read": null,
+                "table_rows": null,
+                "subtree_cost": 198.35,
+                "self_cost": 0.0,
+                "act_time_ms": null,
+                "runtime": null,
+                "warnings": [],
+                "props": {
+                  "Async Capable": "false",
+                  "Parallel Aware": "false",
+                  "Parent Relationship": "Inner",
+                  "Plan Width": "17",
+                  "Startup Cost": "198.35"
+                },
+                "facts": {
+                  "parent_relationship": {
+                    "kind": "inner"
+                  },
+                  "expression_cache": false,
+                  "conditions": [],
+                  "conversions": [],
+                  "user_functions": [],
+                  "columns_without_statistics": [],
+                  "possible_index_names": [],
+                  "estimated_row_bytes": 17.0
+                },
+                "children": [
+                  {
+                    "id": 3,
+                    "op": "Seq Scan",
+                    "kind": "scan",
+                    "detail": null,
+                    "object": "public.customers",
+                    "index": null,
+                    "seek_predicate": null,
+                    "predicate": null,
+                    "est_rows": 2000.0,
+                    "est_executions": 1.0,
+                    "act_rows": null,
+                    "act_executions": null,
+                    "rows_read": null,
+                    "table_rows": null,
+                    "subtree_cost": 198.35,
+                    "self_cost": 198.35,
+                    "act_time_ms": null,
+                    "runtime": null,
+                    "warnings": [],
+                    "props": {
+                      "Alias": "c",
+                      "Async Capable": "false",
+                      "Parallel Aware": "false",
+                      "Parent Relationship": "Outer",
+                      "Plan Width": "17",
+                      "Startup Cost": "21.08"
+                    },
+                    "facts": {
+                      "parent_relationship": {
+                        "kind": "outer"
+                      },
+                      "table_alias": "c",
+                      "expression_cache": false,
+                      "conditions": [],
+                      "conversions": [],
+                      "user_functions": [],
+                      "columns_without_statistics": [],
+                      "possible_index_names": [],
+                      "estimated_row_bytes": 17.0
+                    },
+                    "children": []
+                  }
+                ]
+              }
+            ]
+          },
+          "warnings": [],
+          "index_hints": [],
+          "props": {
+            "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+            "Query Identifier": "-3752950731635687127"
+          },
+          "facts": {
+            "trigger_timings": [],
+            "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+            "conversions": [],
+            "changed_columns": [],
+            "query_identifier": "-3752950731635687127"
+          },
+          "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Hash Join\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Join Type\": \"Inner\",\n      \"Startup Cost\": 244.43,\n      \"Total Cost\": 1805.08,\n      \"Plan Rows\": 6667,\n      \"Plan Width\": 21,\n      \"Output\": [\"o.id\", \"c.name\"],\n      \"Inner Unique\": true,\n      \"Hash Cond\": \"(o.customer_id = c.id)\",\n      \"Plans\": [\n        {\n          \"Node Type\": \"Seq Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Relation Name\": \"orders\",\n          \"Schema\": \"public\",\n          \"Alias\": \"o\",\n          \"Startup Cost\": 21.09,\n          \"Total Cost\": 1490.06,\n          \"Plan Rows\": 6667,\n          \"Plan Width\": 12,\n          \"Output\": [\"o.id\", \"o.customer_id\"],\n          \"Storage Filter\": \"(o.id < $1)\"\n        },\n        {\n          \"Node Type\": \"Hash\",\n          \"Parent Relationship\": \"Inner\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Startup Cost\": 198.35,\n          \"Total Cost\": 198.35,\n          \"Plan Rows\": 2000,\n          \"Plan Width\": 17,\n          \"Output\": [\"c.name\", \"c.id\"],\n          \"Plans\": [\n            {\n              \"Node Type\": \"Seq Scan\",\n              \"Parent Relationship\": \"Outer\",\n              \"Parallel Aware\": false,\n              \"Async Capable\": false,\n              \"Relation Name\": \"customers\",\n              \"Schema\": \"public\",\n              \"Alias\": \"c\",\n              \"Startup Cost\": 21.08,\n              \"Total Cost\": 198.35,\n              \"Plan Rows\": 2000,\n              \"Plan Width\": 17,\n              \"Output\": [\"c.name\", \"c.id\"]\n            }\n          ]\n        }\n      ]\n    },\n    \"Query Identifier\": -3752950731635687127\n  }\n]"
+        },
+        "waits": [],
+        "trend": null,
+        "spread": {
+          "min_ms": 4.357978999999999,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "histogram": [],
+          "lock_ms": null
+        },
+        "costs": {
+          "failed": null,
+          "aborted": null,
+          "aborted_mean_ms": null,
+          "warnings": null,
+          "top_error": null,
+          "plan_ms": null,
+          "plans": null,
+          "jit_ms": null,
+          "jit_functions": null,
+          "log_bytes": null,
+          "log_share": null,
+          "log_full_pages": null,
+          "row_bytes": null,
+          "compile_history": null,
+          "docdb": {
+            "read_requests": 20.0,
+            "write_requests": 0.0,
+            "read_operations": 20.0,
+            "write_operations": 0.0,
+            "rows_scanned": 200200.0,
+            "rows_returned": 400.0,
+            "read_ms": 42.918,
+            "write_ms": 0.0,
+            "wait_ms": 65.81943000000001,
+            "catalog_ms": 23.941049,
+            "retries": 0.0,
+            "conflict_retries": 0.0,
+            "read_restarts": 0.0,
+            "obsolete_rows_scanned": 0.0,
+            "seeks": 202.0,
+            "nexts": 200562.0,
+            "prevs": 0.0
+          }
+        },
+        "rows_affected": null,
+        "plan_id": null
+      },
+      {
+        "requests": null,
+        "resolved_write_target": null,
+        "id": "-1395695495724611761",
+        "query_hash": null,
+        "text": "SELECT name FROM public.customers WHERE id = $1",
+        "parameters": null,
+        "object_name": null,
+        "executions": 30.0,
+        "total_time_ms": 20.794685,
+        "mean_time_ms": 0.6931561666666667,
+        "max_time_ms": 2.33203,
+        "stddev_time_ms": 0.5166465768475961,
+        "cpu_time_ms": null,
+        "rows": 30.0,
+        "logical_reads": null,
+        "physical_reads": null,
+        "temp_writes": null,
+        "first_seen": null,
+        "last_seen": null,
+        "plans": [],
+        "plan": {
+          "engine": "yugabyte",
+          "kind": "generic",
+          "statement": "SELECT name FROM public.customers WHERE id = $1",
+          "total_cost": 21.19,
+          "root": {
+            "id": 0,
+            "op": "Index Scan",
+            "kind": "seek",
+            "detail": null,
+            "object": "public.customers",
+            "index": "customers_pkey",
+            "seek_predicate": "(customers.id = $1)",
+            "predicate": null,
+            "est_rows": 1.0,
+            "est_executions": 1.0,
+            "act_rows": null,
+            "act_executions": null,
+            "rows_read": null,
+            "table_rows": null,
+            "subtree_cost": 21.19,
+            "self_cost": 21.19,
+            "act_time_ms": null,
+            "runtime": null,
+            "warnings": [],
+            "props": {
+              "Alias": "customers",
+              "Async Capable": "false",
+              "Index Cond": "(customers.id = $1)",
+              "Parallel Aware": "false",
+              "Plan Width": "13",
+              "Scan Direction": "NoMovement",
+              "Startup Cost": "21.08"
+            },
+            "facts": {
+              "table_alias": "customers",
+              "expression_cache": false,
+              "conditions": [
+                "(customers.id = $1)"
+              ],
+              "conversions": [],
+              "user_functions": [],
+              "columns_without_statistics": [],
+              "possible_index_names": [],
+              "estimated_row_bytes": 13.0
+            },
+            "children": []
+          },
+          "warnings": [],
+          "index_hints": [],
+          "props": {
+            "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+            "Query Identifier": "-4782642729174849964"
+          },
+          "facts": {
+            "trigger_timings": [],
+            "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+            "conversions": [],
+            "changed_columns": [],
+            "query_identifier": "-4782642729174849964"
+          },
+          "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Index Scan\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Scan Direction\": \"NoMovement\",\n      \"Index Name\": \"customers_pkey\",\n      \"Relation Name\": \"customers\",\n      \"Schema\": \"public\",\n      \"Alias\": \"customers\",\n      \"Startup Cost\": 21.08,\n      \"Total Cost\": 21.19,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 13,\n      \"Output\": [\"name\"],\n      \"Index Cond\": \"(customers.id = $1)\"\n    },\n    \"Query Identifier\": -4782642729174849964\n  }\n]"
+        },
+        "waits": [],
+        "trend": null,
+        "spread": {
+          "min_ms": 0.129999,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "histogram": [],
+          "lock_ms": null
+        },
+        "costs": {
+          "failed": null,
+          "aborted": null,
+          "aborted_mean_ms": null,
+          "warnings": null,
+          "top_error": null,
+          "plan_ms": null,
+          "plans": null,
+          "jit_ms": null,
+          "jit_functions": null,
+          "log_bytes": null,
+          "log_share": null,
+          "log_full_pages": null,
+          "row_bytes": null,
+          "compile_history": null,
+          "docdb": {
+            "read_requests": 30.0,
+            "write_requests": 0.0,
+            "read_operations": 30.0,
+            "write_operations": 0.0,
+            "rows_scanned": 30.0,
+            "rows_returned": 30.0,
+            "read_ms": 0.4830000000000001,
+            "write_ms": 0.0,
+            "wait_ms": 18.650073,
+            "catalog_ms": 7.530673,
+            "retries": 0.0,
+            "conflict_retries": 0.0,
+            "read_restarts": 0.0,
+            "obsolete_rows_scanned": 0.0,
+            "seeks": 30.0,
+            "nexts": 30.0,
+            "prevs": 0.0
+          }
+        },
+        "rows_affected": null,
+        "plan_id": null
+      }
+    ],
+    "timeline": null,
+    "untracked_time_ms": null,
+    "hourly_time_ms": null,
+    "min_logged_ms": null,
+    "measurement": {
+      "database": {
+        "engine": "yugabyte",
+        "database": "culprit_yugabyte",
+        "location": {
+          "kind": "server",
+          "host": "127.0.0.1",
+          "port": 55434,
+          "instance": null
+        },
+        "incarnation": "16384"
+      },
+      "source": {
+        "kind": "named",
+        "source": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416):Node:c8c6dab9705b17164f3a71651b17596ed377e86ea3681b0f5f0d801ea5f8d0ae"
+      },
+      "scope": "database",
+      "period": {
+        "kind": "cumulative",
+        "observed_at": "2026-10-24T01:01:08.861346Z",
+        "hours": 0.002180721958478292
+      },
+      "reset": {
+        "kind": "generation",
+        "value": "244ead446f07d534c0d7d0f07cc17c894371cd5357986ad8563e21b2abdbe177"
+      }
+    },
+    "counter_set": {
+      "scope": "node",
+      "members": {
+        "3d2d9e10555b4ae2a683a8402505e416": "2026-10-24T01:01:01.010747Z"
+      },
+      "complete": true
+    }
+  },
+  "tables": [
+    {
+      "schema": "public",
+      "name": "customers",
+      "rows": 2000.0,
+      "total_bytes": 1048576.0,
+      "data_bytes": 1048576.0,
+      "index_bytes": 0.0,
+      "has_primary_key": true,
+      "is_heap": null,
+      "seq_scans": null,
+      "seq_rows_read": null,
+      "index_scans": null,
+      "inserts": null,
+      "updates": null,
+      "deletes": null,
+      "dead_rows": null,
+      "modifications_since_analyze": null,
+      "last_vacuum": null,
+      "last_analyze": null,
+      "forwarded_records": null,
+      "xid_age": null,
+      "forwarded_fetches": null,
+      "storage": {
+        "hot_updates": null,
+        "new_page_updates": null,
+        "fillfactor": null,
+        "bloat_bytes": null,
+        "counter_hours": null,
+        "planner_rows": null,
+        "options": [],
+        "docdb": {
+          "tablets": 1,
+          "hash_key_columns": 1,
+          "colocated": false,
+          "tablegroup": null
+        }
+      },
+      "in_row_bytes": null,
+      "lob_bytes": null,
+      "overflow_bytes": null,
+      "partition_of": null,
+      "counters_since": null,
+      "kind": "docdb"
+    },
+    {
+      "schema": "public",
+      "name": "orders",
+      "rows": 20000.0,
+      "total_bytes": 4676802.0,
+      "data_bytes": 3628226.0,
+      "index_bytes": 1048576.0,
+      "has_primary_key": true,
+      "is_heap": null,
+      "seq_scans": null,
+      "seq_rows_read": null,
+      "index_scans": null,
+      "inserts": null,
+      "updates": null,
+      "deletes": null,
+      "dead_rows": null,
+      "modifications_since_analyze": null,
+      "last_vacuum": null,
+      "last_analyze": null,
+      "forwarded_records": null,
+      "xid_age": null,
+      "forwarded_fetches": null,
+      "storage": {
+        "hot_updates": null,
+        "new_page_updates": null,
+        "fillfactor": null,
+        "bloat_bytes": null,
+        "counter_hours": null,
+        "planner_rows": null,
+        "options": [],
+        "docdb": {
+          "tablets": 1,
+          "hash_key_columns": 1,
+          "colocated": false,
+          "tablegroup": null
+        }
+      },
+      "in_row_bytes": null,
+      "lob_bytes": null,
+      "overflow_bytes": null,
+      "partition_of": null,
+      "counters_since": null,
+      "kind": "docdb"
+    }
+  ],
+  "indexes": [
+    {
+      "schema": "public",
+      "table": "customers",
+      "name": "customers_pkey",
+      "kind": "lsm",
+      "columns": [
+        "id"
+      ],
+      "include": [],
+      "filter": null,
+      "is_unique": true,
+      "is_primary_key": true,
+      "is_clustered": true,
+      "is_disabled": false,
+      "state": null,
+      "maintained": true,
+      "has_statistics": null,
+      "size_bytes": null,
+      "reads": null,
+      "writes": null,
+      "seeks": null,
+      "scans": null,
+      "lookups": null,
+      "last_read": null,
+      "definition": "CREATE UNIQUE INDEX customers_pkey ON public.customers USING lsm (id HASH)",
+      "contention": null,
+      "created_at_latest": null,
+      "partition_of": null,
+      "opclasses": [
+        ""
+      ],
+      "counters_since": null,
+      "docdb": {
+        "hash_columns": [
+          "id"
+        ],
+        "tablets": 1
+      }
+    },
+    {
+      "schema": "public",
+      "table": "orders",
+      "name": "orders_created_idx",
+      "kind": "lsm",
+      "columns": [
+        "created_at"
+      ],
+      "include": [],
+      "filter": null,
+      "is_unique": false,
+      "is_primary_key": false,
+      "is_clustered": false,
+      "is_disabled": false,
+      "state": null,
+      "maintained": true,
+      "has_statistics": null,
+      "size_bytes": 1048576.0,
+      "reads": null,
+      "writes": null,
+      "seeks": null,
+      "scans": null,
+      "lookups": null,
+      "last_read": null,
+      "definition": "CREATE INDEX orders_created_idx ON public.orders USING lsm (created_at HASH)",
+      "contention": null,
+      "created_at_latest": null,
+      "partition_of": null,
+      "opclasses": [
+        ""
+      ],
+      "counters_since": null,
+      "docdb": {
+        "hash_columns": [
+          "created_at"
+        ],
+        "tablets": 1
+      }
+    },
+    {
+      "schema": "public",
+      "table": "orders",
+      "name": "orders_pkey",
+      "kind": "lsm",
+      "columns": [
+        "id"
+      ],
+      "include": [],
+      "filter": null,
+      "is_unique": true,
+      "is_primary_key": true,
+      "is_clustered": true,
+      "is_disabled": false,
+      "state": null,
+      "maintained": true,
+      "has_statistics": null,
+      "size_bytes": null,
+      "reads": null,
+      "writes": null,
+      "seeks": null,
+      "scans": null,
+      "lookups": null,
+      "last_read": null,
+      "definition": "CREATE UNIQUE INDEX orders_pkey ON public.orders USING lsm (id HASH)",
+      "contention": null,
+      "created_at_latest": null,
+      "partition_of": null,
+      "opclasses": [
+        ""
+      ],
+      "counters_since": null,
+      "docdb": {
+        "hash_columns": [
+          "id"
+        ],
+        "tablets": 1
+      }
+    }
+  ],
+  "columns": [
+    {
+      "schema": "public",
+      "table": "customers",
+      "name": "id",
+      "data_type": "integer",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 1
+    },
+    {
+      "schema": "public",
+      "table": "customers",
+      "name": "region",
+      "data_type": "text",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 2
+    },
+    {
+      "schema": "public",
+      "table": "customers",
+      "name": "name",
+      "data_type": "text",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 3
+    },
+    {
+      "schema": "public",
+      "table": "orders",
+      "name": "id",
+      "data_type": "bigint",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 1
+    },
+    {
+      "schema": "public",
+      "table": "orders",
+      "name": "customer_id",
+      "data_type": "integer",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 2
+    },
+    {
+      "schema": "public",
+      "table": "orders",
+      "name": "status",
+      "data_type": "text",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 3
+    },
+    {
+      "schema": "public",
+      "table": "orders",
+      "name": "total",
+      "data_type": "numeric(12,2)",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 4
+    },
+    {
+      "schema": "public",
+      "table": "orders",
+      "name": "created_at",
+      "data_type": "timestamp with time zone",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 5
+    },
+    {
+      "schema": "public",
+      "table": "orders",
+      "name": "notes",
+      "data_type": "text",
+      "nullable": true,
+      "default": null,
+      "generated": false,
+      "ordinal": 6
+    }
+  ],
+  "foreign_keys": [
+    {
+      "name": "orders_customer_id_fkey",
+      "schema": "public",
+      "table": "orders",
+      "columns": [
+        "customer_id"
+      ],
+      "ref_schema": "public",
+      "ref_table": "customers",
+      "ref_columns": [
+        "id"
+      ]
+    }
+  ],
+  "missing_indexes": [],
+  "statistics": [
+    {
+      "schema": "public",
+      "table": "customers",
+      "name": "customers",
+      "last_updated": null,
+      "rows": 2000.0,
+      "rows_sampled": null,
+      "modifications": null,
+      "auto_created": false
+    },
+    {
+      "schema": "public",
+      "table": "orders",
+      "name": "orders",
+      "last_updated": null,
+      "rows": 20000.0,
+      "rows_sampled": null,
+      "modifications": null,
+      "auto_created": false
+    }
+  ],
+  "waits": [],
+  "resources": [],
+  "settings": [
+    {
+      "name": "default_statistics_target",
+      "value": "100",
+      "default_value": "100",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "idle_in_transaction_session_timeout",
+      "value": "30000",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "lock_timeout",
+      "value": "2000",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "plan_cache_mode",
+      "value": "auto",
+      "default_value": "auto",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "statement_timeout",
+      "value": "20000",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "work_mem",
+      "value": "4096",
+      "default_value": "4096",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_allow_block_based_sampling_algorithm",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_allow_dockey_bounds",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_allow_replication_slot_lsn_types",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_allow_replication_slot_ordering_modes",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_allow_separate_requests_for_sampling_stages",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_always_increment_catalog_version_on_ddl",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_ash_circular_buffer_size",
+      "value": "262144",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_ash_sample_size",
+      "value": "500",
+      "default_value": "500",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_ash_sampling_interval_ms",
+      "value": "1000",
+      "default_value": "1000",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_binary_restore",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_bnl_batch_size",
+      "value": "1024",
+      "default_value": "1024",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_bnl_enable_hashing",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_bnl_optimize_first_batch",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_bypass_cond_recheck",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_catcache_list_from_preloaded_limit",
+      "value": "100000",
+      "default_value": "100000",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_cdcsdk_stream_tables_without_primary_key",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_conn_mgr_selective_deallocate",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_ddl_rollback_enabled",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_ddl_transaction_block_enabled",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_debug_log_catcache_events",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_debug_log_docdb_error_backtrace",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_debug_log_docdb_requests",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_debug_log_internal_restarts",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_debug_log_snapshot_mgmt",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_debug_log_snapshot_mgmt_stack_trace",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_debug_original_backtrace_format",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_default_copy_from_rows_per_transaction",
+      "value": "20000",
+      "default_value": "20000",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_default_replica_identity",
+      "value": "CHANGE",
+      "default_value": "CHANGE",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_disable_auto_analyze",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_disable_catalog_version_check",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_disable_ddl_transaction_block_for_read_committed",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_disable_parallel_query_in_ddl",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_disable_pg_snapshot_mgmt_in_repeatable_read",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_disable_transactional_writes",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_disable_wait_for_backends_catalog_version",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_dist_tracecontext",
+      "value": "",
+      "default_value": null,
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_effective_transaction_isolation_level",
+      "value": "read committed",
+      "default_value": "default",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_add_column_missing_default",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_advanced_index_cond_fold",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_advisory_locks",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_alter_table_rewrite",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_ash",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_base_scans_cost_model",
+      "value": "on",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_batchednl",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_bitmapscan",
+      "value": "on",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_cbo",
+      "value": "on",
+      "default_value": "legacy_mode",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_consistent_replication_from_hash_range",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_create_with_table_oid",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_ddl_atomicity_infra",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_ddl_savepoint_infra",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_derived_equalities",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_derived_saops",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_distinct_pushdown",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_docdb_tracing",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_docdb_vector_type",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_expression_pushdown",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_extended_sql_codes",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_fkey_batched_docdb_lookup_when_types_mismatch",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_fkey_catcache",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_geolocation_costing",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_global_views",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_hash_batch_in",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_index_aggregate_pushdown",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_index_backfill_scan_optimization",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_inplace_index_update",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_invalidate_table_cache_entry",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_invalidation_messages",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_listen_notify",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_memory_tracking",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_negative_catcache_entries",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_new_relation_fastpath_write",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_new_relation_fastpath_write_in_txn_blocks",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_nop_alter_role_optimization",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_optimizer_statistics",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_parallel_scan_colocated",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_parallel_scan_hash_sharded",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_parallel_scan_range_sharded",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_parallel_scan_system",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_pg_export_snapshot",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_pg_locks",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_pg_stat_statements_docdb_metrics",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_pg_stat_statements_rpc_stats",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_planner_trace",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_primary_key_decode_from_index",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_query_diagnostics",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_replica_identity",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_replication_commands",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_replication_origin_shared",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_replication_slot_consumption",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_retry_after_non_atomic_commit",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_saop_pushdown",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_sequence_pushdown",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_spi_dist_tracing",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_update_reltuples_after_create_index",
+      "value": "on",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_enable_upsert_mode",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_explain_hide_non_deterministic_fields",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_explicit_row_lock_skip_locked_max_read_ahead",
+      "value": "1",
+      "default_value": "1",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_explicit_row_locking_batch_size",
+      "value": "1024",
+      "default_value": "1024",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_extension_upgrade",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_extra_commands_to_retry",
+      "value": "",
+      "default_value": "",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_extra_commands_to_retry_in_proc",
+      "value": "",
+      "default_value": "",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_fast_path_for_colocated_copy",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_fetch_row_limit",
+      "value": "1024",
+      "default_value": "1024",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_fetch_size_limit",
+      "value": "0",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_fk_references_cache_limit",
+      "value": "65535",
+      "default_value": "65535",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_follower_read_staleness_ms",
+      "value": "30000",
+      "default_value": "30000",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_follower_reads_behavior_before_fixing_20482",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_force_catalog_update_on_next_ddl",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_force_tablespace_locality",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_force_tablespace_locality_oid",
+      "value": "0",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_format_funcs_include_yb_metadata",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_hinted_uids",
+      "value": "",
+      "default_value": "",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_ignore_bool_cond_for_legacy_estimate",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_ignore_freeze_with_copy",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_ignore_pg_class_oids",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_ignore_read_time_in_walsender",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_ignore_relfilenode_ids",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_index_state_flags_update_delay",
+      "value": "0",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_insert_on_conflict_read_batch_size",
+      "value": "1024",
+      "default_value": "1024",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_invalidation_message_expiration_secs",
+      "value": "10",
+      "default_value": "10",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_is_client_ysqlconnmgr",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_lock_pk_single_rpc",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_locks_max_transactions",
+      "value": "16",
+      "default_value": "16",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_locks_min_txn_age",
+      "value": "1000",
+      "default_value": "1000",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_locks_txn_locks_per_tablet",
+      "value": "200",
+      "default_value": "200",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_log_heap_snapshot_on_exit_threshold",
+      "value": "-1",
+      "default_value": "-1",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_log_min_backtraces",
+      "value": "fatal",
+      "default_value": "fatal",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_major_version_upgrade_compatibility",
+      "value": "0",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_make_next_ddl_statement_nonbreaking",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_make_next_ddl_statement_nonincrementing",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_max_merge_scan_streams",
+      "value": "0",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_max_num_invalidation_messages",
+      "value": "8192",
+      "default_value": "8192",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_max_query_layer_retries",
+      "value": "60",
+      "default_value": "60",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_mixed_mode_expression_pushdown",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_mixed_mode_saop_pushdown",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_neg_catcache_ids",
+      "value": "",
+      "default_value": "",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_network_fetch_cost",
+      "value": "4",
+      "default_value": "4",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_non_ddl_txn_for_sys_tables_allowed",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_notifications_poll_sleep_duration_empty_ms",
+      "value": "100",
+      "default_value": "100",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_notifications_poll_sleep_duration_nonempty_ms",
+      "value": "1",
+      "default_value": "1",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_parallel_range_rows",
+      "value": "10000",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_parallel_range_size",
+      "value": "16777216",
+      "default_value": "16777216",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_pg_batch_detection_mechanism",
+      "value": "detect_by_peeking",
+      "default_value": "detect_by_peeking",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_pg_locks_integrate_advisory_locks",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_pg_metrics.log_accesses",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_pg_metrics.log_tcmalloc_stats",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_pg_metrics.webserver_profiler_sample_period_bytes",
+      "value": "1048576",
+      "default_value": "1048576",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_pg_stat_plans_cache_replacement_algorithm",
+      "value": "simple_clock_lru",
+      "default_value": "simple_clock_lru",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_pg_stat_plans_max_cache_size",
+      "value": "5000",
+      "default_value": "5000",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_pg_stat_plans_plan_format",
+      "value": "json",
+      "default_value": "json",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_pg_stat_plans_show_max_exec_params",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_pg_stat_plans_track",
+      "value": "all",
+      "default_value": "all",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_pg_stat_plans_track_catalog_queries",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_pg_stat_plans_verbose_plans",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_planner_custom_plan_for_partition_pruning",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_plpgsql_disable_prefetch_in_for_query",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_prefer_bnl",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_prefetch_column_statistics",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_pushdown_is_not_null",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_pushdown_strict_inequality",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_qpm_compress_text",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_query_diagnostics_bg_worker_interval_ms",
+      "value": "1000",
+      "default_value": "1000",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_query_diagnostics_circular_buffer_size",
+      "value": "64",
+      "default_value": "64",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_query_diagnostics_disable_database_connection_bgworker",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_read_after_commit_visibility",
+      "value": "strict",
+      "default_value": "strict",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_read_from_followers",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_read_time",
+      "value": "0",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_refresh_matview_in_place",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_reorderbuffer_max_changes_in_memory",
+      "value": "4096",
+      "default_value": "4096",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_sampling_algorithm",
+      "value": "block_based_sampling",
+      "default_value": "block_based_sampling",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_silence_advisory_locks_not_supported_error",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_skip_redundant_update_ops",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_speculatively_execute_pl_statements",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_tcmalloc_sample_period",
+      "value": "1048576",
+      "default_value": "1048576",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_analyze_dont_reset_mutations",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_block_index_phase",
+      "value": "",
+      "default_value": "",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_collation",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_delay_after_applying_inval_message_ms",
+      "value": "0",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_delay_next_ddl",
+      "value": "0",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_delay_set_local_tserver_inval_message_ms",
+      "value": "0",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_fail_all_drops",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_fail_drop_after_heap_drop",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_fail_index_state_change",
+      "value": "",
+      "default_value": "",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_fail_next_ddl",
+      "value": "0",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_fail_next_inc_catalog_version",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_fail_table_rewrite_after_creation",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_fatal_after_notifs_queue_write",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_force_parallel",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_index_check_num_batches_per_snapshot",
+      "value": "-1",
+      "default_value": "-1",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_inval_message_portability",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_invalidate_relcache_in_planner",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_make_all_ddl_statements_incrementing",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_notify_queue_max_pages",
+      "value": "0",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_planner_custom_plan_threshold",
+      "value": "5",
+      "default_value": "5",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_preload_catalog_tables",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_reset_retry_counts",
+      "value": "-1",
+      "default_value": "-1",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_skip_binding_scan_keys",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_sleep_before_executor_start_ms",
+      "value": "0",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_slowdown_index_check",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_system_catalogs_creation",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_table_rewrite_keep_old_table",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_test_ybgin_disable_cost_factor",
+      "value": "2",
+      "default_value": "2",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_toast_catcache_threshold",
+      "value": "2048",
+      "default_value": "2048",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_transaction_priority",
+      "value": "0.000000000 (Normal priority transaction)",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_transaction_priority_lower_bound",
+      "value": "0",
+      "default_value": "0",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_transaction_priority_upper_bound",
+      "value": "1",
+      "default_value": "1",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_update_max_cols_size_to_compare",
+      "value": "10240",
+      "default_value": "10240",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_update_num_cols_to_compare",
+      "value": "50",
+      "default_value": "50",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_update_optimization_infra",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_upgrade_to_pg15_completed",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_use_cluster_config_for_geolocation_costing",
+      "value": "on",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_use_hash_splitting_by_default",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_use_internal_auto_analyze_service_conn",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_use_tserver_key_auth",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_user_ddls_preempt_auto_analyze",
+      "value": "on",
+      "default_value": "on",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_wait_for_backends_catalog_version_timeout",
+      "value": "900000",
+      "default_value": "900000",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_walsender_poll_sleep_duration_empty_ms",
+      "value": "10",
+      "default_value": "10",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_walsender_poll_sleep_duration_nonempty_ms",
+      "value": "1",
+      "default_value": "1",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_whitelist_extra_statements_for_pl_speculative_execution",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_xcluster_automatic_mode_target_ddl",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_xcluster_consistency_level",
+      "value": "database",
+      "default_value": "database",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_xcluster_ddl_replication.ddl_queue_primary_key_ddl_end_time",
+      "value": "",
+      "default_value": "",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_xcluster_ddl_replication.ddl_queue_primary_key_query_id",
+      "value": "",
+      "default_value": "",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_xcluster_ddl_replication.enable_manual_ddl_replication",
+      "value": "off",
+      "default_value": "off",
+      "scope": "YSQL node"
+    },
+    {
+      "name": "yb_xcluster_ddl_replication.TEST_replication_role_override",
+      "value": "",
+      "default_value": "",
+      "scope": "YSQL node"
+    }
+  ],
+  "notes": [
+    {
+      "collector": "YSQL scope",
+      "message": "Statement totals cover connected YB-TServer 3d2d9e10555b4ae2a683a8402505e416 only. Cluster-wide statistics require configured, enabled global views and pg_read_all_stats; Culprit does not enable the preview automatically."
+    },
+    {
+      "collector": "DocDB measurements",
+      "message": "PostgreSQL heap pages, buffer ratios, vacuum/dead tuples and XID ages do not describe DocDB. These fields are unknown; YSQL statistics and native DocDB metrics retain their own units."
+    }
+  ],
+  "pressure": null,
+  "options": {
+    "window_days": 7,
+    "top_queries": 60,
+    "plans": 25
+  },
+  "query_families": [],
+  "plan_cache": null,
+  "tuning": null,
+  "deadlocks": null,
+  "constraints": [],
+  "histograms": null,
+  "escalations_before": null,
+  "contention_before": null,
+  "evictions_before": null,
+  "sizes_before": null,
+  "sources": [
+    {
+      "source": "tables",
+      "state": "collected",
+      "reason": null
+    },
+    {
+      "source": "indexes",
+      "state": "collected",
+      "reason": null
+    },
+    {
+      "source": "columns",
+      "state": "collected",
+      "reason": null
+    },
+    {
+      "source": "foreign_keys",
+      "state": "collected",
+      "reason": null
+    },
+    {
+      "source": "settings",
+      "state": "collected",
+      "reason": null
+    },
+    {
+      "source": "docdb-counter-epochs",
+      "state": "collected",
+      "reason": null
+    },
+    {
+      "source": "workload",
+      "state": "collected",
+      "reason": null
+    },
+    {
+      "source": "query costs",
+      "state": "collected",
+      "reason": "Native counters are recorded only while their YSQL collection flags are enabled; disabled families remain unknown, and their totals do not reconstruct work performed before collection began."
+    },
+    {
+      "source": "table storage",
+      "state": "collected",
+      "reason": null
+    },
+    {
+      "source": "sizes",
+      "state": "collected",
+      "reason": null
+    },
+    {
+      "source": "docdb-index-usage",
+      "state": "unavailable",
+      "reason": "Node-local index counters cannot prove cluster-wide use or absence. Configured, enabled global views are required."
+    }
+  ],
+  "identity": {
+    "engine": "yugabyte",
+    "database": "culprit_yugabyte",
+    "location": {
+      "kind": "server",
+      "host": "127.0.0.1",
+      "port": 55434,
+      "instance": null
+    },
+    "incarnation": "16384"
+  }
+}

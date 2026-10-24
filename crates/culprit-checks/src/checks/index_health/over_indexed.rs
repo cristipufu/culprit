@@ -109,7 +109,7 @@ pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
                 secondary.len(),
                 how_many(snapshot, writes_total * secondary.len() as f64, days, "index entry", "index entries")
             ),
-            Engine::Mysql | Engine::Sqlite => format!(
+            Engine::Yugabyte | Engine::Mysql | Engine::Sqlite => format!(
                 "Every insert into {table_name} updates all {} secondary indexes, and every update touching their columns \
                  updates them too: up to {}.",
                 secondary.len(),

@@ -81,6 +81,10 @@ pub(crate) fn widen_index(snapshot: &Snapshot, existing: &IndexStat, include: &[
     }
     if engine != Engine::Mssql {
         return Widening::Refused(match engine {
+            Engine::Yugabyte => format!(
+                "YSQL cannot add included columns to {} in place; build a separate covering index and verify its distributed cost.",
+                existing.name
+            ),
             Engine::Postgres => format!(
                 "PostgreSQL can't add included columns to {} in place; a new index has to be built.",
                 existing.name
@@ -167,7 +171,12 @@ fn bring_back(snapshot: &Snapshot, existing: &IndexStat, wanted: &[String]) -> F
     let engine = snapshot.server.engine;
     let target = qualified(engine, &existing.schema, &existing.table);
     let name = quote(engine, &existing.name);
+
     let (sql, how) = match engine {
+        Engine::Yugabyte => (
+            format!("REINDEX INDEX {};", qualified(engine, &existing.schema, &existing.name)),
+            "the DocDB index is not valid yet; check backfill progress on every node before repairing a failed build, and let an active backfill finish",
+        ),
         Engine::Mssql => {
             // SQL Server can't rebuild a disabled clustered index online.
             let online = supports_online_index(snapshot) && !existing.is_clustered;
@@ -210,7 +219,7 @@ fn bring_back(snapshot: &Snapshot, existing: &IndexStat, wanted: &[String]) -> F
             if wanted.len() == 1 { "it" } else { "them" }
         ));
     }
-    Fix { summary, sql: Some(sql), cost: None }
+    Fix { summary, sql: (engine != Engine::Yugabyte).then_some(sql), cost: None }
 }
 
 /// [`widen_index`] as a fix: the statement, or, where none is safe, the sentence that says why and no SQL.
@@ -255,11 +264,12 @@ pub(crate) fn new_index_fix(
             cost: None,
         };
     }
-    Fix {
-        summary,
-        sql: Some(create_index_sql(snapshot, schema, table, keys, include)),
-        cost: write_cost(snapshot, schema, table),
+    let mut cost = write_cost(snapshot, schema, table);
+    if snapshot.server.engine == Engine::Yugabyte {
+        let native = "Standalone ordered YSQL indexes may start on one range tablet. Review tablet splitting, colocation and write hotspots before deploying the index.";
+        cost = Some(cost.map_or_else(|| native.into(), |cost| format!("{cost} {native}")));
     }
+    Fix { summary, sql: Some(create_index_sql(snapshot, schema, table, keys, include)), cost }
 }
 
 /// What an index to add costs the table's writes, for a fix whose SQL creates it ("this index"). A fix that only says
@@ -366,7 +376,7 @@ pub(crate) fn same_opclasses(a: &IndexStat, b: &IndexStat, n: usize) -> bool {
     let class = |i: &IndexStat, k: usize| {
         i.opclasses.as_ref().and_then(|v| v.get(k)).map(|c| c.trim().to_ascii_lowercase()).unwrap_or_default()
     };
-    (0..n).all(|k| class(a, k) == class(b, k))
+    a.same_sharding(b) && (0..n).all(|k| class(a, k) == class(b, k))
 }
 
 /// Whether the index is a partition's copy of a partitioned index (PostgreSQL). Every partition gets one, and a cold

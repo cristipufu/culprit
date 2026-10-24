@@ -4,7 +4,8 @@
 use culprit_core::{ConnectionSpec, Engine, ExplainMode, Plan, Provider, Result, ResultSet};
 
 pub use crate::connect::{COLLECTOR, Connector, EXECUTION, INTERACTIVE, ObservedSession, SessionLimits, map_error};
-pub use crate::rows::{Row, iso, query, query_one, quote_ident, tagged};
+pub use crate::rows::{Row, iso, query, query_bounded, query_one, quote_ident, tagged};
+pub use crate::trust::{elevated as elevated_login, not_its_own as foreign_statement, own_ysql_text};
 
 /// SQL execution with the same authentication, TLS, planner trust restrictions, read-only transactions, rollback,
 /// deadlines and streaming result budgets as the PostgreSQL provider. The caller interprets the native plan.

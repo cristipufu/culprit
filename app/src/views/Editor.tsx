@@ -23,7 +23,7 @@ import { catalogFromReport, completionConfig } from "../lib/completion";
 import { splitSqlStatements } from "../lib/editor-sql";
 import { duration, oneLine } from "../lib/format";
 import { currentReport, getState, loadSaved, setState, toast, useStore } from "../lib/store";
-import { can, isMariadb, measuresRuns } from "../lib/engines";
+import { can, isMariadb, measuresRuns, sqlSyntax } from "../lib/engines";
 import { keys } from "../lib/keys";
 
 type StatementResult = { result: ResultSet; sql: string };
@@ -458,7 +458,7 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
 
   const languageExtension = useCallback((): Extension => {
     const mariadb = isMariadb(connection.engine, connection.last_report?.product);
-    const dialect = { mssql: MSSQL, postgres: PostgreSQL, mysql: mariadb ? MariaSQL : MySQL, sqlite: SQLite }[connection.engine];
+    const dialect = { mssql: MSSQL, postgres: PostgreSQL, mysql: mariadb ? MariaSQL : MySQL, sqlite: SQLite }[sqlSyntax(connection.engine)];
     const keywords = keywordCompletionSource(dialect, true);
     // After `alias.` only that table's columns make sense; keywords there are noise.
     const keywordsOutsideMembers: CompletionSource = (context) => (/[\w"`\]]\.\w*$/.test(context.state.sliceDoc(Math.max(0, context.pos - 120), context.pos)) ? null : keywords(context));

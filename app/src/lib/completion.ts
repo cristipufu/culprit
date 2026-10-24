@@ -1,3 +1,4 @@
+import { sqlSyntax } from "./engines";
 import type { Completion } from "@codemirror/autocomplete";
 import type { SQLConfig, SQLNamespace } from "@codemirror/lang-sql";
 import type { Catalog } from "../gen/Catalog";
@@ -68,7 +69,7 @@ export function completionConfig(engine: Engine, catalog: Catalog | null, report
 
 /** Unqualified table names resolve against this schema. */
 function defaultSchema(engine: Engine, schemas: string[]): string | undefined {
-  const preferred = { mssql: "dbo", postgres: "public", mysql: undefined, sqlite: "main" }[engine];
+  const preferred = { mssql: "dbo", postgres: "public", mysql: undefined, sqlite: "main" }[sqlSyntax(engine)];
   if (preferred && schemas.includes(preferred)) return preferred;
   // MySQL's catalog only holds the current database; elsewhere, a database with one schema uses it.
   return schemas.length === 1 ? schemas[0] : preferred;

@@ -8,7 +8,7 @@ pub fn overlapping_index_info() -> CheckInfo {
         id: "overlapping-index".into(),
         title: "Overlapping indexes".into(),
         category: Category::Indexes,
-        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Yugabyte, Engine::Mysql],
         requires: vec![Capability::IndexUsage],
         description: "Two indexes that lead with the same column where one is barely read and the other holds all \
             its key columns: queries that use the first can seek the second and filter the rest there."
@@ -66,6 +66,7 @@ pub(crate) fn overlapping_pairs(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexS
                     && !b.is_clustered
                     && b.same_filter(a)
                     && b.kind == a.kind
+                    && a.same_sharding(b)
                     && !same_keys(a, b)
             })
             .filter(|b| b.key_names().first().is_some_and(|k| k.eq_ignore_ascii_case(&lead)))

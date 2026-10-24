@@ -8,7 +8,7 @@ pub fn unstable_query_info() -> CheckInfo {
         id: "unstable-query".into(),
         title: "Unstable queries".into(),
         category: Category::Queries,
-        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Yugabyte, Engine::Mysql, Engine::Sqlite],
         requires: vec![],
         description: "Queries whose duration swings wildly between runs with the same plan, a sign of parameter sensitivity or blocking.".into(),
     }
@@ -168,6 +168,7 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
                 }
                 (None, Engine::Mssql) => crate::queries::mssql_fix(snapshot, q, None, excess),
                 (None, Engine::Postgres) => crate::queries::postgres_fix(),
+                (None, Engine::Yugabyte) => Fix { summary: "Compare slow and fast values using measured YSQL plans, including DocDB rows, RPCs and retries. Check tablet placement and contention before attributing the spread to parameter sensitivity.".into(), sql: None, cost: None },
                 (None, Engine::Mysql) => crate::queries::mysql_fix(snapshot, q, recorded.lock_share, Some(fewest)),
                 (None, Engine::Sqlite) => Fix {
                     summary: "Compare a slow and a fast value with EXPLAIN QUERY PLAN. If some values match far more rows, an index that narrows them, or ANALYZE, lets SQLite choose better.".into(),
@@ -533,7 +534,9 @@ impl RecordedWaits {
                     return open(&format!(": {} recorded no lock time for it to tell which", snapshot.server.name()));
                 }
             },
-            Engine::Postgres => return open(" (pg_stat_statements doesn't record what a statement waited for)"),
+            Engine::Postgres | Engine::Yugabyte => {
+                return open(" (pg_stat_statements doesn't record what a statement waited for)");
+            }
             Engine::Sqlite => return open(""),
         };
         let extra = format::duration(excess);

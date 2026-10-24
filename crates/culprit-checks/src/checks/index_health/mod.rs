@@ -46,7 +46,7 @@ pub(crate) fn hide_index_sql(snapshot: &Snapshot, i: &IndexStat) -> String {
         Engine::Mssql => {
             format!("ALTER INDEX {} ON {} DISABLE;", quote(engine, &i.name), qualified(engine, &i.schema, &i.table))
         }
-        Engine::Postgres => drop_index_for_snapshot(snapshot, &i.schema, &i.table, &i.name),
+        Engine::Postgres | Engine::Yugabyte => drop_index_for_snapshot(snapshot, &i.schema, &i.table, &i.name),
         Engine::Sqlite => drop_index_sql(engine, &i.schema, &i.table, &i.name),
         // Invisible indexes arrived in MySQL 8.0; 5.7 can only drop (keep the definition).
         Engine::Mysql if !culprit_core::version_at_least(&server.version, [8, 0, 0]) => {

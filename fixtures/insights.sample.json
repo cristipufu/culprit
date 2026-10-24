@@ -412,5 +412,43 @@
       "items": [],
       "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
     }
+  },
+  "yugabyte-demo": {
+    "-1395695495724611761": {
+      "items": [],
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
+    },
+    "-71879613880347319": {
+      "items": [],
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
+    },
+    "4357247400045295631": {
+      "items": [],
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
+    },
+    "466454478821061062": {
+      "items": [
+        {
+          "area": "index",
+          "detail": "As planned, the Seq Scan reads the rows and checks `(orders.customer_id = $1)` on each one, so most of the reading is thrown away.",
+          "fix": "The selected workload does not establish material execution cost. Structural concerns remain relevant as table size or call volume grows; compare reads and time under representative load before changing an index. Create an index on customer_id.",
+          "fix_sql": null,
+          "fixed_weight": false,
+          "impact": 1.0,
+          "nodes": [
+            1
+          ],
+          "rule": "scan-filter",
+          "severity": "low",
+          "title": "Reads 20K rows of public.orders to keep 10",
+          "verify": "Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure."
+        }
+      ],
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. The selected workload does not establish material execution cost. Structural concerns remain relevant as table size or call volume grows; compare reads and time under representative load before changing an index."
+    },
+    "8345917977273313509": {
+      "items": [],
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
+    }
   }
 }

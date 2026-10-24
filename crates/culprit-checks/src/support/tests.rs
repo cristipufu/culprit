@@ -203,6 +203,27 @@ fn system_schema_reads_are_monitoring_on_every_engine() {
 }
 
 #[test]
+fn native_internal_catalog_reads_are_not_application_queries() {
+    let mut s: Snapshot = serde_json::from_str(include_str!("../../../../fixtures/yugabyte-demo.json")).unwrap();
+    let workload = s.workload.as_mut().unwrap();
+    let mut catalog = workload.queries[0].clone();
+    catalog.id = "internal-catalog-read".into();
+    catalog.text = "SELECT c.reltuples, o.option_name FROM pg_class c LEFT JOIN LATERAL pg_options_to_table(c.reloptions) o ON true".into();
+    catalog.plan = None;
+    workload.queries = vec![catalog];
+    assert_eq!(app_queries(&s).count(), 0);
+    s.workload.as_mut().unwrap().queries[0].text = "SELECT 'pg_class', pg_class_hint FROM public.orders".into();
+    assert_eq!(app_queries(&s).count(), 1);
+    s.workload.as_mut().unwrap().queries[0].text = "SELECT * FROM public.pg_class".into();
+    assert_eq!(app_queries(&s).count(), 1);
+    s.workload.as_mut().unwrap().queries[0].text = "SELECT 'pg_class' FROM \"PG_CLASS\"".into();
+    assert_eq!(app_queries(&s).count(), 1);
+    s.server.engine = Engine::Mssql;
+    s.workload.as_mut().unwrap().queries[0].text = "SELECT * FROM pg_class".into();
+    assert_eq!(app_queries(&s).count(), 1);
+}
+
+#[test]
 fn epoch_parsing_handles_offsets() {
     let a = parse_epoch_seconds("2026-10-01T00:00:00Z").unwrap();
     let b = parse_epoch_seconds("2026-10-01T02:00:00+02:00").unwrap();

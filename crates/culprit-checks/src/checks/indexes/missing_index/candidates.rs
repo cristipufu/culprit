@@ -155,7 +155,7 @@ impl Overlap {
 
 fn overlap(i: &IndexStat, c: &Candidate) -> Option<Overlap> {
     // More than one range column can't all be sought, or checked as cheaply as one: the request is for its own index.
-    if c.equality.is_empty() || c.inequality.len() > 1 {
+    if c.equality.is_empty() || c.inequality.len() > 1 || !i.can_seek(&c.equality) {
         return None;
     }
     let asked = |column: &str| c.equality.iter().any(|e| e.eq_ignore_ascii_case(column));
@@ -259,6 +259,7 @@ pub(super) fn same_keys_on_table<'a>(snapshot: &'a Snapshot, c: &Candidate) -> i
     snapshot.indexes.iter().filter(move |i| {
         let existing = i.key_names();
         i.schema.eq_ignore_ascii_case(&schema)
+            && i.can_seek(&equality)
             && i.table.eq_ignore_ascii_case(&table)
             && existing.len() >= keys.len()
             && lower_set(&existing[..equality.len()].iter().map(|s| s.to_string()).collect::<Vec<_>>())

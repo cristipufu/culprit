@@ -4,6 +4,8 @@ What each feature reads on each engine, and where an engine has nothing to read.
 (`engine = "mysql"`); the server's `VERSION()` decides the flavor, and `ServerInfo::name()` / the UI's `serverName()` say
 "MariaDB" in sentences, badges and plan headers.
 
+Dedicated **YugabyteDB** support is under development after 0.4.4. Its [native coverage matrix and remaining gaps](providers/yugabyte.md) are separate from PostgreSQL: DocDB has no heap/vacuum measurements to substitute.
+
 Legend: **✓** same depth as the best engine · **◐** works, with less data (the reason is in the cell) · **–** the engine
 keeps nothing to read, and Culprit says so in the UI and CLI.
 

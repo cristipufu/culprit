@@ -275,6 +275,7 @@ pub fn workload(
     Collected {
         lock_ms: runs.iter().map(|r| r.lock_ms).sum(),
         workload: Workload {
+            counter_set: None,
             history_inputs: Vec::new(),
             measurement: None,
             source: SOURCE.into(),

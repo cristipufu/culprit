@@ -6,6 +6,7 @@ import { measuresRuns } from "../lib/engines";
 import { QueryTrend, Sparkline } from "../components/Trends";
 import { RuntimeSpread } from "../components/RuntimeSpread";
 import { QueryCostsPanel } from "../components/BeyondTime";
+import { DocdbWork } from "../components/DocdbWork";
 import { Sql } from "../components/Sql";
 import type { Plan } from "../gen/Plan";
 import type { QueryStat } from "../gen/QueryStat";
@@ -62,14 +63,20 @@ function value(entry: QueryEntry, key: SortKey): number {
     case "rows":
       return q.executions > 0 ? (q.rows ?? 0) / q.executions : 0;
     case "reads":
-      return q.executions > 0 ? (q.logical_reads ?? 0) / q.executions : 0;
+      return readsPerRun(q) ?? 0;
     case "cpu":
       return q.cpu_time_ms ?? 0;
   }
 }
 
+function readsPerRun(query: QueryStat): number | null {
+  const reads = query.costs?.docdb?.rows_scanned ?? query.logical_reads;
+  return reads != null && query.executions > 0 ? reads / query.executions : null;
+}
+
 export function Queries({ report }: { report: Report }) {
   const workload = report.snapshot.workload;
+  const native = report.snapshot.server.engine === "yugabyte";
   const selected = useStore((s) => s.query);
   const [sort, setSort] = useState<SortKey>("share");
   const [filter, setFilter] = useState("");
@@ -149,9 +156,9 @@ export function Queries({ report }: { report: Report }) {
                     key={c.key}
                     className={`r sortable ${sort === c.key ? "sorted" : ""} ${c.optional ? "col-optional" : ""}`}
                     onClick={() => setSort(c.key)}
-                    title={c.key === "runs" && !rates.perDay ? `Runs ${rates.suffix}` : undefined}
+                    title={c.key === "reads" && native ? "Recorded DocDB storage entries per run; index and table reads can visit the same SQL row" : c.key === "runs" && !rates.perDay ? `Runs ${rates.suffix}` : undefined}
                   >
-                    {c.key === "runs" ? "Runs" : c.label}
+                    {c.key === "runs" ? "Runs" : c.key === "reads" && native ? "Entries/run" : c.label}
                   </th>
                 ))}
               </tr>
@@ -190,7 +197,7 @@ export function Queries({ report }: { report: Report }) {
                     <td className="r">{duration(f.mean)}</td>
                     <td className="r col-optional">{duration(q.max_time_ms)}</td>
                     <td className="r col-optional">{q.rows != null && q.executions > 0 ? count(q.rows / q.executions) : "—"}</td>
-                    <td className="r col-optional">{q.logical_reads != null && q.executions > 0 ? count(q.logical_reads / q.executions) : "—"}</td>
+                    <td className="r col-optional">{count(readsPerRun(q))}</td>
                   </tr>
                 );
               })}
@@ -338,6 +345,7 @@ function QueryDetail({ report, query }: { report: Report; query: QueryStat }) {
               <p className="muted">Only records with explicit request IDs contribute. Repetition can come from loops, retries or intended batches; it does not establish an N+1 bug or network overhead.{query.requests.sample_truncated ? " The request sample reached its limit, so these are partial counts." : ""}</p>
             </section>}
             <QueryCostsPanel report={report} query={query} />
+            <DocdbWork metrics={query.costs?.docdb} basis="workload" runs={query.executions} />
             {related.length > 0 && (
               <section>
                 <h3>Findings</h3>

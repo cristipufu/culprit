@@ -160,6 +160,13 @@ impl Probe {
 }
 
 pub async fn probe(client: &Client, spec_host: &str) -> Result<Probe> {
+    let build = query_one(client, "SELECT version() AS build")
+        .await?
+        .ok_or_else(|| culprit_core::Error::internal("Probe returned no server version"))?;
+    if build.string("build").contains("-YB-") {
+        return Err(culprit_core::Error::invalid("This server is YugabyteDB and requires its dedicated provider")
+            .with_hint("Choose YugabyteDB for this connection, or use --engine yugabyte. YSQL's compatible wire protocol does not provide PostgreSQL heap statistics."));
+    }
     let sql = format!(
         "SELECT current_setting('server_version_num') AS version_num,
                 current_setting('server_version') AS version,

@@ -17,6 +17,7 @@
     "engines": [
       "mssql",
       "postgres",
+      "yugabyte",
       "mysql"
     ],
     "id": "filtered-scan",
@@ -31,6 +32,7 @@
     "engines": [
       "mssql",
       "postgres",
+      "yugabyte",
       "mysql"
     ],
     "id": "unused-index",
@@ -45,6 +47,7 @@
     "engines": [
       "mssql",
       "postgres",
+      "yugabyte",
       "mysql",
       "sqlite"
     ],
@@ -60,6 +63,7 @@
     "engines": [
       "mssql",
       "postgres",
+      "yugabyte",
       "mysql",
       "sqlite"
     ],
@@ -75,6 +79,7 @@
     "engines": [
       "mssql",
       "postgres",
+      "yugabyte",
       "mysql"
     ],
     "id": "overlapping-index",
@@ -127,7 +132,8 @@
     "description": "The same statement sent many times with different literal values (or value-list lengths), so the database compiles and tracks each copy separately; and plan caches filled with single-use plans.",
     "engines": [
       "mssql",
-      "postgres"
+      "postgres",
+      "yugabyte"
     ],
     "id": "query-family",
     "requires": [],
@@ -151,6 +157,7 @@
     "engines": [
       "mssql",
       "postgres",
+      "yugabyte",
       "mysql",
       "sqlite"
     ],
@@ -166,6 +173,7 @@
     "engines": [
       "mssql",
       "postgres",
+      "yugabyte",
       "mysql",
       "sqlite"
     ],
@@ -179,6 +187,7 @@
     "engines": [
       "mssql",
       "postgres",
+      "yugabyte",
       "mysql"
     ],
     "id": "chatty-query",
@@ -191,6 +200,7 @@
     "engines": [
       "mssql",
       "postgres",
+      "yugabyte",
       "mysql"
     ],
     "id": "plan-warnings",
@@ -205,6 +215,7 @@
     "engines": [
       "mssql",
       "postgres",
+      "yugabyte",
       "mysql",
       "sqlite"
     ],
@@ -232,6 +243,7 @@
     "engines": [
       "mssql",
       "postgres",
+      "yugabyte",
       "mysql"
     ],
     "id": "regression",
@@ -244,6 +256,7 @@
     "engines": [
       "mssql",
       "postgres",
+      "yugabyte",
       "mysql",
       "sqlite"
     ],
@@ -565,6 +578,7 @@
     "engines": [
       "mssql",
       "postgres",
+      "yugabyte",
       "mysql"
     ],
     "id": "big-result",

@@ -259,7 +259,7 @@ export async function demoApi(): Promise<Api> {
       name: r.snapshot.connection,
       engine: r.snapshot.server.engine,
       environment: r.snapshot.environment,
-      host: { mssql: "localhost,1433", postgres: "localhost:5432", mysql: "localhost:3306", sqlite: "" }[r.snapshot.server.engine],
+      host: { mssql: "localhost,1433", postgres: "localhost:5432", yugabyte: "localhost:5433", mysql: "localhost:3306", sqlite: "" }[r.snapshot.server.engine],
       port: null,
       database: r.snapshot.server.database,
       user: null,

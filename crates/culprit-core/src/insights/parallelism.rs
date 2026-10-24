@@ -48,7 +48,7 @@ pub(super) fn spill(cx: &Cx) -> Vec<Draft> {
         match cx.engine() {
             // EXPLAIN QUERY PLAN reports no spills.
             Engine::Sqlite => continue,
-            Engine::Postgres => {
+            Engine::Postgres | Engine::Yugabyte => {
                 let disk_kb = n.facts().sort_space_kb.filter(|_| n.facts().sort_on_disk == Some(true));
                 let batches = n.facts().hash_batches.map(f64::from).filter(|b| *b > 1.0);
                 let agg_batches = n.facts().hash_aggregate_batches.map(f64::from).filter(|b| *b > 1.0);

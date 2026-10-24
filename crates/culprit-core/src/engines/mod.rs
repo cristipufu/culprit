@@ -9,6 +9,7 @@ mod mysql;
 mod postgres;
 mod sqlite;
 mod timescale;
+mod yugabyte;
 
 use std::collections::BTreeMap;
 
@@ -33,6 +34,10 @@ pub struct SettingChange {
 
 /// One engine, as checks and every surface see it.
 pub trait EngineSpec: Send + Sync {
+    fn sql_syntax(&self) -> SqlSyntax;
+    fn mutating_function(&self, _name: &str) -> bool {
+        false
+    }
     fn inactive_index_state(&self, server: &ServerInfo) -> crate::IndexState;
     fn limitations(&self) -> Vec<String>;
     /// Public collection limits, safe to show after private collector details have been removed for sharing.
@@ -98,6 +103,17 @@ pub trait EngineSpec: Send + Sync {
     }
 }
 
+/// The SQL grammar a server speaks, independently of its storage engine and measurements.
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
+pub enum SqlSyntax {
+    Mssql,
+    Postgres,
+    Mysql,
+    Sqlite,
+}
+
 /// Why an engine can't do something: the message and, when there's one, what to do instead.
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
 #[ts(export)]
@@ -144,6 +160,7 @@ pub struct EngineFacts {
     pub limitations: Vec<String>,
     /// The reason for every ability it lacks, by ability.
     pub refusals: BTreeMap<String, Refusal>,
+    pub sql_syntax: SqlSyntax,
 }
 
 impl Engine {
@@ -152,6 +169,7 @@ impl Engine {
         match self {
             Engine::Mssql => &mssql::Mssql,
             Engine::Postgres => &postgres::Postgres,
+            Engine::Yugabyte => &yugabyte::Yugabyte,
             Engine::Mysql => &mysql::Mysql,
             Engine::Sqlite => &sqlite::Sqlite,
         }
@@ -159,6 +177,10 @@ impl Engine {
 
     pub fn label(self) -> &'static str {
         self.spec().label()
+    }
+
+    pub fn sql_syntax(self) -> SqlSyntax {
+        self.spec().sql_syntax()
     }
 
     /// What the engine can answer, defined in its own file: the CLI, the MCP server and the app offer only these, and
@@ -187,6 +209,7 @@ impl Engine {
         let spec = self.spec();
         let abilities = spec.abilities();
         EngineFacts {
+            sql_syntax: spec.sql_syntax(),
             label: spec.label().into(),
             abilities,
             session_actions: spec.session_actions(),

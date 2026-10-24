@@ -135,6 +135,11 @@ pub(super) fn non_sargable(cx: &Cx) -> Vec<Draft> {
             format!("Compare {col} with a value of its own type, so nothing has to be converted per row.")
         } else {
             match cx.engine() {
+                Engine::Yugabyte => format!(
+                    "Store {col} in the form you search for, or index the expression with explicit ordered keys, e.g. `CREATE INDEX ON {} (({}({col})) ASC)`. Review its tablet distribution and preserve collation and NULL behavior.",
+                    table_leaf(&table),
+                    lower
+                ),
                 Engine::Postgres => format!(
                     "Store {col} in the form you search for, or index the expression itself, e.g. `CREATE INDEX ON {} (({}({col})))`.",
                     table_leaf(&table),
@@ -184,6 +189,7 @@ pub(super) fn leading_wildcard(cx: &Cx) -> Vec<Draft> {
             format::percent(filter_keeps(cx, n).unwrap_or(1.0))
         );
         d.fix = match cx.engine() {
+            Engine::Yugabyte => "Use a prefix filter when it preserves the intended search. For substring search, evaluate a supported search index or search service; PostgreSQL trigram GIN support is not assumed for DocDB.".into(),
             Engine::Postgres => format!(
                 "A trigram index answers '%…%' searches: enable pg_trgm and index {column} with gin_trgm_ops. If you only need prefixes, drop the leading %."
             ),
@@ -274,7 +280,7 @@ pub(super) fn not_in_work<'a>(cx: &Cx<'a>, n: &'a PlanNode) -> Option<Vec<&'a Pl
             (n.detail.as_deref().is_some_and(|d| d.contains("Anti Semi Join")) && !spools.is_empty() && says_not_in)
                 .then_some(spools)
         }
-        Engine::Postgres => {
+        Engine::Postgres | Engine::Yugabyte => {
             let l = n.predicate.as_deref()?.to_ascii_lowercase();
             let per_row = l.contains("not (") && l.contains("subplan") && !l.contains("hashed subplan");
             let subplans: Vec<&PlanNode> = n
@@ -308,7 +314,7 @@ pub(super) fn not_in(cx: &Cx) -> Vec<Draft> {
         let mut d = Draft::new("not-in", InsightArea::Query, impact, nodes);
         d.title = match cx.engine() {
             Engine::Mssql => "NOT IN adds repeated subquery work; preserve NULL behavior when testing a rewrite".into(),
-            Engine::Postgres => "NOT IN tests rows against a repeatedly searched subquery".into(),
+            Engine::Postgres | Engine::Yugabyte => "NOT IN tests rows against a repeatedly searched subquery".into(),
             Engine::Sqlite => {
                 "NOT IN against a subquery whose column can be NULL returns no rows once it meets a NULL".into()
             }
@@ -316,7 +322,7 @@ pub(super) fn not_in(cx: &Cx) -> Vec<Draft> {
         };
         d.detail = match cx.engine() {
             Engine::Mssql => format!("The plan includes repeated work and a Row Count Spool under {}. NULL handling can require extra checks for NOT IN, but this shape alone does not establish which constraints or values apply. A rewrite must preserve the query's NULL semantics.", n.op),
-            Engine::Postgres => "The plan searches the subquery repeatedly instead of using a hashed membership test. Cost, correlation and NULL semantics can affect that choice; the plan alone does not establish that a larger work_mem or a rewrite would improve it. A NULL in a nonempty subquery prevents a nonmatching value from passing NOT IN.".into(),
+            Engine::Postgres | Engine::Yugabyte => "The plan searches the subquery repeatedly instead of using a hashed membership test. Cost, correlation and NULL semantics can affect that choice; the plan alone does not establish that a larger work_mem or a rewrite would improve it. A NULL in a nonempty subquery prevents a nonmatching value from passing NOT IN.".into(),
             Engine::Sqlite => "If the subquery ever returns NULL, NOT IN returns nothing at all.".into(),
             Engine::Mysql => "NOT IN has to treat a NULL from the subquery specially, and here MySQL could neither turn it into an antijoin nor materialize the subquery once, so it runs the subquery for each row.".into(),
         };
@@ -674,7 +680,7 @@ pub(super) fn optimizer_limits(cx: &Cx) -> Vec<Draft> {
 pub(super) fn slow_compile(cx: &Cx) -> Vec<Draft> {
     let (planning, running) = match cx.engine() {
         Engine::Mssql => (cx.plan.facts().compile_ms, None),
-        Engine::Postgres => (cx.plan.facts().planning_ms, cx.plan.facts().elapsed_ms),
+        Engine::Postgres | Engine::Yugabyte => (cx.plan.facts().planning_ms, cx.plan.facts().elapsed_ms),
         Engine::Mysql | Engine::Sqlite => (None, None),
     };
     let Some(planning) = planning else { return Vec::new() };
@@ -692,7 +698,7 @@ pub(super) fn slow_compile(cx: &Cx) -> Vec<Draft> {
     d.cap = Severity::Medium;
     // PostgreSQL's first planning on a connection also loads the tables' metadata into the backend's caches, and
     // Culprit's EXPLAIN runs on a fresh connection: a few tens of milliseconds may never recur.
-    let cold = cx.engine() == Engine::Postgres;
+    let cold = matches!(cx.engine(), Engine::Postgres | Engine::Yugabyte);
     if cold && planning < 500.0 {
         d.cap = Severity::Low;
     }
@@ -711,7 +717,7 @@ pub(super) fn slow_compile(cx: &Cx) -> Vec<Draft> {
         }
     );
     d.fix = match cx.engine() {
-        Engine::Postgres => "Reuse the plan with prepared statements, keep IN lists short (use = ANY($1) with an array), and make sure partition pruning can happen at plan time.".into(),
+        Engine::Postgres | Engine::Yugabyte => "Reuse the plan with prepared statements, keep IN lists short (use = ANY($1) with an array), and make sure partition pruning can happen at plan time.".into(),
         _ => "Make sure the plan is reused: send the query parameterized rather than with literal values, and avoid OPTION (RECOMPILE) on frequent queries.".into(),
     };
     d.verify = "Explain again: compile/planning time is a small fraction of the run.".into();
@@ -756,7 +762,7 @@ pub(super) fn correlated_subquery(cx: &Cx) -> Vec<Draft> {
         // Without measured runs, the parent's rows bound them from above: "up to" that many.
         let mut at_most = false;
         let (runs, outer, impact) = match cx.engine() {
-            Engine::Postgres => {
+            Engine::Postgres | Engine::Yugabyte => {
                 if !matches!(n.facts().parent_relationship.as_ref(), Some(crate::PlanParentRelationship::SubPlan)) {
                     continue;
                 }

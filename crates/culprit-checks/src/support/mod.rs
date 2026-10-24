@@ -371,7 +371,7 @@ pub fn counter_days(snapshot: &Snapshot) -> Option<f64> {
     if let Some(hours) = snapshot.pressure.as_ref().and_then(|p| p.uptime_hours) {
         return Some((hours / 24.0).max(0.0));
     }
-    if snapshot.server.engine == Engine::Postgres {
+    if matches!(snapshot.server.engine, Engine::Postgres | Engine::Yugabyte) {
         return None;
     }
     let started = snapshot.server.started_at.as_deref()?;
@@ -428,6 +428,25 @@ pub fn counters_may_be_reset(snapshot: &Snapshot) -> bool {
 /// ([`counters_may_be_reset`]), the days its statement digests have counted: they start over together, so the server's
 /// uptime, which a reset leaves as it was, says nothing about how long the counters have watched.
 pub fn watched_days(snapshot: &Snapshot) -> Option<f64> {
+    if snapshot.server.engine == Engine::Yugabyte {
+        if !snapshot
+            .source_outcome(culprit_core::source_id::DOCDB_INDEX_USAGE)
+            .is_some_and(|o| matches!(o.state, culprit_core::SourceState::Collected | culprit_core::SourceState::Empty))
+        {
+            return None;
+        }
+        // Each contributing node can reset independently. The latest proven reset bounds absence, but cannot be
+        // used as the denominator of older positive totals from the other nodes.
+        return snapshot
+            .indexes
+            .iter()
+            .filter(|i| i.reads.is_some())
+            .map(|i| days_between(i.counters_since.as_deref()?, &snapshot.taken_at))
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
+            .filter(|d| *d >= 0.0)
+            .reduce(f64::min);
+    }
     if counters_may_be_reset(snapshot) {
         return snapshot.workload.as_ref().map(|w| (w.measurement_hours() / 24.0).max(0.0));
     }
@@ -437,6 +456,9 @@ pub fn watched_days(snapshot: &Snapshot) -> Option<f64> {
 /// Whether the counters started at a statistics reset rather than at the last restart (PostgreSQL keeps statistics
 /// across a clean restart, and `pg_stat_reset()` starts them over without one).
 fn counters_since_reset(snapshot: &Snapshot) -> bool {
+    if snapshot.server.engine == Engine::Yugabyte {
+        return snapshot.pressure.as_ref().and_then(|p| p.uptime_hours).is_some();
+    }
     let (Some(hours), Some(started)) =
         (snapshot.pressure.as_ref().and_then(|p| p.uptime_hours), snapshot.server.started_at.as_deref())
     else {
@@ -459,6 +481,9 @@ pub fn parse_epoch_seconds(text: &str) -> Option<f64> {
 }
 
 pub fn since_phrase(snapshot: &Snapshot) -> String {
+    if snapshot.server.engine == Engine::Yugabyte && counter_days(snapshot).is_none() {
+        return "across cluster nodes since each node's database counters were reset; no common counting period is known".into();
+    }
     // MariaDB's userstat counters run from when userstat was turned on (or flushed), which the server doesn't say.
     if snapshot.server.engine == Engine::Mysql
         && !snapshot.server.has(Capability::PerformanceSchema)
@@ -813,6 +838,7 @@ pub fn log_next_waits(snapshot: &Snapshot, slower_than: Option<f64>) -> LockHold
     let server = &snapshot.server;
     let on = |name: &str| snapshot.setting(name).is_some_and(|s| crate::config::is_on(&s.value));
     match server.engine {
+        Engine::Yugabyte => LockHolder { lead: "Correlate YSQL statement logs and DocDB wait-queue evidence by transaction, node and time. Configure supported logging through YugabyteDB administration.".into(), sql: None },
         Engine::Postgres => {
             let deadlock = match snapshot.setting("deadlock_timeout").map(|s| s.value.trim().to_string()) {
                 Some(v) if v.parse::<f64>().is_ok() => format!("{v} ms"),
@@ -903,6 +929,7 @@ pub fn find_lock_holder(snapshot: &Snapshot, q: &QueryStat, waits: Option<f64>) 
     // What logs the next ones, by name: no settings are given for a statement that ran once or no longer runs.
     let log = match snapshot.server.engine {
         Engine::Postgres => "log_lock_waits",
+        Engine::Yugabyte => "YSQL statement logs and DocDB wait-queue evidence",
         Engine::Mysql => "the slow query log, with its lock time",
         Engine::Mssql if snapshot.server.platform().is_some_and(|p| p.is_azure_sql_database()) => {
             "Query Store's waits for each interval date them"

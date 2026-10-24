@@ -14,6 +14,7 @@ culprit-core = { path = "crates/culprit-core" }
 culprit-checks = { path = "crates/culprit-checks" }
 culprit-mssql = { path = "crates/culprit-mssql" }
 culprit-postgres = { path = "crates/culprit-postgres" }
+culprit-yugabyte = { path = "crates/culprit-yugabyte" }
 culprit-mysql = { path = "crates/culprit-mysql" }
 culprit-sqlite = { path = "crates/culprit-sqlite" }
 culprit-querylog = { path = "crates/culprit-querylog" }

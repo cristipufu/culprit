@@ -12,6 +12,9 @@ pub fn parse(input: &str) -> Result<ConnectionSpec> {
 pub fn parse_as(input: &str, picked: Option<Engine>) -> Result<ConnectionSpec> {
     match (picked, read(input)) {
         (None, text) => text.map(|(spec, _)| spec),
+        (Some(Engine::Yugabyte), Ok((spec, _))) if spec.engine == Some(Engine::Postgres) => {
+            Ok(ConnectionSpec { engine: Some(Engine::Yugabyte), ..spec })
+        }
         (Some(_), Ok((spec, true))) => Ok(spec),
         (Some(Engine::Sqlite), _) => parse_sqlite(input),
         (Some(engine), text) => text.map(|(spec, _)| ConnectionSpec { engine: Some(engine), ..spec }),
@@ -35,6 +38,9 @@ fn read(input: &str) -> Result<(ConnectionSpec, bool)> {
     }
     if let Some(rest) = strip_any(&lower, input, &["jdbc:sqlserver://"]) {
         return named(parse_jdbc_sqlserver(rest));
+    }
+    if let Some(rest) = strip_any(&lower, input, &["yugabyte://", "ysql://", "jdbc:yugabytedb://"]) {
+        return named(parse_url(Engine::Yugabyte, rest));
     }
     if let Some(rest) = strip_any(&lower, input, &["jdbc:postgresql://"]) {
         return named(parse_url(Engine::Postgres, rest));
@@ -447,5 +453,18 @@ mod tests {
     fn describe_hides_password() {
         let s = parse("postgres://app:secret@h:5432/db").unwrap();
         assert_eq!(describe(&s), "app@h:5432/db");
+    }
+
+    #[test]
+    fn ysql_protocol_does_not_override_the_selected_native_provider() {
+        for url in ["yugabyte://app@db:5433/shop", "ysql://app@db:5433/shop", "jdbc:yugabytedb://db:5433/shop"] {
+            assert_eq!(parse_as(url, None).unwrap().engine, Some(Engine::Yugabyte));
+        }
+        for text in
+            ["postgres://app@db:5433/shop", "postgresql://app@db/shop", "host=db port=5433 dbname=shop", "db:5433/shop"]
+        {
+            assert_eq!(parse_as(text, Some(Engine::Yugabyte)).unwrap().engine, Some(Engine::Yugabyte), "{text}");
+        }
+        assert_eq!(parse_as("mysql://app@db/shop", Some(Engine::Yugabyte)).unwrap().engine, Some(Engine::Mysql));
     }
 }

@@ -603,6 +603,7 @@
         "engines": [
           "mssql",
           "postgres",
+          "yugabyte",
           "mysql"
         ],
         "id": "filtered-scan",
@@ -639,6 +640,7 @@
         "engines": [
           "mssql",
           "postgres",
+          "yugabyte",
           "mysql",
           "sqlite"
         ],
@@ -659,6 +661,7 @@
         "engines": [
           "mssql",
           "postgres",
+          "yugabyte",
           "mysql"
         ],
         "id": "plan-warnings",
@@ -678,6 +681,7 @@
         "engines": [
           "mssql",
           "postgres",
+          "yugabyte",
           "mysql",
           "sqlite"
         ],

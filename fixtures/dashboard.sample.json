@@ -4151,5 +4151,391 @@
         "title": "Query statistics"
       }
     ]
+  },
+  "yugabyte-demo": {
+    "attention": [
+      "statistics"
+    ],
+    "connection": "yugabyte-demo",
+    "coverage": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416), the 1 minute since statistics were reset",
+    "database": "culprit_yugabyte",
+    "engine": "yugabyte",
+    "environment": "local",
+    "headline": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) covers only the 1 minute since statistics were reset, so the numbers are thin until it has seen more.",
+    "product": "YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12)",
+    "report_id": "20261024T010108.861346Z",
+    "taken_at": "2026-10-24T01:01:08.861346Z",
+    "tiles": [
+      {
+        "detail": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) keeps running totals only, so the trend comes from Culprit's own scans; it appears after the next scan.",
+        "fix_sql": null,
+        "items": [],
+        "key": "db-time",
+        "metrics": [
+          {
+            "key": "total",
+            "label": "Database time",
+            "text": "796 ms",
+            "value": 796.474923
+          },
+          {
+            "key": "runs",
+            "label": "Runs",
+            "text": "130",
+            "value": 130.0
+          },
+          {
+            "key": "window-hours",
+            "label": "Covers",
+            "text": "1 minute",
+            "value": 0.002180721958478292
+          }
+        ],
+        "next": "culprit changes yugabyte-demo",
+        "status": "info",
+        "takeaway": "796 ms of database time over the 1 minute since statistics were reset.",
+        "title": "Database time"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": "heavy-query:8345917977273313509",
+            "id": "heavy-query:8345917977273313509",
+            "kind": "finding",
+            "label": "A read from orders takes 390 ms of database time over the 1 minute since statistics were reset (49%)",
+            "query_id": null,
+            "share": 0.4901653118336783,
+            "status": "info",
+            "value": "390 ms of database time over the 1 minute since statistics were reset (49%)"
+          },
+          {
+            "at": null,
+            "finding_id": "heavy-query:4357247400045295631",
+            "id": "heavy-query:4357247400045295631",
+            "kind": "finding",
+            "label": "A read from orders takes 169 ms of database time over the 1 minute since statistics were reset (21%)",
+            "query_id": null,
+            "share": 0.21175081616474195,
+            "status": "info",
+            "value": "169 ms of database time over the 1 minute since statistics were reset (21%)"
+          },
+          {
+            "at": null,
+            "finding_id": "unindexed-fk:public.orders(customer_id)",
+            "id": "unindexed-fk:public.orders(customer_id)",
+            "kind": "finding",
+            "label": "orders has no index on customer_id, its foreign key to customers",
+            "query_id": null,
+            "share": 0.18400823650288362,
+            "status": "info",
+            "value": "18% of DB time"
+          }
+        ],
+        "key": "findings",
+        "metrics": [
+          {
+            "key": "high",
+            "label": "High",
+            "text": "0",
+            "value": 0.0
+          },
+          {
+            "key": "medium",
+            "label": "Medium",
+            "text": "0",
+            "value": 0.0
+          },
+          {
+            "key": "low",
+            "label": "Low",
+            "text": "4",
+            "value": 4.0
+          },
+          {
+            "key": "context",
+            "label": "Information and history",
+            "text": "1",
+            "value": 1.0
+          }
+        ],
+        "next": "culprit findings yugabyte-demo",
+        "status": "info",
+        "takeaway": "4 opportunities; the top ones touch 706 ms of database time over the 1 minute since statistics were reset (89%).",
+        "title": "Findings"
+      },
+      {
+        "detail": "5 queries tracked over the 1 minute since statistics were reset.",
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "8345917977273313509",
+            "kind": "query",
+            "label": "a read from orders",
+            "query_id": "8345917977273313509",
+            "share": 0.4901653118336783,
+            "status": null,
+            "value": "49%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "4357247400045295631",
+            "kind": "query",
+            "label": "a read from orders",
+            "query_id": "4357247400045295631",
+            "share": 0.21175081616474195,
+            "status": null,
+            "value": "21%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "466454478821061062",
+            "kind": "query",
+            "label": "a read from orders",
+            "query_id": "466454478821061062",
+            "share": 0.18400823650288362,
+            "status": null,
+            "value": "18%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "-71879613880347319",
+            "kind": "query",
+            "label": "a read from orders",
+            "query_id": "-71879613880347319",
+            "share": 0.08796723660312906,
+            "status": null,
+            "value": "9%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "-1395695495724611761",
+            "kind": "query",
+            "label": "a read from customers",
+            "query_id": "-1395695495724611761",
+            "share": 0.026108398895566987,
+            "status": null,
+            "value": "3%"
+          }
+        ],
+        "key": "top-queries",
+        "metrics": [
+          {
+            "key": "top-share",
+            "label": "Top query",
+            "text": "49%",
+            "value": 0.4901653118336783
+          },
+          {
+            "key": "top5-share",
+            "label": "Top five",
+            "text": "100%",
+            "value": 1.0
+          },
+          {
+            "key": "queries",
+            "label": "Queries",
+            "text": "5",
+            "value": 5.0
+          }
+        ],
+        "next": "culprit top yugabyte-demo",
+        "status": "info",
+        "takeaway": "One query is 49% of database time: a read from orders.",
+        "title": "Top queries"
+      },
+      {
+        "detail": "Sample what it waits on right now instead.",
+        "fix_sql": null,
+        "items": [],
+        "key": "waits",
+        "metrics": [],
+        "next": "culprit waits yugabyte-demo",
+        "status": "unavailable",
+        "takeaway": "No exclusive historical wait mix was collected. DocDB RPC timings can overlap; sample active YSQL sessions or inspect native storage metrics.",
+        "title": "Where time goes"
+      },
+      {
+        "detail": "The app reads them every few seconds; `culprit live` reads them once.",
+        "fix_sql": null,
+        "items": [],
+        "key": "now",
+        "metrics": [],
+        "next": "culprit live yugabyte-demo",
+        "status": "info",
+        "takeaway": "Sessions weren't read for this dashboard.",
+        "title": "Right now"
+      },
+      {
+        "detail": "Scan again to read compiles, memory, cache and connection counters.",
+        "fix_sql": null,
+        "items": [],
+        "key": "health",
+        "metrics": [],
+        "next": "culprit waits yugabyte-demo",
+        "status": "unavailable",
+        "takeaway": "This scan recorded no health counters.",
+        "title": "Health"
+      },
+      {
+        "detail": "Scan again to read the last day of deadlocks.",
+        "fix_sql": null,
+        "items": [],
+        "key": "deadlocks",
+        "metrics": [],
+        "next": "culprit deadlocks yugabyte-demo",
+        "status": "unavailable",
+        "takeaway": "This scan didn't read deadlocks.",
+        "title": "Deadlocks"
+      },
+      {
+        "detail": "Candidates come from YSQL plans, the index catalog and foreign keys; DocDB does not publish missing-index requests.",
+        "fix_sql": null,
+        "items": [],
+        "key": "indexes",
+        "metrics": [
+          {
+            "key": "add",
+            "label": "To add",
+            "text": "0",
+            "value": 0.0
+          },
+          {
+            "key": "cleanup",
+            "label": "To clean up",
+            "text": "0",
+            "value": 0.0
+          },
+          {
+            "key": "reclaim",
+            "label": "Space back",
+            "text": "0 B",
+            "value": -0.0
+          },
+          {
+            "key": "tables",
+            "label": "Tables to look at",
+            "text": "0",
+            "value": 0.0
+          }
+        ],
+        "next": "culprit indexes yugabyte-demo",
+        "status": "good",
+        "takeaway": "No index changes stand out.",
+        "title": "Indexes"
+      },
+      {
+        "detail": "5 current application queries have plans; 5 application queries have plans in all. 0 historical or once-only queries are excluded from the current assessment. This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values.",
+        "fix_sql": null,
+        "items": [],
+        "key": "plans",
+        "metrics": [
+          {
+            "key": "captured",
+            "label": "Current plans",
+            "text": "5",
+            "value": 5.0
+          },
+          {
+            "key": "flagged",
+            "label": "With problems",
+            "text": "0",
+            "value": 0.0
+          }
+        ],
+        "next": null,
+        "status": "info",
+        "takeaway": "No urgent plan change is established in this workload; 1 current query plan retains structural observations to review as the data or workload changes.",
+        "title": "Plans"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "storage",
+        "metrics": [],
+        "next": "culprit waits yugabyte-demo",
+        "status": "unavailable",
+        "takeaway": "This scan has no storage timings.",
+        "title": "Storage"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "connections",
+        "metrics": [],
+        "next": "culprit waits yugabyte-demo",
+        "status": "unavailable",
+        "takeaway": "This scan has no connection counters.",
+        "title": "Connections"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "replication",
+        "metrics": [],
+        "next": "culprit waits yugabyte-demo",
+        "status": "unavailable",
+        "takeaway": "Raft replica lag was not measured; an empty PostgreSQL replication view cannot establish DocDB replication health.",
+        "title": "Replication"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "failures",
+        "metrics": [],
+        "next": "culprit findings yugabyte-demo",
+        "status": "unavailable",
+        "takeaway": "YugabyteDB reported no failed or cancelled runs per statement in this scan.",
+        "title": "Failing queries"
+      },
+      {
+        "detail": "3 checks are locked: Unused indexes, Overlapping indexes and Repeated statements within logged requests need Application query log and Index usage statistics.",
+        "fix_sql": null,
+        "items": [],
+        "key": "statistics",
+        "metrics": [
+          {
+            "key": "queries",
+            "label": "Queries",
+            "text": "5",
+            "value": 5.0
+          },
+          {
+            "key": "plans",
+            "label": "All queries with plans",
+            "text": "5",
+            "value": 5.0
+          },
+          {
+            "key": "window-hours",
+            "label": "Covers",
+            "text": "1 minute",
+            "value": 0.002180721958478292
+          },
+          {
+            "key": "locked",
+            "label": "Locked checks",
+            "text": "3",
+            "value": 3.0
+          }
+        ],
+        "next": "culprit doctor yugabyte-demo",
+        "status": "watch",
+        "takeaway": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) covers only the 1 minute since statistics were reset, so the numbers are thin until it has seen more.",
+        "title": "Query statistics"
+      }
+    ]
   }
 }

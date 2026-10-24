@@ -272,6 +272,7 @@ impl Connections<'_> {
         };
         let mut options = std::collections::BTreeMap::new();
         match d.engine {
+            Engine::Yugabyte => return Err(Error::invalid("YugabyteDB is not an Azure flexible-server engine")),
             Engine::Mysql => options.insert("ssl-mode".into(), "VERIFY_IDENTITY".into()),
             _ => options.insert("sslmode".into(), "verify-full".into()),
         };
@@ -295,6 +296,9 @@ impl Connections<'_> {
     }
 
     fn add_rds(&self, d: &DiscoveredDatabase) -> Result<ConnectionInfo> {
+        if d.engine == Engine::Yugabyte {
+            return Err(Error::invalid("YugabyteDB is not an Amazon RDS engine"));
+        }
         store::validate_name(&d.alias)?;
         let auth =
             if d.auth == AuthKind::AwsIam && d.engine != Engine::Mssql { AuthKind::AwsIam } else { AuthKind::Password };
@@ -316,6 +320,7 @@ impl Connections<'_> {
                 options.insert("trustServerCertificateCA".into(), aws::RDS_CA.into());
             }
             Engine::Sqlite => {}
+            Engine::Yugabyte => return Err(Error::invalid("YugabyteDB is not an Amazon RDS engine")),
         }
         let stored = StoredConnection {
             engine: d.engine,
@@ -460,6 +465,9 @@ impl Connections<'_> {
                     .ok_or_else(|| Error::invalid("AWS IAM authentication needs a database user name"))?;
                 let port = spec.port.unwrap_or(match engine {
                     Engine::Postgres => 5432,
+                    Engine::Yugabyte => {
+                        return Err(Error::invalid("AWS RDS IAM authentication does not apply to YugabyteDB"));
+                    }
                     Engine::Mysql => 3306,
                     Engine::Mssql => 1433,
                     Engine::Sqlite => 0,

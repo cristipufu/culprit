@@ -683,3 +683,13 @@ fn extract_call_site_reads_marginalia_sqlcommenter_and_file_line_comments() {
         Some("app/models/order.rb:42 (controller=orders, action=index)")
     );
 }
+#[test]
+fn ysql_uses_postgres_quoting_and_rejects_native_administration_in_reads() {
+    let engine = Engine::Yugabyte;
+    assert!(reads_only("SELECT $$ DROP TABLE x; $$", engine));
+    assert!(reads_only("SELECT yb_servers()", engine));
+    assert!(!reads_only("SELECT YB_CREATE_GLOBAL_VIEW('public', 'pg_stat_statements_info')", engine));
+    assert!(!reads_only("SELECT yb_cancel_transaction('x')", engine));
+    assert!(!reads_only("SELECT set_config('x', 'y', false)", engine));
+    assert!(!reads_only("SELECT 1; UPDATE t SET n = 1", engine));
+}

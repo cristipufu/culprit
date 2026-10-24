@@ -58,6 +58,7 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
         format!("The whole server recorded {} new connections a second on average", format::count(rate))
     };
     let detail = match engine {
+        Engine::Yugabyte => "A YSQL logical client can share a physical backend through Connection Manager; these counts alone do not identify how clients are pooled.".into(),
         Engine::Sqlite => "SQLite has no connections to pool: each one opens the file.".to_string(),
         Engine::Postgres => {
             let length = p.signal(culprit_core::signal_id::SESSION_LENGTH).map(|s| s.value);
@@ -81,6 +82,7 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
         },
     };
     let scope = match engine {
+        Engine::Yugabyte => ", within the measured YSQL node scope",
         Engine::Sqlite => "",
         Engine::Postgres => " to this database",
         Engine::Mssql => ", counting every database on the instance",
@@ -118,6 +120,7 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
     let cache_change = (engine == Engine::Mysql && thread_cache.is_none_or(|n| n < THREAD_CACHE))
         .then(|| setting_change(&snapshot.server, "thread_cache_size", &format!("{THREAD_CACHE:.0}")));
     f.fix = Some(match engine {
+        Engine::Yugabyte => Fix { summary: "Reuse connections through the application pool or YSQL Connection Manager; compare connection setup latency and client/backend counts before changing pool sizes.".into(), sql: None, cost: None },
         Engine::Sqlite => Fix {
             summary: "Keep one connection open per worker instead of opening the file for each request.".into(),
             sql: None,

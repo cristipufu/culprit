@@ -8,7 +8,7 @@ pub fn big_result_info() -> CheckInfo {
         id: "big-result".into(),
         title: "Queries that return huge results".into(),
         category: Category::Queries,
-        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Yugabyte, Engine::Mysql],
         requires: vec![],
         description: "Reads that send tens of thousands of rows to the application on every run, with an estimate in bytes from the plan's row width where the engine gives one.".into(),
     }

@@ -269,6 +269,13 @@ pub(super) fn replication(report: &Report) -> Tile {
             return t;
         }
         let none = match s.server.engine {
+            Engine::Yugabyte => {
+                return Tile::new(
+                    TileKey::Replication,
+                    TileStatus::Unavailable,
+                    "Raft replica lag was not measured; an empty PostgreSQL replication view cannot establish DocDB replication health.",
+                );
+            }
             Engine::Postgres => {
                 "No replicas or replication slots: nothing can fall behind or hold WAL back.".to_string()
             }

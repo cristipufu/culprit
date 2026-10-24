@@ -8,7 +8,7 @@ pub fn chatty_query_info() -> CheckInfo {
         id: "chatty-query".into(),
         title: "Chatty queries".into(),
         category: Category::Queries,
-        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Yugabyte, Engine::Mysql],
         requires: vec![],
         description: "Tiny queries executed so often that the round trips cost more than the work, typically a loop in application code.".into(),
     }
@@ -329,7 +329,7 @@ fn counter_fix(snapshot: &Snapshot, isolated: bool) -> String {
     }
     let sequence = match snapshot.server.engine {
         Engine::Mssql => "a SEQUENCE (`NEXT VALUE FOR`)",
-        Engine::Postgres => "a sequence (`nextval()`, or an identity column)",
+        Engine::Postgres | Engine::Yugabyte => "a sequence (`nextval()`, or an identity column)",
         Engine::Mysql if snapshot.server.is_mariadb() => "a SEQUENCE (`NEXT VALUE FOR`) or an AUTO_INCREMENT column",
         Engine::Mysql => "an AUTO_INCREMENT column",
         Engine::Sqlite => "an INTEGER PRIMARY KEY",

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use culprit_core::{
-    ColumnInfo, Drift, DriftItem, DriftKind, DriftPresence, DriftSide, IndexStat, Report, Snapshot, format,
+    ColumnInfo, Drift, DriftItem, DriftKind, DriftPresence, DriftSide, Engine, IndexStat, Report, Snapshot, format,
     server_label,
 };
 
@@ -242,7 +242,7 @@ fn signature(i: &IndexStat) -> String {
         .map(|ops| ops.iter().map(|o| o.to_ascii_lowercase()).collect::<Vec<_>>().join(","))
         .unwrap_or_default();
     format!(
-        "{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{:?}",
         key(&i.schema, &i.table),
         i.columns.iter().map(|c| c.to_ascii_lowercase()).collect::<Vec<_>>().join(","),
         include.join(","),
@@ -250,6 +250,8 @@ fn signature(i: &IndexStat) -> String {
         i.filter.as_deref().map(normalize_filter).unwrap_or_default(),
         i.is_disabled,
         opclasses,
+        i.kind.to_ascii_lowercase(),
+        i.docdb.as_ref().map(|d| d.hash_columns.iter().map(|c| c.to_ascii_lowercase()).collect::<Vec<_>>()),
     )
 }
 
@@ -272,6 +274,13 @@ fn definition(i: &IndexStat) -> String {
         })
         .collect();
     let mut out = format!("({})", cols.join(", "));
+    if let Some(native) = &i.docdb {
+        out.push_str(&if native.hash_columns.is_empty() {
+            " RANGE SHARDED".into()
+        } else {
+            format!(" HASH ({})", native.hash_columns.join(", "))
+        });
+    }
     if !i.include.is_empty() {
         out.push_str(&format!(" INCLUDE ({})", i.include.join(", ")));
     }
@@ -408,6 +417,15 @@ fn missing_index(index: &IndexStat, has: &str, lacks: &str, target: &Snapshot, p
 fn create_sql(target: &Snapshot, index: &IndexStat) -> Option<String> {
     if index.is_primary_key || index.is_clustered || index.columns.is_empty() {
         return None;
+    }
+    if target.server.engine == Engine::Yugabyte {
+        // Native definitions preserve composite HASH groups, ordered keys, collations and operator classes.
+        // Rebuilding one from column names alone changes its distribution and may create a write hotspot.
+        return index
+            .definition
+            .as_ref()
+            .filter(|_| index.docdb.is_some())
+            .map(|sql| format!("{};", sql.trim_end_matches(';')));
     }
     let table = target.table(&index.schema, &index.table);
     let kind = table.and_then(|t| t.kind.as_deref());

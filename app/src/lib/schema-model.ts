@@ -79,13 +79,25 @@ export function coveredBy(index: IndexStat, siblings: IndexStat[]): IndexStat | 
   return (
     siblings.find((other) => {
       if (other === index || other.filter || other.columns.length < keys.length) return false;
+      if (other.is_disabled || other.is_clustered || other.kind !== index.kind) return false;
+      const native = index.docdb;
+      const otherNative = other.docdb;
+      if (native || otherNative || index.kind.toLowerCase() === "lsm") {
+        if (!native || !otherNative || native.hash_columns.length !== otherNative.hash_columns.length || !native.hash_columns.every((c, n) => bare(c) === bare(otherNative.hash_columns[n] ?? ""))) return false;
+      }
+      if (!index.include.every((c) => [...other.columns, ...other.include].some((held) => bare(held) === bare(c)))) return false;
+      if (!index.columns.every((c, n) => c.toLowerCase() === other.columns[n]?.toLowerCase() && (index.opclasses?.[n] ?? "").toLowerCase() === (other.opclasses?.[n] ?? "").toLowerCase())) return false;
       const theirs = other.columns.map(bare);
       return keys.every((k, i) => theirs[i] === k) && (other.columns.length > keys.length || other.name < index.name);
     }) ?? null
   );
 }
 
-export type Relation = { fk: ForeignKey; indexed: boolean };
+export function canSeek(index: IndexStat, equality: string[]): boolean {
+  return index.docdb ? index.docdb.hash_columns.every((hash) => equality.some((c) => bare(c) === bare(hash))) : index.kind.toLowerCase() !== "lsm";
+}
+
+export type Relation = { fk: ForeignKey; indexed: boolean | null };
 
 /** Foreign keys from this table (with whether an index leads with their columns) and to it. */
 export function relations(report: Report, table: TableStat): { outgoing: Relation[]; incoming: ForeignKey[] } {
@@ -98,9 +110,14 @@ export function relations(report: Report, table: TableStat): { outgoing: Relatio
       const cols = fk.columns.map(bare);
       const indexed = own.some((i) => {
         const keys = i.columns.map(bare);
-        return cols.every((c) => keys.slice(0, cols.length).includes(c));
+        return !i.is_disabled && !i.filter && canSeek(i, fk.columns) && cols.every((c) => keys.slice(0, cols.length).includes(c));
       });
-      return { fk, indexed };
+      const unknown = report.snapshot.server.engine === "yugabyte" && (
+        own.some((i) => !i.docdb) || (report.snapshot.sources ?? []).some((source) =>
+          ["indexes", "tables", "table storage"].includes(source.source) && ["partial", "unavailable"].includes(source.state)) ||
+        !(report.snapshot.sources ?? []).some((source) => source.source === "indexes" && ["collected", "empty"].includes(source.state))
+      );
+      return { fk, indexed: indexed ? true : unknown ? null : false };
     });
   const incoming = foreign_keys.filter((fk) => same(fk.ref_schema, fk.ref_table));
   return { outgoing, incoming };
@@ -136,6 +153,10 @@ export function ddl(engine: Engine, table: TableStat, columns: ColumnInfo[], ind
     return "-- TimescaleDB manages this table's partitioning, chunks, compression and policies.\n-- The collected column/index metadata is not a complete recreation script.\n-- Export its schema with the TimescaleDB tools before recreating it.";
   }
   if (table.kind === "virtual") return original ?? "-- The virtual table's original definition was not collected. Read it from the database before recreating it.";
+  if (engine === "yugabyte" && !table.storage?.docdb)
+    return original ?? "-- Native DocDB sharding metadata was unavailable. Export this table's YSQL schema before recreating it.";
+  if (engine === "yugabyte" && columns.some((c) => c.generated))
+    return original ?? "-- Complete native generated/identity column definitions were not collected. Export this table's YSQL schema before recreating it.";
   const q = (n: string) => quoteIdent(engine, n);
   const name = `${q(table.schema)}.${q(table.name)}`;
   const lines = columns.map((c) => {
@@ -146,18 +167,29 @@ export function ddl(engine: Engine, table: TableStat, columns: ColumnInfo[], ind
     return parts.join(" ");
   });
   const pk = indexes.find((i) => i.is_primary_key);
-  if (pk) lines.push(`  CONSTRAINT ${q(pk.name)} PRIMARY KEY (${pk.columns.map((c) => q(c.replace(/\s+(ASC|DESC)$/i, ""))).join(", ")})`);
+  if (pk) {
+    if (engine === "yugabyte" && !pk.docdb) return "-- Native primary-key sharding was unavailable. Export this table's YSQL schema before recreating it.";
+    const keys = engine === "yugabyte" ? nativeKeys(pk, q) : pk.columns.map((c) => q(c.replace(/\s+(ASC|DESC)$/i, ""))).join(", ");
+    lines.push(`  CONSTRAINT ${q(pk.name)} PRIMARY KEY (${keys})`);
+  }
   outgoing.forEach(({ fk }) =>
     lines.push(
       `  CONSTRAINT ${q(fk.name)} FOREIGN KEY (${fk.columns.map(q).join(", ")}) REFERENCES ${q(fk.ref_schema)}.${q(fk.ref_table)} (${fk.ref_columns.map(q).join(", ")})`,
     ),
   );
-  const out = [original ?? `CREATE TABLE ${name} (\n${lines.join(",\n")}\n);`];
+  const native = engine === "yugabyte" ? table.storage?.docdb : null;
+  const distribution = native ? ` WITH (colocation = ${native.colocated ? "true" : "false"})${!native.colocated && (native.hash_key_columns ?? 0) > 0 && (native.tablets ?? 0) > 1 ? ` SPLIT INTO ${native.tablets} TABLETS` : ""}` : "";
+  const out = [original ?? `CREATE TABLE ${name} (\n${lines.join(",\n")}\n)${distribution};`];
+  if (native) out.unshift("-- Logical YSQL schema with captured sharding. Review tablespaces, placement, tablegroups and range split points against a native schema export.");
   indexes
     .filter((i) => !i.is_primary_key && (engine !== "sqlite" || i.definition != null))
     .forEach((i) => {
       if (i.definition && /^CREATE /i.test(i.definition)) {
         out.push(`${i.definition.replace(/;?\s*$/, "")};`);
+        return;
+      }
+      if (engine === "yugabyte") {
+        out.push(`-- The native definition of ${q(i.name)} was unavailable; export it before recreating this index.`);
         return;
       }
       const keys = i.columns.map((c) => {
@@ -171,4 +203,10 @@ export function ddl(engine: Engine, table: TableStat, columns: ColumnInfo[], ind
       out.push(`CREATE ${unique}${kind}INDEX ${q(i.name)} ON ${name} (${keys.join(", ")})${include}${where};`);
     });
   return out.join("\n\n");
+}
+
+function nativeKeys(index: IndexStat, quote: (name: string) => string): string {
+  const hashes = index.docdb?.hash_columns ?? [];
+  const group = hashes.length === 0 ? [] : [hashes.length === 1 ? `${quote(hashes[0]!)} HASH` : `(${hashes.map(quote).join(", ")}) HASH`];
+  return [...group, ...index.columns.filter((c) => !hashes.some((hash) => bare(c) === bare(hash))).map((c) => `${quote(c.replace(/\s+(ASC|DESC)$/i, ""))} ${/\s+DESC$/i.test(c) ? "DESC" : "ASC"}`)].join(", ");
 }

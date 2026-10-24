@@ -1782,13 +1782,21 @@ fn scans_are_marked_with_their_tables_indexes() {
         CatalogTable {
             schema: "public".into(),
             name: "orders".into(),
-            indexes: vec![crate::PlanIndexColumns { name: "orders_pkey".into(), columns: vec!["id".into()] }],
+            indexes: vec![crate::PlanIndexColumns {
+                hash_columns: None,
+                name: "orders_pkey".into(),
+                columns: vec!["id".into()],
+            }],
         },
         CatalogTable { schema: "public".into(), name: "items".into(), indexes: vec![] },
         CatalogTable {
             schema: "archive".into(),
             name: "items".into(),
-            indexes: vec![crate::PlanIndexColumns { name: "items_pkey".into(), columns: vec!["id".into()] }],
+            indexes: vec![crate::PlanIndexColumns {
+                hash_columns: None,
+                name: "items_pkey".into(),
+                columns: vec!["id".into()],
+            }],
         },
     ];
     let marked = |object: &str| {
@@ -1895,6 +1903,22 @@ fn a_cheap_plan_states_no_share() {
     let p = plan(Engine::Mssql, aggregate);
     assert!(p.uncosted_steps().is_empty());
     assert!(p.step_share(&p.root.children[0]).is_some());
+}
+
+#[test]
+fn native_costs_remain_uncalibrated_while_logical_catalog_rows_explain_scans() {
+    let mut snapshot: crate::Snapshot =
+        serde_json::from_str(include_str!("../../../../fixtures/yugabyte-demo.json")).unwrap();
+    mark_snapshot(&mut snapshot);
+    let query = snapshot.queries().iter().find(|query| query.text.contains("WHERE customer_id")).unwrap();
+    let plan = query.plan.as_ref().unwrap();
+    let scan = plan.nodes().into_iter().find(|node| node.kind == NodeKind::Scan).unwrap();
+    assert_eq!(scan.table_rows, Some(20_000.0));
+    assert_eq!(estimated_work_threshold(plan), None);
+    assert!(!does_real_work(plan));
+    assert_eq!(cheap_plan_runs(plan, Some(query)), CheapPlanRuns::Unmeasured);
+    assert!(insights(plan).iter().any(|item| item.rule == "scan-filter" && item.nodes.contains(&scan.id)));
+    assert!(!plan.states_shares());
 }
 
 // Why a cheap plan's runs aren't cheap, as measured: an estimate its runs far exceed is no cheap plan, nor is a scan of

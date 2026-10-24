@@ -96,6 +96,9 @@ pub struct PlanFacts {
     pub query_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_identifier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub docdb: Option<crate::signals::DocdbMetrics>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
@@ -224,6 +227,9 @@ pub struct PlanNodeFacts {
     pub rows_produced_per_join: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_columns: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub docdb: Option<crate::signals::DocdbMetrics>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq, Eq)]
@@ -297,6 +303,7 @@ impl PlanFacts {
         let jit = props.get("JIT").and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
         let triggers = props.get("Triggers").and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
         Self {
+            docdb: None,
             query_hash: props.get("QueryHash").cloned(),
             query_identifier: props.get("Query Identifier").cloned(),
             parallelism_blocker: props.get("NonParallelPlanReason").cloned(),
@@ -376,6 +383,7 @@ impl PlanNodeFacts {
     pub fn from_legacy_properties(props: &Properties) -> Self {
         let number = |key: &str| props.get(key).and_then(|value| value.trim().parse::<f64>().ok());
         Self {
+            docdb: None,
             table_kind: None,
             estimated_row_bytes: number("AvgRowSize").or_else(|| number("Plan Width")).and_then(nonnegative),
             rows_produced_per_join: number("rows_produced_per_join").and_then(nonnegative),
@@ -595,6 +603,10 @@ mod trigger_measurements {
 pub struct PlanIndexColumns {
     pub name: String,
     pub columns: Vec<String>,
+    // Native DocDB hash group; an empty group is range sharded. None means no native sharding evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub hash_columns: Option<Vec<String>>,
 }
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq, Eq)]
 #[ts(export)]
@@ -670,6 +682,7 @@ fn legacy_indexes(value: &str) -> Vec<PlanIndexColumns> {
         .filter_map(|line| {
             let (name, cols) = line.split_once('=')?;
             Some(PlanIndexColumns {
+                hash_columns: None,
                 name: name.into(),
                 columns: cols.split(',').filter(|k| !k.is_empty()).map(str::to_string).collect(),
             })

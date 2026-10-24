@@ -339,6 +339,11 @@ export function TableSignalFacts({ report, table }: { report: Report; table: Tab
   const { snapshot } = report;
   const facts: ReactNode[] = [];
   const s = table.storage ?? null;
+  if (s?.docdb) {
+    const native = s.docdb;
+    facts.push(<Fact key="docdb-tablets" label="DocDB tablets" value={native.tablets == null ? "unknown" : count(native.tablets)} detail={native.colocated ? "Shared with its colocated tablegroup" : "Distributed LSM storage over Raft"} />);
+    facts.push(<Fact key="docdb-sharding" label="Sharding" value={native.hash_key_columns == null ? "unknown" : native.hash_key_columns > 0 ? `${native.hash_key_columns} hash key column${native.hash_key_columns === 1 ? "" : "s"}` : "range"} detail={native.colocated ? "Logical size is unavailable for shared allocation" : "PostgreSQL heap and vacuum counters do not apply"} />);
+  }
   if (s?.hot_updates != null && (table.updates ?? 0) >= 100) {
     const ratio = s.hot_updates / Math.max(1, table.updates ?? 1);
     facts.push(

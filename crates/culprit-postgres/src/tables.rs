@@ -137,10 +137,17 @@ const GUESSED: &str = "Planned with a default selectivity for its parameter (a f
 /// Said on any other step whose condition compares a column with a parameter that way.
 const GUESSED_STEP: &str = "Planned with a default selectivity for its parameter (a fixed share of the rows for a range or a pattern, 10 values for ANY): the rows it expects, and the cost of the steps above it, rest on that guess, not on the column's statistics.";
 
+/// PostgreSQL/YSQL parameter evidence, independent of heap storage and catalog I/O. The annotation makes no promise
+/// that an index exists or can serve the predicate; distributed hash keys need their own lookup evidence.
+pub fn parameter_guess(node: &PlanNode) -> Option<&'static str> {
+    (node.act_rows.is_none()
+        && [node.predicate.as_deref(), node.seek_predicate.as_deref()].into_iter().flatten().any(guessed_selectivity))
+    .then_some(GUESSED_STEP)
+}
+
 fn apply(node: &mut PlanNode, sizes: &HashMap<String, Size>, under_append: bool) {
     // Rows a run measured aren't a guess, whatever the plan was planned with.
-    let guessed = node.act_rows.is_none()
-        && [node.predicate.as_deref(), node.seek_predicate.as_deref()].into_iter().flatten().any(guessed_selectivity);
+    let guessed = parameter_guess(node).is_some();
     let size = node.object.as_ref().and_then(|o| sizes.get(o));
     if node.act_rows.is_some() || (!guessed && (node.predicate.is_some() || node.seek_predicate.is_some())) {
         node.facts_mut().selectivity_guess = None;

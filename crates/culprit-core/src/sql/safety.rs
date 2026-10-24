@@ -291,12 +291,12 @@ fn second_statement_at<'a>(tokens: &[Token<'a>], nesting: u8) -> Option<&'a str>
 
 /// Statements a read starts with, per engine.
 fn read_starts(engine: Engine) -> &'static [&'static str] {
-    match engine {
-        Engine::Mssql => &["SELECT", "WITH"],
-        Engine::Postgres => &["SELECT", "WITH", "TABLE", "VALUES", "SHOW", "EXPLAIN"],
-        Engine::Mysql => &["SELECT", "WITH", "TABLE", "VALUES", "SHOW", "EXPLAIN", "DESCRIBE", "DESC"],
+    match engine.sql_syntax() {
+        crate::SqlSyntax::Mssql => &["SELECT", "WITH"],
+        crate::SqlSyntax::Postgres => &["SELECT", "WITH", "TABLE", "VALUES", "SHOW", "EXPLAIN"],
+        crate::SqlSyntax::Mysql => &["SELECT", "WITH", "TABLE", "VALUES", "SHOW", "EXPLAIN", "DESCRIBE", "DESC"],
         // PRAGMA can write (`PRAGMA journal_mode = WAL`), so it isn't a read.
-        Engine::Sqlite => &["SELECT", "WITH", "VALUES", "EXPLAIN"],
+        crate::SqlSyntax::Sqlite => &["SELECT", "WITH", "VALUES", "EXPLAIN"],
     }
 }
 
@@ -310,8 +310,8 @@ const WRITES: &[&str] = &[
 
 /// Built-in functions with side effects (or that run SQL from a string) that a read-only transaction doesn't stop.
 fn side_effect_functions(engine: Engine) -> &'static [&'static str] {
-    match engine {
-        Engine::Postgres => &[
+    match engine.sql_syntax() {
+        crate::SqlSyntax::Postgres => &[
             "pg_terminate_backend",
             "pg_cancel_backend",
             "set_config",
@@ -340,12 +340,12 @@ fn side_effect_functions(engine: Engine) -> &'static [&'static str] {
             "lo_from_bytea",
             "lo_put",
         ],
-        Engine::Mysql => {
+        crate::SqlSyntax::Mysql => {
             &["get_lock", "release_lock", "release_all_locks", "load_file", "master_pos_wait", "source_pos_wait"]
         }
-        Engine::Mssql => &["openrowset", "opendatasource", "openquery"],
+        crate::SqlSyntax::Mssql => &["openrowset", "opendatasource", "openquery"],
         // Loading native code, and the file functions of the CLI and the fileio extension.
-        Engine::Sqlite => &["load_extension", "readfile", "writefile", "edit", "fts3_tokenizer"],
+        crate::SqlSyntax::Sqlite => &["load_extension", "readfile", "writefile", "edit", "fts3_tokenizer"],
     }
 }
 
@@ -353,9 +353,12 @@ fn side_effect_functions(engine: Engine) -> &'static [&'static str] {
 /// members (`pg_stat_reset_*`, `pg_create_*_replication_slot`) are covered too.
 fn side_effect_family(engine: Engine, name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    match engine {
-        Engine::Sqlite => false,
-        Engine::Postgres => {
+    if engine.spec().mutating_function(&n) {
+        return true;
+    }
+    match engine.sql_syntax() {
+        crate::SqlSyntax::Sqlite => false,
+        crate::SqlSyntax::Postgres => {
             (n.starts_with("pg_") && n.contains("reset"))
                 || n.contains("replication_slot")
                 || n.starts_with("pg_replication_origin")
@@ -377,12 +380,12 @@ fn side_effect_family(engine: Engine, name: &str) -> bool {
                 || n.starts_with("query_to_")
                 || n.starts_with("lo_")
         }
-        Engine::Mysql => {
+        crate::SqlSyntax::Mysql => {
             matches!(n.as_str(), "setval" | "nextval" | "lastval" | "sleep" | "benchmark")
                 || n.ends_with("_lock")
                 || n.starts_with("release_")
         }
-        Engine::Mssql => {
+        crate::SqlSyntax::Mssql => {
             n.starts_with("open") && matches!(n.as_str(), "openrowset" | "opendatasource" | "openquery" | "openxml")
         }
     }
@@ -394,7 +397,8 @@ fn side_effect_family(engine: Engine, name: &str) -> bool {
 /// engine has one, and a read-only login is the only complete guarantee.
 pub fn reads_only(text: &str, engine: Engine) -> bool {
     let Ok(statement) = single_statement(text, engine) else { return false };
-    let advisory = |w: &str| engine == Engine::Postgres && w.to_ascii_lowercase().contains("advisory");
+    let advisory =
+        |w: &str| engine.sql_syntax() == crate::SqlSyntax::Postgres && w.to_ascii_lowercase().contains("advisory");
     let Ok(readings) = readings(statement, engine) else { return false };
     readings.iter().all(|tokens| {
         let words: Vec<(usize, String)> = tokens
@@ -418,7 +422,8 @@ pub fn reads_only(text: &str, engine: Engine) -> bool {
             let calls = matches!(tokens.get(at + 1), Some(Token::Punct('(')));
             let locking = word == "SHARE" && matches!(previous, Some("FOR") | Some("IN") | Some("KEY"));
             // NEXT VALUE FOR advances a sequence (SQL Server, MariaDB): a write a read-only transaction doesn't undo.
-            let sequence = engine != Engine::Postgres && word == "VALUE" && previous == Some("NEXT");
+            let sequence =
+                engine.sql_syntax() != crate::SqlSyntax::Postgres && word == "VALUE" && previous == Some("NEXT");
             !(WRITES.contains(&word.as_str()) || locking || sequence || (calls && unsafe_call(word)))
         });
         // A quoted name can call a function too ("pg_terminate_backend"(…), [openquery](…), `get_lock`(…)). Compare its

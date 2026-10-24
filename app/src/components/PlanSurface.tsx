@@ -6,6 +6,7 @@ import { planShares } from "../lib/actual";
 import { can } from "../lib/engines";
 import { allNodes, cost, findingNoShareReason, insightsByNode, noShareReason } from "../lib/plan-format";
 import { NodeDetails } from "./NodeDetails";
+import { DocdbWork } from "./DocdbWork";
 import { PlanDiagram } from "./PlanDiagram";
 import { PlanInsights } from "./PlanInsights";
 import { PlanOperations } from "./PlanOperations";
@@ -63,6 +64,7 @@ export function PlanSurface({ plan, query, focus, look, badge }: { plan: Plan; q
     <div className="plan-surface">
       {!plan.insights?.note && plan.kind !== "actual" && (plan.props["Generic Plan"] || plan.kind === "generic") && <p className="notice">This plan was obtained without the application's parameter values.{plan.engine === "sqlite" ? " It uses Culprit's SQLite library, which may differ from the application's version and build." : " Connection settings and runtime partition pruning may differ from the application's run."} It does not identify the plan used by historical executions.</p>}
       <PlanInsights plan={plan} selectedNode={selected} onSelectNode={setSelected} />
+      <DocdbWork metrics={plan.facts?.docdb} basis="execution" />
       {look === "diagram" && <PlanDiagram plan={plan} query={query} focus={focus} selectedId={selected} onSelect={setSelected} badge={badge} />}
       {look === "tree" && <PlanView plan={plan} query={query} focus={focus} selectedId={selected} onSelect={setSelected} />}
       {look === "operations" && <OperationsPanel plan={plan} query={query} focus={focus} selected={selected ?? focus ?? null} onSelect={setSelected} />}

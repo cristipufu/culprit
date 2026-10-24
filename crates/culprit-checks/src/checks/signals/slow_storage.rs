@@ -164,7 +164,7 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
             let cache_note = match snapshot.server.engine {
                 Engine::Postgres => " PostgreSQL's numbers include reads the operating system served from its cache, so reads that reached the disk were slower still.",
                 Engine::Mysql => " The timings include reads the operating system served from its cache unless InnoDB uses O_DIRECT.",
-                Engine::Mssql | Engine::Sqlite => "",
+                Engine::Mssql | Engine::Sqlite | Engine::Yugabyte => "",
             };
             // The label starts with a database name: never capitalize it, lead with the operation instead.
             f.summary = format!(

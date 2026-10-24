@@ -276,6 +276,8 @@ fn all_provider_sources_are_registered_in_the_canonical_source_contract() {
     let provider_sources: &[&[culprit_core::Source]] = &[
         #[cfg(feature = "postgres")]
         culprit_postgres::sources::ALL,
+        #[cfg(feature = "yugabyte")]
+        culprit_yugabyte::sources::ALL,
         #[cfg(feature = "mysql")]
         culprit_mysql::sources::ALL,
         #[cfg(feature = "mssql")]

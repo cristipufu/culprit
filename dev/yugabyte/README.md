@@ -17,7 +17,19 @@ CULPRIT_YSQL_TEST_PORT=55434 cargo test --locked -p culprit-postgres --lib \
 
 Wait until `docker exec culprit-yugabyte-provider bin/ysqlsh -h culprit-yugabyte-provider -X -c 'SELECT 1'` succeeds before creating/seeding the database. The opt-in test connects only to loopback, exercises bounded reads and late errors, captures a server warning, obtains native `EXPLAIN (ANALYZE, DIST)` metrics, and verifies a measured update rolls back. It calls no PostgreSQL storage collector or connection probe.
 
-The shared transport is groundwork; it does not register YugabyteDB as a PostgreSQL provider. Dedicated collection, engine facts and UI registration are separate work.
+The dedicated provider is registered as `yugabyte`, sharing only wire transport and SQL execution with PostgreSQL.
+See [provider coverage and limits](../../docs/providers/yugabyte.md).
+
+Populate a reproducible statement workload, then verify the native provider:
+
+```sh
+docker exec -i culprit-yugabyte-provider bin/ysqlsh -h culprit-yugabyte-provider -d culprit_yugabyte -X < dev/yugabyte/workload.sql
+CULPRIT_YSQL_TEST_PORT=55434 cargo test --locked -p culprit-yugabyte --lib live_native_catalog_workload_sessions_and_stale_identity_guards -- --ignored
+```
+
+The workload script resets **this disposable container's** statement statistics before running synthetic queries. The
+native check verifies catalog/DocDB measurements, recorded plans, scoped sessions and refusal of stale/wrong-node
+identities. It does not cancel an unverified session.
 
 ## Cluster-view verification
 
@@ -27,6 +39,7 @@ The default views do not include the statement reset metadata. For testing it in
 
 ```sql
 SELECT yb_create_global_view('public', 'pg_stat_statements_info');
+SELECT yb_create_global_view('public', 'pg_settings');
 SET yb_enable_global_views = on;
 SELECT * FROM public."gv$pg_stat_statements_info";
 ```

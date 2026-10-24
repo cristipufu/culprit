@@ -8,6 +8,8 @@ import { bytes, count, duration, percentValue } from "./format";
 /** The shared wait categories, in the same order and words as the Rust side (culprit_core::waits). */
 export const WAIT_LABEL: Record<string, string> = {
   cpu: "CPU",
+  rpc: "Distributed RPCs",
+  storage: "Storage I/O",
   io: "Disk reads",
   rows: "Row access",
   lock: "Locks",
@@ -23,6 +25,8 @@ export const WAIT_LABEL: Record<string, string> = {
 /** Fold an engine's category name into a shared key (mirrors `category_key` in Rust). */
 export function waitKey(category: string): string {
   switch (category.toLowerCase()) {
+    case "rpc": return "rpc";
+    case "storage": return "storage";
     case "cpu":
     case "worker thread":
     case "running":

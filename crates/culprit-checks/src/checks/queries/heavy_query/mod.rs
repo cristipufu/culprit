@@ -20,7 +20,7 @@ pub fn heavy_query_info() -> CheckInfo {
         id: "heavy-query".into(),
         title: "Queries that dominate database time".into(),
         category: Category::Queries,
-        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Yugabyte, Engine::Mysql, Engine::Sqlite],
         requires: vec![],
         description: "Single queries that take a large share of database time, with what their plan spends it on."
             .into(),

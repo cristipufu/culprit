@@ -43,6 +43,28 @@ pub async fn query(client: &Client, sql: &str) -> Result<Vec<Row>> {
     Ok(rows_of(messages))
 }
 
+/// Retain a bounded prefix of collector rows, draining completion and late errors after retention stops. The caller
+/// must record partial coverage when truncated; dropping rows never establishes absence or a complete catalog.
+pub async fn query_bounded(client: &Client, sql: &str, limit: usize) -> Result<(Vec<Row>, bool)> {
+    use futures_util::TryStreamExt;
+    let stream = client.simple_query_raw(&tagged(sql)).await.map_err(map_error)?;
+    tokio::pin!(stream);
+    let mut budget = culprit_core::limits::ResultBudget::new(limit);
+    let mut rows = Vec::new();
+    while let Some(message) = stream.try_next().await.map_err(map_error)? {
+        if let SimpleQueryMessage::Row(row) = message {
+            if budget.truncated() {
+                continue;
+            }
+            let bytes = (0..row.len()).fold(0usize, |total, i| total.saturating_add(row.get(i).map_or(0, str::len)));
+            if budget.retain(bytes) {
+                rows.push(Row(row));
+            }
+        }
+    }
+    Ok((rows, budget.truncated()))
+}
+
 pub async fn query_one(client: &Client, sql: &str) -> Result<Option<Row>> {
     Ok(query(client, sql).await?.into_iter().next())
 }

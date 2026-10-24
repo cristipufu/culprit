@@ -3,6 +3,22 @@
 use culprit_core::{ChangeKind, Engine, ErrorCode, NodeKind, Plan, PlanKind, PlanNode, plan_diff, plan_diff_named};
 use culprit_engine::plans::{PlanFormat, decode, detect, parse_plan};
 
+#[test]
+fn native_docdb_plans_are_imported_as_yugabyte_with_total_rows_and_native_metrics() {
+    let text = include_str!("../../culprit-yugabyte/tests/data/loops.json");
+    assert_eq!(detect(text), Some(PlanFormat::YugabyteJson));
+    let plan = parse_plan(text).unwrap();
+    assert_eq!(plan.engine, Engine::Yugabyte);
+    assert_eq!(plan.kind, PlanKind::Actual);
+    assert_eq!(plan.root.children[1].rows_read_total(), Some(20.0));
+    assert_eq!(plan.facts().docdb.as_ref().unwrap().read_requests, Some(21.0));
+    assert!(plan.root.children[1].table_rows.is_none());
+    let imported = parse_plan(&serde_json::to_string(&plan).unwrap()).unwrap();
+    assert_eq!(imported.engine, Engine::Yugabyte);
+    assert_eq!(imported.root.children[1].rows_read_total(), Some(20.0));
+    assert_eq!(imported.facts().docdb, plan.facts().docdb);
+}
+
 fn fixture(name: &str) -> String {
     std::fs::read_to_string(format!("{}/tests/plans/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
 }

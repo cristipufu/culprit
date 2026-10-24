@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 
 const UPDATE: &str = "CULPRIT_UPDATE_GOLDEN";
 const ACCEPT: &str = "CULPRIT_UPDATE_GOLDEN=1 cargo test -p culprit-engine --test all golden::";
-/// The four demo snapshots; every saved demo report (`*.report.json`) is read too.
-const SNAPSHOTS: &[&str] = &["mssql-demo.json", "postgres-demo.json", "mysql-demo.json", "sqlite-demo.json"];
+/// Raw demo snapshots; every saved demo report (`*.report.json`) is read too.
+const SNAPSHOTS: &[&str] =
+    &["mssql-demo.json", "postgres-demo.json", "mysql-demo.json", "sqlite-demo.json", "yugabyte-demo.json"];
 /// Changed lines shown on a mismatch, before "and N more".
 const SHOWN: usize = 40;
 const CONTEXT: usize = 3;

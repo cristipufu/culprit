@@ -228,6 +228,7 @@ fn ads_profile(source: ImportSource, file: &str, provider: &str, o: &Value) -> O
     let engine = match provider.to_ascii_uppercase().as_str() {
         "MSSQL" => Engine::Mssql,
         "PGSQL" | "POSTGRES" | "POSTGRESQL" => Engine::Postgres,
+        "YSQL" | "YUGABYTE" | "YUGABYTEDB" => Engine::Yugabyte,
         "MYSQL" => Engine::Mysql,
         _ => return None,
     };
@@ -248,6 +249,8 @@ fn ads_profile(source: ImportSource, file: &str, provider: &str, o: &Value) -> O
             spec
         }
     };
+    let engine =
+        if engine == Engine::Postgres && spec.engine == Some(Engine::Yugabyte) { Engine::Yugabyte } else { engine };
     spec.engine = Some(engine);
     spec.password = None;
     let auth_type = first_str(o, &["authenticationType", "authentication"]).unwrap_or("SqlLogin").to_ascii_lowercase();
@@ -359,6 +362,10 @@ fn strip_jsonc(text: &str) -> String {
 
 // ───────── DBeaver ─────────
 
+fn yugabyte_driver(driver: &str) -> bool {
+    driver.split(|c: char| !c.is_ascii_alphanumeric()).any(|part| part == "ysql" || part.starts_with("yugabyte"))
+}
+
 fn parse_dbeaver(text: &str, file: &str) -> Result<Vec<ImportCandidate>> {
     let doc: Value =
         serde_json::from_str(text).map_err(|e| Error::invalid(format!("{file} is not valid JSON: {e}")))?;
@@ -366,7 +373,9 @@ fn parse_dbeaver(text: &str, file: &str) -> Result<Vec<ImportCandidate>> {
     for c in doc.get("connections").and_then(Value::as_object).into_iter().flat_map(|m| m.values()) {
         let provider = format!("{} {}", str_at(c, "provider").unwrap_or(""), str_at(c, "driver").unwrap_or(""))
             .to_ascii_lowercase();
-        let engine = if provider.contains("postgres") {
+        let engine = if yugabyte_driver(&provider) {
+            Engine::Yugabyte
+        } else if provider.contains("postgres") {
             Engine::Postgres
         } else if provider.contains("mysql") || provider.contains("mariadb") {
             Engine::Mysql
@@ -393,6 +402,8 @@ fn parse_dbeaver(text: &str, file: &str) -> Result<Vec<ImportCandidate>> {
                 }
             }
         };
+        let engine =
+            if engine == Engine::Postgres && spec.engine == Some(Engine::Yugabyte) { Engine::Yugabyte } else { engine };
         spec.engine = Some(engine);
         spec.password = None;
         if let Some(user) = str_at(cfg, "user") {
@@ -446,9 +457,15 @@ fn parse_datagrip(text: &str, file: &str, users: &BTreeMap<String, String>) -> R
         let Some(url) = child("jdbc-url") else { continue };
         let driver = child("driver-ref").unwrap_or("").to_ascii_lowercase();
         let Some(mut spec) = datagrip_url(url) else { continue };
-        let engine = spec.engine.unwrap_or(Engine::Postgres);
+        let engine = if spec.engine == Some(Engine::Postgres) && yugabyte_driver(&driver) {
+            Engine::Yugabyte
+        } else {
+            spec.engine.unwrap_or(Engine::Postgres)
+        };
         if !driver.is_empty()
-            && !["postgres", "sqlserver", "azure", "mysql", "mariadb"].iter().any(|k| driver.contains(k))
+            && !["postgres", "sqlserver", "azure", "mysql", "mariadb", "yugabyte", "ysql"]
+                .iter()
+                .any(|k| driver.contains(k))
         {
             continue;
         }
@@ -639,6 +656,7 @@ fn target_key(engine: Engine, host: &str, port: Option<u16>, db: Option<&str>, u
     let port = port.unwrap_or(match engine {
         Engine::Mssql => 1433,
         Engine::Postgres => 5432,
+        Engine::Yugabyte => 5433,
         Engine::Mysql => 3306,
         Engine::Sqlite => 0,
     });
@@ -938,5 +956,22 @@ mod tests {
         let v: Value = serde_json::from_str(&strip_jsonc(text)).unwrap();
         assert_eq!(v["a"], "http://x // not a comment");
         assert_eq!(v["b"], serde_json::json!([1, 2]));
+    }
+    #[test]
+    fn native_ysql_client_profiles_keep_the_dedicated_provider_and_default_port() {
+        assert!(!yugabyte_driver("mysql mysql8"));
+        assert!(yugabyte_driver("postgresql ysql-jdbc"));
+        let dbeaver = r#"{"connections":{"yb":{"provider":"postgresql","driver":"yugabytedb","name":"YB",
+            "configuration":{"url":"jdbc:postgresql://db.example/shop","configurationType":"URL","user":"app"}}}}"#;
+        let imported = parse_dbeaver(dbeaver, "dbeaver.json").unwrap();
+        assert_eq!(imported[0].engine, Engine::Yugabyte);
+        let xml = r#"<project><component><data-source name="YB"><driver-ref>yugabytedb</driver-ref>
+            <jdbc-url>jdbc:postgresql://db.example/shop</jdbc-url></data-source></component></project>"#;
+        let imported = parse_datagrip(xml, "datasources.xml", &std::collections::BTreeMap::new()).unwrap();
+        assert_eq!(imported[0].engine, Engine::Yugabyte);
+        assert_eq!(
+            target_key(Engine::Yugabyte, "db.example", None, Some("shop"), Some("app")),
+            target_key(Engine::Yugabyte, "db.example", Some(5433), Some("shop"), Some("app"))
+        );
     }
 }

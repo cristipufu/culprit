@@ -54,7 +54,7 @@ pub(super) fn large_value_type(engine: Engine, data_type: &str) -> bool {
         Engine::Mssql => {
             t.ends_with("(max)") || matches!(t.as_str(), "xml" | "text" | "ntext" | "image" | "geography" | "geometry")
         }
-        Engine::Postgres => {
+        Engine::Postgres | Engine::Yugabyte => {
             matches!(t.as_str(), "text" | "bytea" | "json" | "jsonb" | "xml" | "varchar" | "character varying")
         }
         Engine::Mysql | Engine::Sqlite => false,
@@ -142,6 +142,9 @@ pub(super) fn compress_advice(engine: Engine) -> &'static str {
     match engine {
         Engine::Postgres => {
             "LZ4 compresses them faster than the default (ALTER TABLE … ALTER COLUMN … SET COMPRESSION lz4, PostgreSQL 14+), or keep them in object storage and store a reference"
+        }
+        Engine::Yugabyte => {
+            "review supported DocDB compression and the application's representation of large values, or keep them in object storage and store a reference; PostgreSQL TOAST compression settings do not describe DocDB"
         }
         _ => {
             "COMPRESS() them as they're written (GZip; DECOMPRESS() reads them back), or keep them in object storage and store a reference"

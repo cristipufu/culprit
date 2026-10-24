@@ -488,6 +488,8 @@ enum EnvArg {
 #[derive(Clone, Copy, ValueEnum)]
 enum EngineArg {
     Postgres,
+    #[value(alias = "yugabytedb", alias = "ysql")]
+    Yugabyte,
     Mssql,
     Mysql,
     Sqlite,
@@ -1098,6 +1100,7 @@ async fn conn(ws: &Workspace, command: ConnCommand, out: &Out) -> culprit_core::
                 },
                 engine: args.engine.map(|e| match e {
                     EngineArg::Postgres => Engine::Postgres,
+                    EngineArg::Yugabyte => Engine::Yugabyte,
                     EngineArg::Mssql => Engine::Mssql,
                     EngineArg::Mysql => Engine::Mysql,
                     EngineArg::Sqlite => Engine::Sqlite,

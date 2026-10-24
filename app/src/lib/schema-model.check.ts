@@ -1,6 +1,8 @@
 import type { IndexStat } from "../gen/IndexStat";
 import type { TableStat } from "../gen/TableStat";
-import { ddl } from "./schema-model";
+import type { Report } from "../gen/Report";
+import { coveredBy, ddl, relations } from "./schema-model";
+import nativeSnapshot from "../../../fixtures/yugabyte-demo.json";
 
 const check = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
 const table = { schema: "main", name: "search", kind: "virtual", definition: "CREATE VIRTUAL TABLE search USING fts5(title, tokenize = 'unicode61')" } as TableStat;
@@ -21,3 +23,22 @@ for (const kind of ["hypertable", "timescale-unresolved"]) {
   check(!managed.includes("CREATE TABLE") && managed.includes("TimescaleDB"), "Managed hypertables require a native schema export");
 }
 console.log("Schema DDL regressions passed");
+
+const nativeTable = { ...ordinary, schema: "public", kind: "docdb", definition: null, storage: { docdb: { tablets: 3, hash_key_columns: 0, colocated: false, tablegroup: null } } } as TableStat;
+const nativePk = { ...indexes[1], name: "documents_pkey", kind: "lsm", columns: ["id"], include: [], is_primary_key: true, docdb: { hash_columns: [], tablets: 3 } } as unknown as IndexStat;
+const nativeSql = ddl("yugabyte", nativeTable, [], [nativePk], []);
+check(nativeSql.includes('PRIMARY KEY ("id" ASC)'), "A range primary key must not silently become the YSQL default HASH key");
+const hashPk = { ...nativePk, columns: ["tenant", "id", "created_at DESC"], docdb: { hash_columns: ["tenant", "id"], tablets: 3 } } as IndexStat;
+check(ddl("yugabyte", nativeTable, [], [hashPk], []).includes('PRIMARY KEY (("tenant", "id") HASH, "created_at" DESC)'), "Composite hashes must stay one group");
+check(!ddl("yugabyte", { ...nativeTable, storage: null }, [], [nativePk], []).includes("CREATE TABLE"), "Unknown native distribution cannot become a guessed recreation script");
+const hashIndex = { ...nativePk, is_primary_key: false, name: "hash", docdb: { hash_columns: ["id"], tablets: 3 } } as IndexStat;
+const rangeIndex = { ...hashIndex, name: "range", columns: ["id", "created_at"], docdb: { hash_columns: [], tablets: 3 } } as IndexStat;
+check(coveredBy(hashIndex, [rangeIndex]) === null, "Ordered keys cannot establish redundancy of a hash index");
+const nativeReport = { snapshot: structuredClone(nativeSnapshot) } as unknown as Report;
+const orders = nativeReport.snapshot.tables.find((table) => table.name === "orders")!;
+check(relations(nativeReport, orders).outgoing[0]?.indexed === false, "A complete catalog can establish a missing FK index");
+delete nativeReport.snapshot.indexes[0]!.docdb;
+// Unknown metadata on a different table does not invalidate this table's known index coverage.
+check(relations(nativeReport, orders).outgoing[0]?.indexed === false, "FK coverage is scoped to its own table");
+delete nativeReport.snapshot.indexes.find((index) => index.table === "orders")!.docdb;
+check(relations(nativeReport, orders).outgoing[0]?.indexed === null, "Unknown hash keys cannot establish that an FK index is missing");

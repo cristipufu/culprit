@@ -79,6 +79,14 @@ pub fn source_failed(s: &Snapshot, names: &[&str]) -> Option<String> {
 }
 
 pub fn index_catalog(s: &Snapshot) -> Option<String> {
+    if s.server.engine == culprit_core::Engine::Yugabyte {
+        if let Some(reason) = source_failed(s, &[source_id::TABLE_STORAGE]) {
+            return Some(reason);
+        }
+        if s.indexes.iter().any(|index| index.docdb.is_none()) {
+            return Some("Native index sharding metadata was not collected; a PostgreSQL key prefix cannot establish DocDB lookup coverage or redundancy.".into());
+        }
+    }
     source_failed(
         s,
         &[source_id::TABLES, source_id::INDEXES, source_id::FOREIGN_KEYS, source_id::COLUMNS, source_id::CATALOG],
@@ -196,6 +204,10 @@ impl Requirement<'_> {
                 }
             }
             Self::ForeignKeys => Available,
+            Self::IndexHistory if s.server.engine == culprit_core::Engine::Yugabyte
+                && !s.source_outcome(source_id::DOCDB_INDEX_USAGE).is_some_and(|o| matches!(o.state, SourceState::Collected | SourceState::Empty)) => {
+                insufficient("Complete cluster-wide index usage is required; a node-local or partial read cannot establish absence.")
+            }
             Self::IndexHistory if !crate::indexes::watched_long_enough(s) => {
                 insufficient("At least a week of comparable index-usage counters is needed to assess absence of reads.")
             }

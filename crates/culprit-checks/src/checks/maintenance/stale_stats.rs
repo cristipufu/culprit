@@ -64,7 +64,7 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
     let mut stale = match snapshot.server.engine {
         Engine::Mssql => mssql_stale(snapshot),
         Engine::Postgres => pg_stale(snapshot),
-        Engine::Mysql => Vec::new(),
+        Engine::Mysql | Engine::Yugabyte => Vec::new(),
         // SQLite has no change counters to age statistics by; a file without them is `sqlite::statistics`'s finding.
         Engine::Sqlite => Vec::new(),
     };

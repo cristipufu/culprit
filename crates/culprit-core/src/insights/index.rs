@@ -245,15 +245,29 @@ pub(super) fn scan_filter(cx: &Cx) -> Vec<Draft> {
         // What the catalog says the table has, where the snapshot marked it: an index that already starts with one of
         // these columns (or for a seek, covers all of them), or none.
         let leaf = table_leaf(&table);
-        let has = table_indexes(n).map(|list| {
-            if n.kind == NodeKind::Seek {
-                list.into_iter().find(|(_, keys)| {
-                    keys.len() >= cols.len()
-                        && cols.iter().all(|c| keys[..cols.len()].iter().any(|k| k.eq_ignore_ascii_case(c)))
+        let has = table_indexes(n).and_then(|list| {
+            if cx.engine() == Engine::Yugabyte && list.iter().any(|i| i.hash_columns.is_none()) {
+                return None;
+            }
+            let mut list = list.into_iter().filter(|i| {
+                i.hash_columns.as_ref().is_none_or(|hashes| {
+                    hashes.iter().all(|hash| equality.iter().any(|c| c.eq_ignore_ascii_case(hash)))
                 })
+            });
+            if n.kind == NodeKind::Seek {
+                Some(
+                    list.find(|i| {
+                        let keys = &i.columns;
+                        keys.len() >= cols.len()
+                            && cols.iter().all(|c| keys[..cols.len()].iter().any(|k| k.eq_ignore_ascii_case(c)))
+                    })
+                    .map(|i| (i.name, i.columns)),
+                )
             } else {
-                list.into_iter()
-                    .find(|(_, keys)| keys.first().is_some_and(|k| cols.iter().any(|c| c.eq_ignore_ascii_case(k))))
+                Some(
+                    list.find(|i| i.columns.first().is_some_and(|k| cols.iter().any(|c| c.eq_ignore_ascii_case(k))))
+                        .map(|i| (i.name, i.columns)),
+                )
             }
         });
         // Equality columns go in any order: the filter's isn't the data's. The SQL below takes the filter's order, and

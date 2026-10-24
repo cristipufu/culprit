@@ -112,6 +112,7 @@ pub fn mark_snapshot(snapshot: &mut Snapshot) {
     let columns = &snapshot.columns;
     let partitions = partition_parents(&snapshot.tables);
     let kinds = table_kinds(&snapshot.tables);
+    let rows = (snapshot.server.engine == Engine::Yugabyte).then(|| logical_rows(&snapshot.tables));
     if let Some(workload) = snapshot.workload.as_mut() {
         let end = workload.window_end.as_deref().and_then(format::epoch_seconds);
         for q in workload.queries.iter_mut() {
@@ -126,6 +127,11 @@ pub fn mark_snapshot(snapshot: &mut Snapshot) {
             mark_changed_columns(plan, columns);
             mark_partitions(&mut plan.root, &partitions);
             mark_table_kinds(&mut plan.root, &kinds);
+            if plan.engine == Engine::Yugabyte
+                && let Some(rows) = &rows
+            {
+                mark_logical_rows(&mut plan.root, rows);
+            }
             mark_table_indexes(&mut plan.root, &tables, quiet);
             if plan.engine == Engine::Mssql {
                 mark_parallel_settings(plan, &parallel);
@@ -144,12 +150,34 @@ pub fn mark_plan(plan: &mut Plan, snapshot: &Snapshot) {
     mark_changed_columns(plan, &snapshot.columns);
     mark_partitions(&mut plan.root, &partition_parents(&snapshot.tables));
     mark_table_kinds(&mut plan.root, &table_kinds(&snapshot.tables));
+    if plan.engine == Engine::Yugabyte {
+        mark_logical_rows(&mut plan.root, &logical_rows(&snapshot.tables));
+    }
     mark_table_indexes(&mut plan.root, &scanned_table_indexes(snapshot), false);
     if plan.engine == Engine::Mssql {
         mark_parallel_settings(plan, &parallel_settings(snapshot));
     }
     mark_possible_keys(plan, &snapshot.indexes);
     mark_index_kinds(&mut plan.root, &snapshot.indexes, None);
+}
+
+// YSQL's reltuples is a logical optimizer estimate, independent of heap pages. Bind only unambiguous catalog objects;
+// never infer DocDB rows from pg_class.relpages or charge index/table storage entries as distinct SQL rows.
+fn logical_rows(tables: &[crate::TableStat]) -> HashMap<String, Option<f64>> {
+    let mut rows = HashMap::new();
+    for table in tables {
+        rows.entry(table.qualified())
+            .and_modify(|value| *value = None)
+            .or_insert(table.rows.filter(|value| value.is_finite() && *value >= 0.0));
+    }
+    rows
+}
+
+fn mark_logical_rows(node: &mut PlanNode, rows: &HashMap<String, Option<f64>>) {
+    node.table_rows = node.object.as_deref().and_then(|object| rows.get(object)).copied().flatten();
+    for child in &mut node.children {
+        mark_logical_rows(child, rows);
+    }
 }
 
 fn partition_parents(tables: &[crate::TableStat]) -> HashMap<String, Option<String>> {
@@ -290,6 +318,7 @@ fn scanned_table_indexes(snapshot: &Snapshot) -> Vec<CatalogTable> {
                 })
                 .map(|i| crate::PlanIndexColumns {
                     name: i.name.clone(),
+                    hash_columns: i.docdb.as_ref().map(|d| d.hash_columns.clone()),
                     columns: i.key_names().into_iter().map(str::to_string).collect(),
                 })
                 .collect(),
@@ -356,8 +385,8 @@ pub(super) fn mark_table_indexes(n: &mut PlanNode, tables: &[CatalogTable], stop
     }
 }
 
-pub(super) fn table_indexes(n: &PlanNode) -> Option<Vec<(String, Vec<String>)>> {
-    n.facts().table_indexes.as_ref().map(|v| v.iter().map(|i| (i.name.clone(), i.columns.clone())).collect())
+pub(super) fn table_indexes(n: &PlanNode) -> Option<Vec<crate::PlanIndexColumns>> {
+    n.facts().table_indexes.clone()
 }
 
 /// MySQL names a scan's possible keys without their columns. Name each with its key columns from the catalog, so an
@@ -384,6 +413,7 @@ pub fn mark_possible_keys(plan: &mut Plan, indexes: &[IndexStat]) {
                     let (Some(index), None) = (found.next(), found.next()) else { return None };
                     Some(crate::PlanIndexColumns {
                         name: key.clone(),
+                        hash_columns: None,
                         columns: index.key_names().into_iter().map(str::to_string).collect(),
                     })
                 })

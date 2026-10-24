@@ -119,13 +119,7 @@ pub(crate) fn event_session_drop(name: &str, azure_sql_database: bool) -> String
 }
 
 fn engine_name(snapshot: &Snapshot) -> &'static str {
-    match snapshot.server.engine {
-        Engine::Mysql if snapshot.server.product.to_ascii_lowercase().contains("mariadb") => "MariaDB",
-        Engine::Mysql => "MySQL",
-        Engine::Postgres => "PostgreSQL",
-        Engine::Mssql => "SQL Server",
-        Engine::Sqlite => "SQLite",
-    }
+    snapshot.server.name()
 }
 
 fn is_mariadb(snapshot: &Snapshot) -> bool {

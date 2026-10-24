@@ -8,7 +8,7 @@ pub fn filtered_scan_info() -> CheckInfo {
         id: "filtered-scan".into(),
         title: "Scans an index would avoid".into(),
         category: Category::Indexes,
-        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Yugabyte, Engine::Mysql],
         requires: vec![Capability::QueryPlans],
         description: "Heavy queries whose plan reads a large table in full and keeps only the rows matching a filter that no index supports.".into(),
     }
@@ -359,6 +359,7 @@ pub(crate) fn disabled_leading_index<'a>(snapshot: &'a Snapshot, g: &ScanGroup) 
     snapshot.indexes.iter().find(|i| {
         let existing = i.key_names();
         i.schema.eq_ignore_ascii_case(&g.schema)
+            && i.can_seek(&cols.equality)
             && i.table.eq_ignore_ascii_case(&g.table)
             && i.is_disabled
             && existing.len() >= wanted.len()
@@ -390,6 +391,7 @@ pub(crate) fn leading_index<'a>(
     snapshot.indexes.iter().find(|i| {
         let existing = i.key_names();
         i.schema.eq_ignore_ascii_case(schema)
+            && i.can_seek(equality)
             && i.table.eq_ignore_ascii_case(table)
             && !i.is_disabled
             && existing.len() >= wanted.len()

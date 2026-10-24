@@ -112,11 +112,7 @@ pub struct PlanInsights {
 
 /// Every rule, for docs and `culprit checks`-style listings: (id, engines, one line).
 pub const RULES: &[(&str, &[Engine], &str)] = &[
-    (
-        "deep-pagination",
-        &[Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite],
-        "A literal OFFSET skips many matches before returning a later page",
-    ),
+    ("deep-pagination", ALL, "A literal OFFSET skips many matches before returning a later page"),
     (
         "partition-filtering",
         &[Engine::Postgres],
@@ -172,7 +168,7 @@ const MANY_LOOPS: f64 = 10_000.0;
 /// least this many rows…
 const MANY_ROWS: f64 = 10_000.0;
 /// …in a plan that does real work: a measured run of at least this long, or, unmeasured, an estimated cost of at least
-/// what reading about `MANY_ROWS` rows costs in the engine's own units (`cheap_below`). A problem measured in time of
+/// what reading about `MANY_ROWS` rows costs in the engine's own units (`estimated_work_threshold`). A problem measured in time of
 /// its own (compiling, JIT, waiting for memory) is material when that time reaches this.
 pub const MATERIAL_MS: f64 = 10.0;
 
@@ -236,6 +232,8 @@ pub fn coverage_note(plan: &Plan) -> Option<String> {
             "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.".into(),
         ),
         (Engine::Mssql, true) => None,
+        (Engine::Yugabyte, false) => Some("Without EXPLAIN ANALYZE DIST, actual DocDB RPCs, storage rows scanned and execution timings are unknown.".into()),
+        (Engine::Yugabyte, true) => Some("DocDB storage RPCs and rows scanned are distinct from PostgreSQL buffer pages. RPC timings may overlap and are not exclusive shares of execution time.".into()),
         (Engine::Postgres, false) => Some(
             "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.".into(),
         ),
@@ -613,6 +611,9 @@ pub fn cheap_plan_runs(plan: &Plan, q: Option<&crate::model::QueryStat>) -> Chea
     if !plan.weighed() || does_real_work(plan) {
         return CheapPlanRuns::NotCheap;
     }
+    if estimated_work_threshold(plan).is_none() {
+        return CheapPlanRuns::Unmeasured;
+    }
     // A whole read of a small table or of the catalog is no reason the runs cost what they do: the runs are then read as
     // if it weren't there (cheap, or slow).
     let scan = plan
@@ -654,14 +655,15 @@ pub fn cheap_plan_runs(plan: &Plan, q: Option<&crate::model::QueryStat>) -> Chea
 }
 
 /// Whether the plan does real work: a measured run of at least `MATERIAL_MS`, or, unmeasured, an estimated cost of at
-/// least what reading about `MANY_ROWS` rows costs (`cheap_below`). A point lookup's plan doesn't: what a run of it
+/// least what reading about `MANY_ROWS` rows costs (`estimated_work_threshold`). A point lookup's plan doesn't: what a run of it
 /// costs is the call itself, not any of its steps. Every insight's severity and every surface that points at a plan's
 /// step as where its work is ask this.
 pub fn does_real_work(plan: &Plan) -> bool {
     // A measured run says what the plan costs; without one, the optimizer's estimate does.
     match elapsed_ms(plan) {
         Some(ms) => ms >= MATERIAL_MS,
-        None => plan.total_cost.max(plan.root.subtree_cost) >= cheap_below(plan),
+        None => estimated_work_threshold(plan)
+            .is_some_and(|threshold| plan.total_cost.max(plan.root.subtree_cost) >= threshold),
     }
 }
 
@@ -715,12 +717,12 @@ fn elapsed_ms(plan: &Plan) -> Option<f64> {
         .filter(|ms| ms.is_finite() && *ms >= 0.0 && (*ms > 0.0 || crate::actual::self_times(plan).is_some()))
 }
 
-/// The estimated cost of reading about `MANY_ROWS` rows, in each engine's own units: a plan estimated below it is cheap
-/// whatever its shape.
-fn cheap_below(plan: &Plan) -> f64 {
-    match plan.engine {
-        // SQLite's plans carry no cost: never "real work" by an estimate.
-        Engine::Sqlite => f64::INFINITY,
+/// The estimated cost of reading about `MANY_ROWS` rows, in each engine's own units. None when that scale is unknown:
+/// an uncalibrated estimate establishes neither expensive work nor a cheap plan.
+pub fn estimated_work_threshold(plan: &Plan) -> Option<f64> {
+    Some(match plan.engine {
+        // SQLite's plans carry no cost, and DocDB costs have no calibrated materiality threshold here.
+        Engine::Sqlite | Engine::Yugabyte => return None,
         // A 10K-row clustered index scan costs about 0.1.
         Engine::Mssql => 0.1,
         // seq_page_cost is 1: about 100 pages plus the per-row CPU of 10K rows.
@@ -731,7 +733,7 @@ fn cheap_below(plan: &Plan) -> f64 {
         Engine::Mysql if is_mariadb(plan) => 1.0,
         // MySQL costs about 0.1 per row evaluated.
         Engine::Mysql => 1_000.0,
-    }
+    })
 }
 
 /// MariaDB's own plan reader sets the flavor; plans of logged statements carry the server's version instead.

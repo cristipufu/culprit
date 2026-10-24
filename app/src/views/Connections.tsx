@@ -78,7 +78,7 @@ export function Connections() {
 type Panel = "none" | "new" | "import" | CloudKind;
 
 const FIRST_RUN: { panel: Exclude<Panel, "none">; icon: ReactNode; title: string; text: string }[] = [
-  { panel: "new", icon: <Database size={18} />, title: "Connect a database", text: "Pick SQL Server, PostgreSQL, MySQL or MariaDB and paste its connection string, or pick SQLite and choose the file." },
+  { panel: "new", icon: <Database size={18} />, title: "Connect a database", text: "Choose your database engine and paste its connection string, or choose SQLite and select the file." },
   { panel: "azure", icon: <Cloud size={18} />, title: "Find in Azure", text: "Lists the SQL, PostgreSQL and MySQL servers your az login can reach." },
   { panel: "aws", icon: <Cloud size={18} />, title: "Find in AWS", text: "Lists the RDS and Aurora databases your aws login can see." },
   { panel: "import", icon: <Import size={18} />, title: "Import from another tool", text: "Azure Data Studio, VS Code, DBeaver or DataGrip connections, without retyping." },

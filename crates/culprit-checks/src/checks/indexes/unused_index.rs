@@ -8,7 +8,7 @@ pub fn unused_index_info() -> CheckInfo {
         id: "unused-index".into(),
         title: "Unused indexes".into(),
         category: Category::Indexes,
-        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Yugabyte, Engine::Mysql],
         requires: vec![Capability::IndexUsage],
         description:
             "Indexes that are maintained on every write but no query has read since usage counters were reset. \
@@ -135,7 +135,7 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                         quote(engine, &i.name),
                         qualified(engine, &i.schema, &i.table)
                     ),
-                    Engine::Postgres => drop_index_for_snapshot(snapshot, &i.schema, &i.table, &i.name),
+                    Engine::Postgres | Engine::Yugabyte => drop_index_for_snapshot(snapshot, &i.schema, &i.table, &i.name),
                     Engine::Sqlite => drop_index_for_snapshot(snapshot, &i.schema, &i.table, &i.name),
                     Engine::Mysql => crate::index_health::hide_index_sql(snapshot, i),
                 })
@@ -143,6 +143,7 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                 .join("\n");
             f.fix = Some(Fix {
                 summary: match engine {
+                    Engine::Yugabyte => "Save its native definition and sharding keys before dropping it. Check a complete cluster-wide business cycle of usage, and measure the affected queries after the change.".into(),
                     Engine::Mssql => "Disable first: the definition stays, nothing reads it, and `ALTER INDEX … REBUILD` brings it back. Drop it after a full business cycle without complaints.".into(),
                     Engine::Postgres => "Drop it concurrently so writes aren't blocked. Save the definition first so you can recreate it.".into(),
                     Engine::Mysql if snapshot.server.is_mariadb() && crate::index_health::mariadb_can_ignore(&snapshot.server) => "Have the optimizer ignore it first: it stays maintained, and `ALTER INDEX … NOT IGNORED` brings it back instantly. Drop it after a full business cycle without complaints.".into(),
@@ -271,6 +272,7 @@ pub(crate) fn backs_foreign_key<'a>(snapshot: &'a Snapshot, index: &IndexStat) -
         fk.schema.eq_ignore_ascii_case(&index.schema)
             && fk.table.eq_ignore_ascii_case(&index.table)
             && !fk.columns.is_empty()
+            && index.can_seek(&fk.columns)
             && keys.len() >= fk.columns.len()
             && lower_set(&keys[..fk.columns.len()]) == lower_set(&fk.columns)
     })

@@ -6,7 +6,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-#[cfg(any(feature = "postgres", feature = "mysql"))]
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "yugabyte"))]
 use culprit_core::PlanKind;
 use culprit_core::{Error, Plan, PlanNode, Result};
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,7 @@ pub const MAX_PLAN_BYTES: usize = 32 * 1024 * 1024;
 pub enum PlanFormat {
     ShowplanXml,
     PostgresJson,
+    YugabyteJson,
     PostgresText,
     MysqlJson,
     MysqlTree,
@@ -36,6 +37,7 @@ impl PlanFormat {
         match self {
             PlanFormat::ShowplanXml => "SQL Server showplan XML",
             PlanFormat::PostgresJson => "PostgreSQL EXPLAIN (FORMAT JSON)",
+            PlanFormat::YugabyteJson => "YugabyteDB EXPLAIN (DIST, FORMAT JSON)",
             PlanFormat::PostgresText => "PostgreSQL EXPLAIN",
             PlanFormat::MysqlJson => "MySQL EXPLAIN FORMAT=JSON",
             PlanFormat::MysqlTree => "MySQL EXPLAIN ANALYZE / FORMAT=TREE",
@@ -106,6 +108,7 @@ pub fn parse_plan(input: &str) -> Result<Plan> {
     let mut plan = match format {
         PlanFormat::ShowplanXml => showplan(text),
         PlanFormat::PostgresJson => postgres_json(text),
+        PlanFormat::YugabyteJson => yugabyte_json(text),
         PlanFormat::PostgresText => postgres_text(block),
         PlanFormat::MysqlJson => mysql_json(text),
         PlanFormat::MysqlTree => mysql_tree(text),
@@ -170,6 +173,8 @@ fn parser_version(engine: culprit_core::Engine) -> culprit_core::ComponentVersio
         culprit_core::Engine::Mssql => culprit_mssql::component_version(),
         #[cfg(feature = "postgres")]
         culprit_core::Engine::Postgres => culprit_postgres::component_version(),
+        #[cfg(feature = "yugabyte")]
+        culprit_core::Engine::Yugabyte => culprit_yugabyte::component_version(),
         #[cfg(feature = "mysql")]
         culprit_core::Engine::Mysql => culprit_mysql::component_version(),
         // SQLite's normalized tree is retained rather than reconstructed from its flat native text.
@@ -188,6 +193,8 @@ struct Catalog<'a> {
 fn reparse(saved: &Plan, entry: Option<&str>, catalog: &Catalog) -> Option<(Plan, bool)> {
     let _ = (entry, catalog.database, catalog.tables, catalog.indexes);
     let reparsed: Option<(Plan, bool)> = match saved.engine {
+        #[cfg(feature = "yugabyte")]
+        culprit_core::Engine::Yugabyte => culprit_yugabyte::plan::reparse(saved).map(|p| (p, true)),
         #[cfg(feature = "mssql")]
         culprit_core::Engine::Mssql => culprit_mssql::plan_xml::reparse(saved).map(|p| (p, true)),
         #[cfg(feature = "postgres")]
@@ -282,7 +289,16 @@ fn json_format(value: &Value) -> Option<PlanFormat> {
     };
     let o = top.as_object()?;
     if o.contains_key("Plan") {
-        Some(PlanFormat::PostgresJson)
+        Some(
+            if ["Storage Read Requests", "Storage Table Read Requests", "Storage Filter", "Storage Index Filter"]
+                .iter()
+                .any(|key| contains_key(value, key))
+            {
+                PlanFormat::YugabyteJson
+            } else {
+                PlanFormat::PostgresJson
+            },
+        )
     } else if o.contains_key("query_block") || (o.contains_key("operation") && o.contains_key("access_type")) {
         Some(PlanFormat::MysqlJson)
     } else if o.contains_key("root") && o.contains_key("engine") && o.contains_key("total_cost") {
@@ -452,6 +468,22 @@ fn postgres_value(value: &Value, statement: Option<&str>) -> Result<Plan> {
     {
         let _ = (value, statement);
         Err(Error::invalid("This build of Culprit has no PostgreSQL support"))
+    }
+}
+
+fn yugabyte_json(text: &str) -> Result<Plan> {
+    #[cfg(feature = "yugabyte")]
+    {
+        let value: Value = serde_json::from_str(text).map_err(|e| Error::invalid(e.to_string()))?;
+        let (value, statement) = unwrap_json(value).ok_or_else(|| Error::invalid("No plan inside the JSON"))?;
+        let value = value.unwrap_or(Value::Null);
+        let kind = if contains_key(&value, "Actual Loops") { PlanKind::Actual } else { PlanKind::Estimated };
+        culprit_yugabyte::plan::from_value(&value, kind, statement.as_deref())
+    }
+    #[cfg(not(feature = "yugabyte"))]
+    {
+        let _ = text;
+        Err(Error::invalid("This build of Culprit has no YugabyteDB support"))
     }
 }
 

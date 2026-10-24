@@ -7,6 +7,7 @@
 //! double-quoted word is a name, and `#` is part of a name (SQL Server's temporary tables). Placeholders (`?`, `?1`,
 //! `$1`, `:name`, `@name`) are values, whatever the driver wrote.
 
+use crate::SqlSyntax;
 use crate::model::Engine;
 
 /// A statement's fingerprint (canonical tokens, for grouping and matching) and its display text (the statement as
@@ -27,9 +28,9 @@ struct Rules {
     named_parameters: &'static [char],
 }
 
-fn rules(engine: Engine) -> Rules {
+fn rules(engine: SqlSyntax) -> Rules {
     match engine {
-        Engine::Mysql => Rules {
+        SqlSyntax::Mysql => Rules {
             backslash_escapes: true,
             double_quote_is_string: true,
             hash_comments: true,
@@ -37,7 +38,7 @@ fn rules(engine: Engine) -> Rules {
             brackets: false,
             named_parameters: &[],
         },
-        Engine::Postgres => Rules {
+        SqlSyntax::Postgres => Rules {
             backslash_escapes: false,
             double_quote_is_string: false,
             hash_comments: false,
@@ -45,7 +46,7 @@ fn rules(engine: Engine) -> Rules {
             brackets: false,
             named_parameters: &[],
         },
-        Engine::Mssql => Rules {
+        SqlSyntax::Mssql => Rules {
             backslash_escapes: false,
             double_quote_is_string: false,
             hash_comments: false,
@@ -53,7 +54,7 @@ fn rules(engine: Engine) -> Rules {
             brackets: true,
             named_parameters: &['@'],
         },
-        Engine::Sqlite => Rules {
+        SqlSyntax::Sqlite => Rules {
             backslash_escapes: false,
             double_quote_is_string: false,
             hash_comments: false,
@@ -65,6 +66,7 @@ fn rules(engine: Engine) -> Rules {
 }
 
 pub fn fingerprint(sql: &str, engine: Engine) -> Fingerprint {
+    let engine = engine.sql_syntax();
     let r = rules(engine);
     let mut tokens: Vec<String> = Vec::new();
     let mut display = String::with_capacity(sql.len());
@@ -106,7 +108,7 @@ pub fn fingerprint(sql: &str, engine: Engine) -> Fingerprint {
         }
         // Strings (and hex/bit literals written x'..', b'..', N'..'); in MySQL, double-quoted ones too.
         let prefixed = (matches!(c, 'x' | 'X' | 'b' | 'B' | 'n' | 'N')
-            || (engine == Engine::Postgres && matches!(c, 'e' | 'E')))
+            || (engine == SqlSyntax::Postgres && matches!(c, 'e' | 'E')))
             && next == Some('\'')
             && !word_before(&chars, i);
         if c == '\'' || (c == '"' && r.double_quote_is_string) || prefixed {
@@ -161,7 +163,7 @@ pub fn fingerprint(sql: &str, engine: Engine) -> Fingerprint {
             value(&mut tokens, &mut display);
             continue;
         }
-        if c == '$' && engine != Engine::Mysql && next.is_some_and(|n| n.is_ascii_digit()) {
+        if c == '$' && engine != SqlSyntax::Mysql && next.is_some_and(|n| n.is_ascii_digit()) {
             i += 1;
             while i < chars.len() && chars[i].is_ascii_digit() {
                 i += 1;
@@ -206,7 +208,7 @@ pub fn fingerprint(sql: &str, engine: Engine) -> Fingerprint {
                 "true" | "false" => "?".to_string(),
                 "character" => "char".to_string(),
                 // The MySQL digest names interval units by their internal names (SQL_TSI_DAY).
-                w if engine == Engine::Mysql && w.starts_with("sql_tsi_") => {
+                w if engine == SqlSyntax::Mysql && w.starts_with("sql_tsi_") => {
                     w.trim_start_matches("sql_tsi_").to_string()
                 }
                 _ => lower,

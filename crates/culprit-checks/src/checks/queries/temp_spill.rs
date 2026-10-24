@@ -20,7 +20,7 @@ pub fn temp_spill(snapshot: &Snapshot) -> Vec<Finding> {
     match snapshot.server.engine {
         Engine::Postgres => {}
         Engine::Mysql => return mysql_disk_temp_tables(snapshot),
-        Engine::Mssql | Engine::Sqlite => return Vec::new(),
+        Engine::Mssql | Engine::Sqlite | Engine::Yugabyte => return Vec::new(),
     }
     let Some(workload) = snapshot.workload.as_ref() else { return Vec::new() };
     let work_mem_text = snapshot.setting("work_mem").map(|s| s.value.clone());

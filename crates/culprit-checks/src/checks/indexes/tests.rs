@@ -262,3 +262,23 @@ fn foreign_key_column_type_mismatch_is_flagged_without_false_positives_on_aliase
         "{scan_findings:#?}"
     );
 }
+#[test]
+fn yugabyte_absence_needs_complete_cluster_counters_and_their_own_reset_dates() {
+    let mut s: Snapshot = serde_json::from_str(include_str!("../../../../../fixtures/yugabyte-demo.json")).unwrap();
+    let index = s.indexes.iter().find(|i| !i.is_primary_key).unwrap().clone();
+    s.indexes = vec![index];
+    s.indexes[0].reads = Some(0.0);
+    s.indexes[0].size_bytes = Some(1024.0 * 1024.0);
+    s.server.started_at = Some("2026-01-01T00:00:00Z".into());
+    assert!(unused_index(&s).is_empty(), "an old coordinator does not date index usage");
+    let usage = s.sources.iter_mut().find(|o| o.source == culprit_core::source_id::DOCDB_INDEX_USAGE).unwrap();
+    usage.state = culprit_core::SourceState::Collected;
+    usage.reason = None;
+    assert!(unused_index(&s).is_empty(), "complete totals with unknown reset dates cannot establish a week");
+    s.indexes[0].counters_since = Some("2026-10-15T00:00:00Z".into());
+    assert_eq!(unused_index(&s).len(), 1, "every node has now watched at least a week");
+    assert_eq!(crate::support::counter_days(&s), None, "independent epochs do not supply a common rate denominator");
+    s.sources.iter_mut().find(|o| o.source == culprit_core::source_id::DOCDB_INDEX_USAGE).unwrap().state =
+        culprit_core::SourceState::Partial;
+    assert!(unused_index(&s).is_empty(), "a skipped node can contain the missing reads");
+}

@@ -61,6 +61,7 @@ fn engine_facts_are_exported_for_the_app() {
 #[test]
 fn how_often_never_extrapolates_a_short_window() {
     let w = |hours: f64, windowed: bool| Workload {
+        counter_set: None,
         history_inputs: Vec::new(),
         measurement: None,
         source: "Query Store".into(),

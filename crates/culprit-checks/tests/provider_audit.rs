@@ -5,6 +5,7 @@ fn snapshot(engine: Engine) -> Snapshot {
     let name = match engine {
         Engine::Mssql => "mssql-demo",
         Engine::Postgres => "postgres-demo",
+        Engine::Yugabyte => "yugabyte-demo",
         Engine::Mysql => "mysql-demo",
         Engine::Sqlite => "sqlite-demo",
     };

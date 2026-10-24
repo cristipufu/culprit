@@ -46,6 +46,8 @@ pub mod source_id {
     pub const TIMESCALE_HYPERTABLES: &str = "timescale-hypertables";
     pub const TIMESCALE_CHUNKS: &str = "timescale-chunks";
     pub const TIMESCALE_INDEXES: &str = "timescale-indexes";
+    pub const DOCDB_EPOCHS: &str = "docdb-counter-epochs";
+    pub const DOCDB_INDEX_USAGE: &str = "docdb-index-usage";
 
     pub const WORKLOAD: &str = "workload";
     pub const QUERY_STORE: &str = "query_store";
@@ -115,6 +117,8 @@ pub mod source_id {
         TIMESCALE_HYPERTABLES,
         TIMESCALE_CHUNKS,
         TIMESCALE_INDEXES,
+        DOCDB_EPOCHS,
+        DOCDB_INDEX_USAGE,
         WORKLOAD,
         QUERY_STORE,
         QUERY_WAITS,

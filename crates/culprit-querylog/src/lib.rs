@@ -354,6 +354,7 @@ impl Aggregator {
             })
             .collect();
         Workload {
+            counter_set: None,
             history_inputs: Vec::new(),
             measurement: None,
             source: format!("{format} log"),

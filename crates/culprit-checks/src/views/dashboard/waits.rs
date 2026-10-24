@@ -142,6 +142,11 @@ pub(super) fn first_sentence(text: &str) -> Option<String> {
 pub(super) fn waits_missing(s: &Snapshot) -> Tile {
     let family = family(&s.server);
     let mut tile = match s.server.engine {
+        Engine::Yugabyte => Tile::new(
+            TileKey::Waits,
+            TileStatus::Unavailable,
+            "No exclusive historical wait mix was collected. DocDB RPC timings can overlap; sample active YSQL sessions or inspect native storage metrics.",
+        ),
         Engine::Sqlite => Tile::new(
             TileKey::Waits,
             TileStatus::Unavailable,

@@ -7881,6 +7881,8 @@ table.rg {
 /* One calm categorical palette, kept apart from severity reds and ambers so a category never reads as an alarm. */
 :root {
   --wait-cpu: #4e79a7;
+  --wait-rpc: #7763ac;
+  --wait-storage: #589da0;
   --wait-io: #4f9fcf;
   --wait-rows: #5fb3a9;
   --wait-lock: #b07aa1;
@@ -7897,6 +7899,8 @@ table.rg {
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --wait-cpu: #7aa3d6;
+  --wait-rpc: #ad94d3;
+  --wait-storage: #7dc1c4;
     --wait-io: #6db8e3;
     --wait-rows: #7ccbc1;
     --wait-lock: #cd9cc1;
@@ -7912,6 +7916,8 @@ table.rg {
 
 :root[data-theme="dark"] {
   --wait-cpu: #7aa3d6;
+  --wait-rpc: #ad94d3;
+  --wait-storage: #7dc1c4;
   --wait-io: #6db8e3;
   --wait-rows: #7ccbc1;
   --wait-lock: #cd9cc1;
@@ -13032,3 +13038,5 @@ li code,
 .editor-lint-copy span {
   color: var(--text-2);
 }
+
+.engine-yugabyte { background: #4653bb; color: #fff; }

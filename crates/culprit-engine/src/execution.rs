@@ -469,7 +469,7 @@ pub(crate) fn read_only_batch(engine: Engine, statement: &str) -> String {
             format!("SET XACT_ABORT ON; BEGIN TRANSACTION;\n{statement}\n;IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;")
         }
         // SQLite's file is opened read-only: nothing to wrap.
-        Engine::Postgres | Engine::Mysql | Engine::Sqlite => statement.to_string(),
+        Engine::Postgres | Engine::Yugabyte | Engine::Mysql | Engine::Sqlite => statement.to_string(),
     }
 }
 

@@ -692,6 +692,7 @@ mod tests {
 
     fn workload(reset: &str, queries: Vec<QueryStat>) -> Workload {
         Workload {
+            counter_set: None,
             history_inputs: Vec::new(),
             measurement: None,
             source: "pg_stat_statements".into(),

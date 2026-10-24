@@ -28,7 +28,8 @@
       "An estimated or stored compilation plan does not measure the rows, timing or waits of the run you are investigating. Runtime-only problems require recorded runtime evidence or an explicitly measured run.",
       "Host CPU and filesystem capacity need their own measurements, such as connected cloud telemetry. Backup recoverability and database corruption are not checked by the statistics scan; they need backup/recovery validation and an appropriate integrity investigation."
     ],
-    "refusals": {}
+    "refusals": {},
+    "sql_syntax": "mssql"
   },
   "postgres": {
     "label": "PostgreSQL",
@@ -69,7 +70,55 @@
         "message": "PostgreSQL reports a running statement's progress, not each step's",
         "hint": "Its plan doesn't change while it runs: ask for the plan once."
       }
-    }
+    },
+    "sql_syntax": "postgres"
+  },
+  "yugabyte": {
+    "label": "YugabyteDB",
+    "abilities": {
+      "sessions": true,
+      "wait_sample": true,
+      "deadlocks": false,
+      "measures_runs": true,
+      "plan_estimates": true,
+      "writes": true,
+      "periods": true,
+      "last_actual_plan": false,
+      "operator_progress": false,
+      "sign_in": true
+    },
+    "session_actions": [
+      "cancel",
+      "terminate"
+    ],
+    "waiting_state": "active",
+    "connect": {
+      "choice": "YugabyteDB",
+      "file": false,
+      "example": "yugabyte://yugabyte@db.example.com:5433/yugabyte",
+      "accepts": "A YSQL postgres:// or yugabyte:// URL, libpq parameters, or host:port/database."
+    },
+    "limitations": [
+      "YSQL uses DocDB/RocksDB over Raft. PostgreSQL heap pages, buffer-cache ratios, dead tuples, vacuum and XID ages are not storage measurements here.",
+      "Local statistics cover the connected YB-TServer. Configured cluster views add other nodes; skipped nodes and independent counter resets prevent complete comparisons.",
+      "Captured generic plans use this login's current role and settings. Actual DocDB RPCs and rows scanned require EXPLAIN ANALYZE with DIST.",
+      "An index's sharding keys affect distributed reads and write hotspots. Suggested ordered keys use explicit ASC/DESC; review partitioning before deployment."
+    ],
+    "refusals": {
+      "deadlocks": {
+        "message": "DocDB's distributed deadlock detection is not PostgreSQL's heap lock accounting. A PostgreSQL deadlock counter does not establish this database's distributed deadlocks.",
+        "hint": "Correlate YSQL errors and the YB-TServer logs for the affected transaction."
+      },
+      "last_actual_plan": {
+        "message": "YSQL statement totals do not retain the measured plan of every past execution",
+        "hint": "Analyze a representative statement to capture its actual DocDB work."
+      },
+      "operator_progress": {
+        "message": "YSQL does not expose live row counters for every plan operator",
+        "hint": "Use a measured plan and native statement/operation progress."
+      }
+    },
+    "sql_syntax": "postgres"
   },
   "mysql": {
     "label": "MySQL",
@@ -110,7 +159,8 @@
         "message": "MySQL reports a running statement's progress, not each step's",
         "hint": "Its plan doesn't change while it runs: ask for the plan once."
       }
-    }
+    },
+    "sql_syntax": "mysql"
   },
   "sqlite": {
     "label": "SQLite",
@@ -181,6 +231,7 @@
         "message": "Culprit opens SQLite files read-only, so it never changes one",
         "hint": "Run it with the sqlite3 shell or from the application, then scan again to see the effect."
       }
-    }
+    },
+    "sql_syntax": "sqlite"
   }
 }

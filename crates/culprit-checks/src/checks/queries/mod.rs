@@ -94,7 +94,9 @@ pub(crate) fn average_metrics(snapshot: &Snapshot, q: &QueryStat) -> Vec<Metric>
 pub(super) fn many_keys(engine: Engine, verb: &str) -> String {
     match engine {
         Engine::Mssql => format!("an {verb} over a list of keys, or joined to a table-valued parameter"),
-        Engine::Postgres => format!("an {verb} over an array of keys (`= ANY($1)`), or joined to a VALUES list"),
+        Engine::Postgres | Engine::Yugabyte => {
+            format!("an {verb} over an array of keys (`= ANY($1)`), or joined to a VALUES list")
+        }
         _ => format!("an {verb} over a list of keys (`IN (…)`), or joined to a temporary table of the changes"),
     }
 }
@@ -103,7 +105,7 @@ pub(super) fn many_keys(engine: Engine, verb: &str) -> String {
 pub(super) fn bulk_insert(engine: Engine) -> &'static str {
     match engine {
         Engine::Mssql => "a multi-row VALUES, a table-valued parameter, or a bulk insert",
-        Engine::Postgres => "a multi-row VALUES, arrays unnested into rows, or COPY",
+        Engine::Postgres | Engine::Yugabyte => "a multi-row VALUES, arrays unnested into rows, or COPY",
         Engine::Mysql => "a multi-row VALUES, or LOAD DATA",
         Engine::Sqlite => "a multi-row VALUES",
     }

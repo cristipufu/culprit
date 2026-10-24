@@ -211,6 +211,22 @@ fn every_failed_schema_source_blocks_advice_that_needs_a_complete_catalog() {
 }
 
 #[test]
+fn unknown_docdb_sharding_cannot_prove_that_a_foreign_key_lacks_an_index() {
+    let mut s: Snapshot = serde_json::from_str(include_str!("../../../fixtures/yugabyte-demo.json")).unwrap();
+    assert!(matches!(assess(&[Requirement::IndexCatalog], &s), CheckEvidence::Available));
+    s.indexes[0].docdb = None;
+    assert!(matches!(assess(&[Requirement::IndexCatalog], &s), CheckEvidence::Unavailable(_)));
+    let report = culprit_checks::analyze(s);
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| matches!(f.check.as_str(), "unindexed-fk" | "filtered-scan" | "duplicate-index"))
+    );
+    assert!(culprit_checks::index_advice(&report).candidates.iter().all(|candidate| candidate.sql.is_none()));
+}
+
+#[test]
 fn an_unavailable_catalog_cannot_turn_a_disappearing_finding_into_a_verified_fix() {
     let before = culprit_checks::analyze(snapshot());
     let finding = before.findings.iter().find(|f| f.check == "duplicate-index").unwrap();

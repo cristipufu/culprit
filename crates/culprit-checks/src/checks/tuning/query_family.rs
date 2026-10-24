@@ -8,7 +8,7 @@ pub fn query_family_info() -> CheckInfo {
         id: "query-family".into(),
         title: "Statements with literals baked in".into(),
         category: Category::Queries,
-        engines: vec![Engine::Mssql, Engine::Postgres],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Yugabyte],
         requires: vec![],
         description:
             "The same statement sent many times with different literal values (or value-list lengths), so the \

@@ -112,6 +112,7 @@ pub(super) fn misestimate(cx: &Cx) -> Vec<Draft> {
                         format!("UPDATE STATISTICS {} WITH FULLSCAN;", qualified(Engine::Mssql, t))
                     }),
                 ),
+                (Engine::Yugabyte, Some(t)) => (format!("Refresh YSQL optimizer statistics on {} and compare a measured plan with representative values.", table_leaf(t)), Some(Engine::Yugabyte.dialect().refresh_statistics(&qualified(Engine::Yugabyte, t)))),
                 (Engine::Postgres, Some(t)) => (
                     format!(
                         "Analyze {}{}.",

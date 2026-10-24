@@ -307,6 +307,8 @@ impl Pressure {
 pub fn category_info(key: &str, engine: Engine) -> (&'static str, String) {
     let name = engine.label();
     match key {
+        "rpc" => ("Distributed RPCs", "Waiting for remote DocDB operations or catalog requests. Native session events identify these waits; statement RPC timings can overlap and are not exclusive wait shares.".into()),
+        "storage" => ("Storage I/O", "Waiting for native storage reads or writes, including RocksDB operations. These are session observations, not PostgreSQL heap-page or buffer measurements.".into()),
         "cpu" => (
             "CPU",
             match engine {
@@ -334,6 +336,7 @@ pub fn category_info(key: &str, engine: Engine) -> (&'static str, String) {
         "log" => (
             "Log writes",
             match engine {
+                Engine::Yugabyte => "Commits waiting on DocDB replication and Raft log durability. Correlate transaction latency with the affected tablets and replicas.".into(),
                 Engine::Postgres => "Commits waiting for the write-ahead log (WAL) to reach disk. Many tiny transactions, or slow log storage.".into(),
                 Engine::Mysql => "Commits waiting for InnoDB's redo log to reach disk. Many tiny transactions, or slow log storage.".into(),
                 Engine::Mssql => "Commits waiting for the transaction log to reach disk (WRITELOG), or a tier's log-rate limit. Many tiny transactions, or slow log storage.".into(),
@@ -370,6 +373,8 @@ pub fn category_info(key: &str, engine: Engine) -> (&'static str, String) {
 pub fn category_key(category: &str) -> &'static str {
     match category.to_ascii_lowercase().as_str() {
         "cpu" | "worker thread" | "running" => "cpu",
+        "rpc" => "rpc",
+        "storage" => "storage",
         "io" | "buffer io" | "other disk io" | "disk" => "io",
         "rows" | "table io" => "rows",
         "lock" => "lock",

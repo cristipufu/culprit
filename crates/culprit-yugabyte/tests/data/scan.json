@@ -1,0 +1,73 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Limit",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 21.09,
+      "Total Cost": 1299.2,
+      "Plan Rows": 10,
+      "Plan Width": 123,
+      "Actual Startup Time": 6.162,
+      "Actual Total Time": 6.173,
+      "Actual Rows": 10,
+      "Actual Loops": 1,
+      "Output": [
+        "id",
+        "customer_id",
+        "status",
+        "total",
+        "created_at",
+        "notes"
+      ],
+      "Plans": [
+        {
+          "Node Type": "Seq Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Relation Name": "orders",
+          "Schema": "public",
+          "Alias": "orders",
+          "Startup Cost": 21.09,
+          "Total Cost": 1299.2,
+          "Plan Rows": 10,
+          "Plan Width": 123,
+          "Actual Startup Time": 6.16,
+          "Actual Total Time": 6.168,
+          "Actual Rows": 10,
+          "Actual Loops": 1,
+          "Output": [
+            "id",
+            "customer_id",
+            "status",
+            "total",
+            "created_at",
+            "notes"
+          ],
+          "Storage Filter": "(orders.customer_id = 42)",
+          "Storage Table Read Requests": 1,
+          "Storage Table Read Execution Time": 5.945,
+          "Storage Table Read Ops": 1,
+          "Storage Table Rows Scanned": 19492
+        }
+      ]
+    },
+    "Query Identifier": -8618645454569335511,
+    "Planning Time": 13.28,
+    "Triggers": [],
+    "Execution Time": 7.653,
+    "Storage Read Requests": 1,
+    "Storage Read Execution Time": 5.945,
+    "Storage Read Ops": 1,
+    "Storage Rows Scanned": 19492,
+    "Catalog Read Requests": 54,
+    "Catalog Read Execution Time": 13.165,
+    "Catalog Read Ops": 54,
+    "Catalog Write Requests": 0,
+    "Storage Write Requests": 0,
+    "Storage Flush Requests": 0,
+    "Storage Execution Time": 19.11,
+    "Peak Memory Usage": 89
+  }
+]

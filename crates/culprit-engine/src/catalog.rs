@@ -40,7 +40,7 @@ pub(crate) fn columns_sql(engine: Engine) -> &'static str {
                JOIN INFORMATION_SCHEMA.TABLES t ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME
               ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION"
         }
-        Engine::Postgres => {
+        Engine::Postgres | Engine::Yugabyte => {
             "SELECT c.table_schema, c.table_name, t.table_type, c.column_name, c.data_type
                FROM information_schema.columns c
                JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name
@@ -105,7 +105,7 @@ pub(crate) async fn columns(provider: &dyn Provider, engine: Engine) -> Result<R
 pub(crate) fn databases_sql(engine: Engine) -> &'static str {
     match engine {
         Engine::Mssql => "SELECT name FROM sys.databases WHERE state = 0 ORDER BY name",
-        Engine::Postgres => "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname",
+        Engine::Postgres | Engine::Yugabyte => "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname",
         Engine::Sqlite => "SELECT name FROM pragma_database_list ORDER BY seq",
         Engine::Mysql => {
             "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA

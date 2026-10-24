@@ -7,6 +7,9 @@ use crate::model::Capability;
 pub(super) struct Mssql;
 
 impl EngineSpec for Mssql {
+    fn sql_syntax(&self) -> SqlSyntax {
+        SqlSyntax::Mssql
+    }
     fn inactive_index_state(&self, _server: &ServerInfo) -> crate::IndexState {
         crate::IndexState::Disabled
     }

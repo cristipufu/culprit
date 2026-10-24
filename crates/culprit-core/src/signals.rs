@@ -57,6 +57,9 @@ pub struct QueryCosts {
     pub row_bytes: Option<f64>,
     #[serde(default)]
     pub compile_history: Option<CompileHistory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub docdb: Option<DocdbMetrics>,
 }
 
 impl QueryCosts {
@@ -727,6 +730,50 @@ pub struct TableStorage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub hypertable: Option<HypertableStorage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub docdb: Option<DocdbTable>,
+}
+
+/// Native DocDB work; requests, operations and storage rows are different from PostgreSQL pages or SQL result rows.
+/// Timings can overlap and must not be turned into exclusive shares of execution time.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+#[ts(export)]
+pub struct DocdbMetrics {
+    pub read_requests: Option<f64>,
+    pub write_requests: Option<f64>,
+    pub read_operations: Option<f64>,
+    pub write_operations: Option<f64>,
+    pub rows_scanned: Option<f64>,
+    pub rows_returned: Option<f64>,
+    pub read_ms: Option<f64>,
+    pub write_ms: Option<f64>,
+    pub wait_ms: Option<f64>,
+    pub catalog_ms: Option<f64>,
+    pub retries: Option<f64>,
+    pub conflict_retries: Option<f64>,
+    pub read_restarts: Option<f64>,
+    pub obsolete_rows_scanned: Option<f64>,
+    pub seeks: Option<f64>,
+    pub nexts: Option<f64>,
+    pub prevs: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[ts(export)]
+pub struct DocdbTable {
+    pub tablets: Option<u32>,
+    pub hash_key_columns: Option<u32>,
+    pub colocated: bool,
+    pub tablegroup: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[ts(export)]
+pub struct DocdbIndex {
+    pub hash_columns: Vec<String>,
+    pub tablets: Option<u32>,
 }
 
 impl TableStorage {

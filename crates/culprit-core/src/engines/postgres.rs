@@ -39,6 +39,9 @@ const USER_SETTINGS: &[&str] = &[
 ];
 
 impl EngineSpec for Postgres {
+    fn sql_syntax(&self) -> SqlSyntax {
+        SqlSyntax::Postgres
+    }
     fn deadlock_limitation(&self) -> Option<&'static str> {
         Some(
             "PostgreSQL keeps a cumulative deadlock count in SQL, but the graphs and statements are only in the server log. Import the relevant log entries to explain the pattern. Turning on log_lock_waits also logs waits longer than deadlock_timeout.",

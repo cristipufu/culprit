@@ -7,6 +7,9 @@ use crate::dialect::{NewIndex, keys, unique};
 pub(super) struct Sqlite;
 
 impl EngineSpec for Sqlite {
+    fn sql_syntax(&self) -> SqlSyntax {
+        SqlSyntax::Sqlite
+    }
     fn inactive_index_state(&self, _server: &ServerInfo) -> crate::IndexState {
         crate::IndexState::Active
     }

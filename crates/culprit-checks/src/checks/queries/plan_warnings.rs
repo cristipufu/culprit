@@ -8,7 +8,7 @@ pub fn plan_warnings_info() -> CheckInfo {
         id: "plan-warnings".into(),
         title: "Plan warnings".into(),
         category: Category::Queries,
-        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Yugabyte, Engine::Mysql],
         requires: vec![Capability::QueryPlans],
         description: "Implicit conversions, spills, missing join predicates and missing statistics in the plans of heavy queries.".into(),
     }
@@ -204,7 +204,7 @@ pub(super) fn plan_warning_finding(
             f.fix = Some(Fix {
                 summary: match snapshot.server.engine {
                     Engine::Mssql => "Update statistics on the tables involved; if the estimate is still far off, add an index that delivers rows in the needed order so the sort disappears.".into(),
-                    Engine::Postgres => "Raise work_mem for this workload (per role or per session), or add an index that delivers rows in the needed order so the sort disappears.".into(),
+                    Engine::Postgres | Engine::Yugabyte => "Raise work_mem for this workload (per role or per session), or add an index that delivers rows in the needed order so the sort disappears.".into(),
                     Engine::Sqlite => "Give the sort an index that returns rows in the order asked for; otherwise PRAGMA temp_store = MEMORY keeps temporary b-trees in memory, and a larger cache_size helps them fit.".into(),
                     Engine::Mysql => "Raise tmp_table_size and max_heap_table_size for this workload so the temporary table stays in memory, or add an index that returns rows already ordered or grouped.".into(),
                 },

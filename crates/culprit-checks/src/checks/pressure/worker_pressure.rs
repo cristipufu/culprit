@@ -22,7 +22,7 @@ check!(
 pub fn worker_pressure(snapshot: &Snapshot) -> Vec<Finding> {
     let key = server_key(snapshot);
     match snapshot.server.engine {
-        Engine::Sqlite => Vec::new(),
+        Engine::Sqlite | Engine::Yugabyte => Vec::new(),
         Engine::Mssql => {
             let waiting = pressure(snapshot)
                 .and_then(|p| p.signal(culprit_core::signal_id::THREADPOOL_WAITING))

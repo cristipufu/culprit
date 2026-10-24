@@ -677,5 +677,19 @@
     ],
     "tables": [],
     "taken_at": "2026-10-23T21:32:41Z"
+  },
+  "yugabyte-demo": {
+    "candidates": [],
+    "cleanups": [],
+    "connection": "yugabyte-demo",
+    "counters": "",
+    "engine": "yugabyte",
+    "notes": [
+      "Candidates come from YSQL plans, the index catalog and foreign keys; DocDB does not publish missing-index requests.",
+      "Index usage counters aren't readable: unused indexes and the runtime impact of overlaps are unknown. Duplicate and prefix coverage checks use the recorded definitions.",
+      "Left out 1 candidate without sufficient current measured workload, or for a table that is gone or queries that are history."
+    ],
+    "tables": [],
+    "taken_at": "2026-10-24T01:01:08.861346Z"
   }
 }

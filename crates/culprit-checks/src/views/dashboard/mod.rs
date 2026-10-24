@@ -179,6 +179,7 @@ pub fn family(server: &ServerInfo) -> &'static str {
     match server.engine {
         Engine::Mssql => "SQL Server",
         Engine::Postgres => "PostgreSQL",
+        Engine::Yugabyte => "YugabyteDB",
         Engine::Mysql => "MySQL",
         Engine::Sqlite => "SQLite",
     }

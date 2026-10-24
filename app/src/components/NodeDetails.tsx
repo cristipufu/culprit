@@ -6,6 +6,7 @@ import type { PlanNode } from "../gen/PlanNode";
 import { duration, percent } from "../lib/format";
 import { cost, estRowsForRuns, exact, misestimate, operatorRuns, propValue } from "../lib/plan-format";
 import { OpIcon } from "./OpIcon";
+import { DocdbWork } from "./DocdbWork";
 import { shortPredicate } from "./PlanView";
 
 const WARNING_LABEL: Record<string, string> = {
@@ -125,6 +126,7 @@ export function NodeDetails({
         </ul>
       )}
 
+      <DocdbWork metrics={node.facts?.docdb} basis="loop" />
       <div className="nd-grid">
         {(node.seek_predicate || node.predicate) && (
           <section className="nd-card wide">

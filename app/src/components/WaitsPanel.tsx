@@ -161,6 +161,7 @@ function WaitsSkeleton() {
 const NO_WAIT_HISTORY: Record<Engine, string> = {
   mssql: "The login may not be allowed to read wait statistics, or Query Store isn't capturing waits. A live sample still works.",
   postgres: "PostgreSQL keeps no wait history. Turn on track_io_timing to time disk reads per statement, and sample what sessions wait on right now.",
+  yugabyte: "DocDB RPC timings may overlap and do not provide an exclusive historical wait mix. Inspect native storage metrics or sample active YSQL sessions.",
   mysql: "performance_schema isn't timing the waits (its wait instruments and consumers are off), or the login can't read them. A live sample still works.",
   sqlite: "SQLite has no server, so nothing records what it waits on. Waiting for the write lock shows up in the application, as SQLITE_BUSY or slow commits.",
 };

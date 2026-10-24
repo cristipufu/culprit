@@ -11,8 +11,8 @@ mod tests;
 mod workload;
 
 pub use workload::{
-    Cadence, PER_DAY_MIN_HOURS, PlanVariant, QueryStat, QueryTrend, RATE_MIN_HOURS, ScanSpan, Spread,
-    StatementActivity, StatementCost, Timeline, TimelineSource, Workload, WorkloadKind, span_when, span_words,
+    Cadence, CounterScope, CounterSet, PER_DAY_MIN_HOURS, PlanVariant, QueryStat, QueryTrend, RATE_MIN_HOURS, ScanSpan,
+    Spread, StatementActivity, StatementCost, Timeline, TimelineSource, Workload, WorkloadKind, span_when, span_words,
 };
 
 pub const SNAPSHOT_FORMAT: u32 = 1;
@@ -23,6 +23,7 @@ pub const SNAPSHOT_FORMAT: u32 = 1;
 pub enum Engine {
     Mssql,
     Postgres,
+    Yugabyte,
     Mysql,
     /// A SQLite database file: no server, no statement statistics. Culprit reads its schema, settings and plans.
     Sqlite,
@@ -35,7 +36,7 @@ pub fn wire_name<T: Serialize>(value: &T) -> String {
 
 impl Engine {
     /// Every engine, for tables kept per engine (see [`Engine::abilities`]).
-    pub const ALL: [Engine; 4] = [Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite];
+    pub const ALL: [Engine; 5] = [Engine::Mssql, Engine::Postgres, Engine::Yugabyte, Engine::Mysql, Engine::Sqlite];
 
     /// A server Culprit talks to: sessions, waits, deadlocks and server counters exist. A file the application opens
     /// itself (SQLite) has none of these.
@@ -423,6 +424,9 @@ pub struct IndexStat {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub filter_facts: Option<IndexFilterFacts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub docdb: Option<crate::signals::DocdbIndex>,
 }
 
 impl IndexStat {
@@ -439,6 +443,30 @@ impl IndexStat {
 
     pub fn key_names(&self) -> Vec<&str> {
         self.columns.iter().map(|c| strip_direction(c)).collect()
+    }
+
+    /// A DocDB lookup needs equality on every hash key before ordered keys can narrow a range. Missing native
+    /// metadata cannot establish that an LSM index serves a lookup; PostgreSQL's B-tree prefix rule is insufficient.
+    pub fn can_seek(&self, equality: &[String]) -> bool {
+        match &self.docdb {
+            Some(native) => {
+                native.hash_columns.iter().all(|hash| equality.iter().any(|c| c.eq_ignore_ascii_case(hash)))
+            }
+            None => !self.kind.eq_ignore_ascii_case("lsm"),
+        }
+    }
+
+    /// Hash groups must agree in full, including when comparing only an ordered prefix. A longer composite hash
+    /// cannot serve a shorter hash key's lookups. Unknown LSM metadata never proves redundancy.
+    pub fn same_sharding(&self, other: &Self) -> bool {
+        match (&self.docdb, &other.docdb) {
+            (Some(a), Some(b)) => {
+                a.hash_columns.len() == b.hash_columns.len()
+                    && a.hash_columns.iter().zip(&b.hash_columns).all(|(a, b)| a.eq_ignore_ascii_case(b))
+            }
+            (None, None) => !self.kind.eq_ignore_ascii_case("lsm") && !other.kind.eq_ignore_ascii_case("lsm"),
+            _ => false,
+        }
     }
 }
 

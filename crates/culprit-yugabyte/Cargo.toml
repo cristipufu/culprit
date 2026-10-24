@@ -1,0 +1,18 @@
+[package]
+name = "culprit-yugabyte"
+description = "Native YugabyteDB YSQL/DocDB provider for Culprit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+culprit-core.workspace = true
+culprit-postgres.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
