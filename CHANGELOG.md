@@ -2,6 +2,21 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.5.1
+
+### Improvements
+
+- **Connection setup.** A searchable database picker replaces the provider button grid and shares a row with the connection string. Connection cards group database identity, endpoint, saved findings and settings more clearly.
+- **Consistent provider branding.** The app and website use bundled, transparent provider logos. Product identities come from the shared engine catalog, including products that share a provider.
+- **Complete plan examples.** The standalone Plans view derives its supported formats from the core catalog and offers captured sample comparisons for every supported database product. Coverage tests require formats and samples when a product is added.
+
+### Fixes
+
+- **Scalable Azure and AWS discovery.** Inventory is read in bounded cloud pages and retains at most 20 matching databases. Refined searches can reach later pages; incomplete searches explain their limits. CLI output reports whether more matches may exist, and bulk saving requires a complete search.
+- **Responsive cloud searches.** Editing search terms or regions, replacing a search, or closing its panel cancels obsolete native work and releases its search slot. Late responses and cancellations cannot overwrite or retire the current search.
+- **Cloud CLI lookup from desktop launches.** Azure and AWS executables are resolved from PATH and standard install locations on macOS, Linux and Windows, including Windows batch launchers. Only the child process's PATH is extended; shell startup files are not loaded.
+- **Bounded cloud authentication and metrics.** Azure token acquisition and Monitor reads now share discovery's 15-second subprocess deadline, closed stdin, output limits and process-tree cleanup. Local process failures bypass the unsupported-metrics fallback.
+
 ## 0.5.0
 
 ### Added
