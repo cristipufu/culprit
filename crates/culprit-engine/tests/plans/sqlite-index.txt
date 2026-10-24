@@ -1,0 +1,2 @@
+QUERY PLAN
+`--SEARCH orders USING INDEX orders_customer_idx (customer_id=?)

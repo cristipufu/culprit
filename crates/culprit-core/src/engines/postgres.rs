@@ -45,8 +45,17 @@ const USER_SETTINGS: &[&str] = &[
 impl EngineSpec for Postgres {
     fn products(&self) -> &'static [ProductSpec] {
         const PRODUCTS: &[ProductSpec] = &[
-            ProductSpec::primary(DatabaseProduct::Postgres, "PostgreSQL"),
-            ProductSpec::variant(DatabaseProduct::Timescale, "TimescaleDB", "TimescaleDB"),
+            ProductSpec::primary(
+                DatabaseProduct::Postgres,
+                "PostgreSQL",
+                "EXPLAIN or EXPLAIN ANALYZE, as text or FORMAT JSON",
+            ),
+            ProductSpec::variant(
+                DatabaseProduct::Timescale,
+                "TimescaleDB",
+                "TimescaleDB",
+                "PostgreSQL EXPLAIN, including hypertable and chunk operators",
+            ),
         ];
         PRODUCTS
     }

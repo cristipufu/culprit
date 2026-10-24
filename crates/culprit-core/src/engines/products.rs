@@ -20,21 +20,33 @@ pub enum DatabaseProduct {
 pub struct ProductSpec {
     pub id: DatabaseProduct,
     pub label: &'static str,
+    /// The native plan formats a person can open without a connection.
+    pub plan_format: &'static str,
     /// `None` identifies the provider's default product; named variants match their recorded product prefix.
     pub prefix: Option<&'static str>,
 }
 
 impl ProductSpec {
-    pub const fn primary(id: DatabaseProduct, label: &'static str) -> Self {
-        Self { id, label, prefix: None }
+    pub const fn primary(id: DatabaseProduct, label: &'static str, plan_format: &'static str) -> Self {
+        Self { id, label, plan_format, prefix: None }
     }
 
-    pub const fn variant(id: DatabaseProduct, label: &'static str, prefix: &'static str) -> Self {
-        Self { id, label, prefix: Some(prefix) }
+    pub const fn variant(
+        id: DatabaseProduct,
+        label: &'static str,
+        prefix: &'static str,
+        plan_format: &'static str,
+    ) -> Self {
+        Self { id, label, plan_format, prefix: Some(prefix) }
     }
 
     pub fn facts(self) -> ProductFacts {
-        ProductFacts { id: self.id, label: self.label.into(), prefix: self.prefix.map(str::to_string) }
+        ProductFacts {
+            id: self.id,
+            label: self.label.into(),
+            plan_format: self.plan_format.into(),
+            prefix: self.prefix.map(str::to_string),
+        }
     }
 }
 
@@ -44,6 +56,7 @@ impl ProductSpec {
 pub struct ProductFacts {
     pub id: DatabaseProduct,
     pub label: String,
+    pub plan_format: String,
     pub prefix: Option<String>,
 }
 
@@ -66,9 +79,9 @@ mod tests {
             for product in products {
                 assert!(ids.insert(product.id), "duplicate product {:?}", product.id);
                 assert!(!product.label.is_empty());
+                assert!(!product.plan_format.trim().is_empty(), "{:?} needs a native plan description", product.id);
             }
         }
-        assert_eq!(ids.len(), 7);
     }
 
     #[test]
@@ -114,6 +127,7 @@ mod tests {
             for (spec, fact) in engine.spec().products().iter().zip(&decoded.products) {
                 assert_eq!(spec.id, fact.id);
                 assert_eq!(spec.label, fact.label);
+                assert_eq!(spec.plan_format, fact.plan_format);
                 assert_eq!(spec.prefix, fact.prefix.as_deref());
             }
         }

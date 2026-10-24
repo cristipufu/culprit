@@ -144,7 +144,11 @@ WAL, heap or server-wide measurement semantics.
 Database product identity is separate from the execution provider: MariaDB uses the MySQL provider and TimescaleDB
 uses PostgreSQL. Each engine file declares its products, stable `DatabaseProduct` identifiers, labels and recognition
 rules through `EngineSpec::products`. `ServerInfo` resolves those facts without allocating; generated `EngineFacts`
-exports the same metadata to the UI. Product logos use the generated identifiers and do not infer execution capabilities.
+exports the same metadata, including accepted plan formats, to the UI. Product logos use the generated identifiers and do not infer execution capabilities.
+`tests/plans/samples.json` maps each product to native comparison captures. The `share_sample` example parses that
+catalog to generate lazy-loaded desktop samples and browser comparisons. Tests compare coverage against all declared
+products, verify the native parser and compare bundled output with fresh parsing; adding a product requires its plan
+format and captured sample. The Plans view contains no separate product list.
 Runtime-spread wording also follows these facts and the captured workload source; a missing histogram does not prove
 that a product or version lacks histogram support. Server names use `ServerInfo::name`. Index hiding and removal
 advice resolve in the engine specification using the product, version and managed-table kind; unknown versions do

@@ -8,7 +8,11 @@ pub(super) struct Mssql;
 
 impl EngineSpec for Mssql {
     fn products(&self) -> &'static [ProductSpec] {
-        const PRODUCTS: &[ProductSpec] = &[ProductSpec::primary(DatabaseProduct::Mssql, "SQL Server")];
+        const PRODUCTS: &[ProductSpec] = &[ProductSpec::primary(
+            DatabaseProduct::Mssql,
+            "SQL Server",
+            ".sqlplan or showplan XML (SSMS, Query Store)",
+        )];
         PRODUCTS
     }
     fn hide_index(&self, _server: &ServerInfo, schema: &str, table: &str, index: &str) -> Option<String> {

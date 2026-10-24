@@ -303,7 +303,7 @@ export function PlanCompare() {
               <div className="cmp-samples">
                 Try a sample:{" "}
                 {SAMPLES.map((e) => (
-                  <button key={e.key} className="link" onClick={() => trySample(e.key)}>
+                  <button key={e.id} className="link" onClick={() => trySample(e.id)}>
                     {e.label}
                   </button>
                 ))}

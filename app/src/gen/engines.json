@@ -5,6 +5,7 @@
       {
         "id": "mssql",
         "label": "SQL Server",
+        "plan_format": ".sqlplan or showplan XML (SSMS, Query Store)",
         "prefix": null
       }
     ],
@@ -59,11 +60,13 @@
       {
         "id": "postgres",
         "label": "PostgreSQL",
+        "plan_format": "EXPLAIN or EXPLAIN ANALYZE, as text or FORMAT JSON",
         "prefix": null
       },
       {
         "id": "timescale",
         "label": "TimescaleDB",
+        "plan_format": "PostgreSQL EXPLAIN, including hypertable and chunk operators",
         "prefix": "TimescaleDB"
       }
     ],
@@ -128,6 +131,7 @@
       {
         "id": "yugabyte",
         "label": "YugabyteDB",
+        "plan_format": "EXPLAIN (ANALYZE, DIST, FORMAT JSON), including DocDB storage metrics",
         "prefix": null
       }
     ],
@@ -197,11 +201,13 @@
       {
         "id": "mysql",
         "label": "MySQL",
+        "plan_format": "EXPLAIN FORMAT=JSON, EXPLAIN ANALYZE or FORMAT=TREE",
         "prefix": null
       },
       {
         "id": "mariadb",
         "label": "MariaDB",
+        "plan_format": "EXPLAIN FORMAT=JSON or ANALYZE FORMAT=JSON",
         "prefix": "MariaDB"
       }
     ],
@@ -266,6 +272,7 @@
       {
         "id": "sqlite",
         "label": "SQLite",
+        "plan_format": "EXPLAIN QUERY PLAN, as the sqlite3 shell prints it",
         "prefix": null
       }
     ],

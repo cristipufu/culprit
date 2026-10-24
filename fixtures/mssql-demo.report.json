@@ -1703,7 +1703,7 @@
     "analyzer": {
       "component": "culprit-checks",
       "revision": null,
-      "version": "0.4.4"
+      "version": "0.5.0"
     },
     "baselines": [],
     "collection": null,
@@ -1716,7 +1716,7 @@
         "parser": {
           "component": "culprit-mssql",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "7"
       },
@@ -1726,7 +1726,7 @@
         "parser": {
           "component": "culprit-mssql",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "9"
       },
@@ -1736,7 +1736,7 @@
         "parser": {
           "component": "culprit-mssql",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "10"
       },
@@ -1746,7 +1746,7 @@
         "parser": {
           "component": "culprit-mssql",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "8"
       },
@@ -1756,7 +1756,7 @@
         "parser": {
           "component": "culprit-mssql",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "6"
       },
@@ -1766,7 +1766,7 @@
         "parser": {
           "component": "culprit-mssql",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "5"
       },
@@ -1776,7 +1776,7 @@
         "parser": {
           "component": "culprit-mssql",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "35"
       },
@@ -1786,7 +1786,7 @@
         "parser": {
           "component": "culprit-mssql",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "138"
       },
@@ -1796,7 +1796,7 @@
         "parser": {
           "component": "culprit-mssql",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "143"
       },
@@ -1806,7 +1806,7 @@
         "parser": {
           "component": "culprit-mssql",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "161"
       },
@@ -1816,7 +1816,7 @@
         "parser": {
           "component": "culprit-mssql",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "249"
       },
@@ -1826,7 +1826,7 @@
         "parser": {
           "component": "culprit-mssql",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "255"
       },
@@ -1836,7 +1836,7 @@
         "parser": {
           "component": "culprit-mssql",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "263"
       }
@@ -1953,7 +1953,7 @@
     "previous_analyzer": {
       "component": "culprit-checks",
       "revision": null,
-      "version": "0.4.3"
+      "version": "0.4.4"
     }
   },
   "refinement": [

@@ -4,32 +4,27 @@
 //!
 //!     cargo run -p culprit-engine --example share_sample
 
-use culprit_core::{Plan, Report, plan_diff_named};
+use culprit_core::{Report, plan_diff_named};
 use culprit_engine::export::{self, ExportOptions};
-use culprit_engine::plans::parse_plan;
+#[path = "support/plan_samples.rs"]
+mod plan_samples;
 use serde_json::{Value, json};
 
 fn main() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
-    let plan = |name: &str| -> Plan {
-        let text = std::fs::read_to_string(format!("{root}/crates/culprit-engine/tests/plans/{name}")).unwrap();
-        let mut plan = parse_plan(&text).unwrap();
-        plan.raw = None;
-        plan
-    };
     let options = ExportOptions::default();
+    let samples = plan_samples::samples();
+    let bundled = format!("{root}/fixtures/plan-samples.json");
+    std::fs::write(&bundled, serde_json::to_string(&serde_json::to_value(&samples).unwrap()).unwrap()).unwrap();
     let mut compares = Vec::new();
-    for (engine, a, b, name_a, name_b) in [
-        ("mssql", "mssql-seek.sqlplan", "mssql-scan.sqlplan", "Plan 68", "Plan 69"),
-        ("postgres", "pg-index.json", "pg-seqscan.json", "Plan 12", "Plan 13"),
-        ("mysql", "mysql-index.json", "mysql-scan.json", "Plan 4", "Plan 5"),
-        ("mariadb", "mariadb-index.json", "mariadb-scan.json", "Plan 7", "Plan 8"),
-    ] {
-        let (pa, pb) = (plan(a), plan(b));
+    for sample in samples {
+        let [pa, pb] = sample.plans;
+        let [name_a, name_b] = sample.names;
+        let (name_a, name_b) = (name_a.as_str(), name_b.as_str());
         let forward = plan_diff_named(&pa, name_a, &pb, name_b);
         let backward = plan_diff_named(&pb, name_b, &pa, name_a);
         compares.push(json!({
-            "engine": engine,
+            "product": sample.product,
             "names": [name_a, name_b],
             "a": pa,
             "b": pb,

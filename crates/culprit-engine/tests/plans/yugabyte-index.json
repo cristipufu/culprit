@@ -1,0 +1,47 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Index Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Scan Direction": "NoMovement",
+      "Index Name": "orders_created_idx",
+      "Relation Name": "orders",
+      "Alias": "orders",
+      "Startup Cost": 48.17,
+      "Total Cost": 48.47,
+      "Plan Rows": 1,
+      "Plan Width": 123,
+      "Actual Startup Time": 2.456,
+      "Actual Total Time": 2.458,
+      "Actual Rows": 1,
+      "Actual Loops": 1,
+      "Index Cond": "(created_at = '2026-10-14 21:20:00+00'::timestamp with time zone)",
+      "Rows Removed by Index Recheck": 0,
+      "Storage Table Read Requests": 1,
+      "Storage Table Read Execution Time": 0.442,
+      "Storage Table Read Ops": 1,
+      "Storage Table Rows Scanned": 1,
+      "Storage Index Read Requests": 1,
+      "Storage Index Read Execution Time": 1.696,
+      "Storage Index Read Ops": 1,
+      "Storage Index Rows Scanned": 1
+    },
+    "Planning Time": 10.997,
+    "Triggers": [
+    ],
+    "Execution Time": 3.892,
+    "Storage Read Requests": 2,
+    "Storage Read Execution Time": 2.138,
+    "Storage Read Ops": 2,
+    "Storage Rows Scanned": 2,
+    "Catalog Read Requests": 54,
+    "Catalog Read Execution Time": 11.950,
+    "Catalog Read Ops": 54,
+    "Catalog Write Requests": 0,
+    "Storage Write Requests": 0,
+    "Storage Flush Requests": 0,
+    "Storage Execution Time": 14.088,
+    "Peak Memory Usage": 89
+  }
+]

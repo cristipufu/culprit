@@ -23,8 +23,17 @@ fn index_hiding(server: &ServerInfo) -> Option<&'static str> {
 impl EngineSpec for Mysql {
     fn products(&self) -> &'static [ProductSpec] {
         const PRODUCTS: &[ProductSpec] = &[
-            ProductSpec::primary(DatabaseProduct::Mysql, "MySQL"),
-            ProductSpec::variant(DatabaseProduct::Mariadb, "MariaDB", "MariaDB"),
+            ProductSpec::primary(
+                DatabaseProduct::Mysql,
+                "MySQL",
+                "EXPLAIN FORMAT=JSON, EXPLAIN ANALYZE or FORMAT=TREE",
+            ),
+            ProductSpec::variant(
+                DatabaseProduct::Mariadb,
+                "MariaDB",
+                "MariaDB",
+                "EXPLAIN FORMAT=JSON or ANALYZE FORMAT=JSON",
+            ),
         ];
         PRODUCTS
     }

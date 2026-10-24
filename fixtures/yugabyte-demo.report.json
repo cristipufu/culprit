@@ -493,7 +493,7 @@
     "analyzer": {
       "component": "culprit-checks",
       "revision": null,
-      "version": "0.4.4"
+      "version": "0.5.0"
     },
     "baselines": [],
     "collection": null,
@@ -506,7 +506,7 @@
         "parser": {
           "component": "culprit-yugabyte",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "8345917977273313509"
       },
@@ -516,7 +516,7 @@
         "parser": {
           "component": "culprit-yugabyte",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "8345917977273313509"
       },
@@ -526,7 +526,7 @@
         "parser": {
           "component": "culprit-yugabyte",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "466454478821061062"
       },
@@ -536,7 +536,7 @@
         "parser": {
           "component": "culprit-yugabyte",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "466454478821061062"
       },
@@ -546,7 +546,7 @@
         "parser": {
           "component": "culprit-yugabyte",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "4357247400045295631"
       },
@@ -556,7 +556,7 @@
         "parser": {
           "component": "culprit-yugabyte",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "4357247400045295631"
       },
@@ -566,7 +566,7 @@
         "parser": {
           "component": "culprit-yugabyte",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "-71879613880347319"
       },
@@ -576,7 +576,7 @@
         "parser": {
           "component": "culprit-yugabyte",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "-71879613880347319"
       },
@@ -586,7 +586,7 @@
         "parser": {
           "component": "culprit-yugabyte",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "-1395695495724611761"
       },
@@ -596,7 +596,7 @@
         "parser": {
           "component": "culprit-yugabyte",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "-1395695495724611761"
       }
@@ -710,7 +710,11 @@
         "a caveat repeats nothing the summary or the fix says"
       ]
     },
-    "previous_analyzer": null
+    "previous_analyzer": {
+      "component": "culprit-checks",
+      "revision": null,
+      "version": "0.4.4"
+    }
   },
   "refinement": [
     {

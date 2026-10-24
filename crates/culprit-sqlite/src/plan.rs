@@ -120,7 +120,7 @@ pub fn plan_from_rows(statement: &str, rows: &[(i64, i64, String)]) -> Result<Pl
     let aliases = culprit_core::sql::table_aliases(statement, Engine::Sqlite);
     resolve_aliases(&mut root, &aliases);
     Ok(Plan {
-        facts: Some(Default::default()),
+        facts: Some(culprit_core::PlanFacts { estimated_cost_unavailable: true, ..Default::default() }),
         view: None,
         engine: Engine::Sqlite,
         kind: PlanKind::Estimated,
@@ -483,6 +483,8 @@ mod tests {
         let tree = "QUERY PLAN\n|--SCAN c\n`--CORRELATED SCALAR SUBQUERY 1\n   |--SEARCH o USING INDEX ix_orders_customer (customer_id=?)\n   `--USE TEMP B-TREE FOR ORDER BY\n";
         assert!(is_text_plan(tree));
         let plan = parse_text(tree).unwrap();
+        let comparison = culprit_core::plan_diff(&plan, &plan);
+        assert!(comparison.cost_a.is_none() && comparison.cost_b.is_none() && comparison.cost_ratio.is_none());
         let kids = &plan.root.children;
         assert_eq!(kids.len(), 2);
         assert_eq!((kids[0].kind, kids[0].object.as_deref()), (NodeKind::Scan, Some("c")));

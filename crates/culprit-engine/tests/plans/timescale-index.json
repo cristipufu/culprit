@@ -1,0 +1,41 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Limit",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 0.28,
+      "Total Cost": 1.14,
+      "Plan Rows": 20,
+      "Plan Width": 20,
+      "Actual Startup Time": 0.026,
+      "Actual Total Time": 0.031,
+      "Actual Rows": 20,
+      "Actual Loops": 1,
+      "Plans": [
+        {
+          "Node Type": "Index Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Scan Direction": "Backward",
+          "Index Name": "14_sensor_readings_pkey",
+          "Relation Name": "_hyper_1_14_chunk",
+          "Alias": "_hyper_1_14_chunk",
+          "Startup Cost": 0.28,
+          "Total Cost": 329.24,
+          "Plan Rows": 7681,
+          "Plan Width": 20,
+          "Actual Startup Time": 0.025,
+          "Actual Total Time": 0.029,
+          "Actual Rows": 20,
+          "Actual Loops": 1
+        }
+      ]
+    },
+    "Planning Time": 1.601,
+    "Triggers": [
+    ],
+    "Execution Time": 0.077
+  }
+]

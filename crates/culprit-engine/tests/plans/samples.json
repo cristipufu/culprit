@@ -1,0 +1,9 @@
+[
+  { "product": "mssql", "files": ["mssql-seek.sqlplan", "mssql-scan.sqlplan"], "names": ["Plan 68", "Plan 69"] },
+  { "product": "postgres", "files": ["pg-index.json", "pg-seqscan.json"], "names": ["Plan 12", "Plan 13"] },
+  { "product": "timescale", "files": ["timescale-index.json", "timescale-scan.json"], "names": ["Chunk index scan", "Chunk scan and sort"] },
+  { "product": "yugabyte", "files": ["yugabyte-index.json", "yugabyte-scan.json"], "names": ["DocDB index scan", "DocDB table scan"] },
+  { "product": "mysql", "files": ["mysql-index.json", "mysql-scan.json"], "names": ["Plan 4", "Plan 5"] },
+  { "product": "mariadb", "files": ["mariadb-index.json", "mariadb-scan.json"], "names": ["Plan 7", "Plan 8"] },
+  { "product": "sqlite", "files": ["sqlite-index.txt", "sqlite-scan.txt"], "names": ["Index search", "Table scan"] }
+]

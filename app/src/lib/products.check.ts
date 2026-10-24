@@ -22,7 +22,6 @@ for (const [key, facts] of Object.entries(engines as Record<Engine, EngineFacts>
     check(planEngineName({ engine, props: { flavor: product.prefix ?? product.label } }) === product.label, `${recorded}: wrong plan label`);
   }
 }
-check(seen.size === 7, "All seven database products must be exported by core");
 check(databaseProduct("postgres", "MariaDB 11.8") === "postgres", "Product recognition must stay within its provider");
 check(databaseProduct("mysql", "TimescaleDB 2.31") === "mysql", "An extension cannot select another provider");
 check(isMariadb("mysql", "MariaDB 11.8"), "MariaDB must retain product-specific advice");

@@ -12,6 +12,7 @@ import type { ImportCandidate } from "../gen/ImportCandidate";
 import type { LiveState } from "../gen/LiveState";
 import type { Mark } from "../gen/Mark";
 import type { Plan } from "../gen/Plan";
+import type { DatabaseProduct } from "../gen/DatabaseProduct";
 import type { PlanVariant } from "../gen/PlanVariant";
 import type { QueryStat } from "../gen/QueryStat";
 import type { PlanInsights } from "../gen/PlanInsights";
@@ -30,6 +31,7 @@ import { demoCloud } from "./demo-cloud";
 import { demoRows } from "./demo-rows";
 import { signalsSample, withSignals } from "./demo-signals";
 import { can, connectFacts, refusal, sessionActions, waitingState } from "./engines";
+import { sameSamplePlan } from "./plan-samples";
 
 /** The capabilities query history comes from (mirrors `Snapshot::no_workload_reason`). */
 /** A scan's window in minutes, also for scans from before windows could be hours. */
@@ -122,7 +124,7 @@ function withSpread(report: Report, sample: SpreadSample[string] | undefined): R
 
 /** Comparisons and exports the desktop app's Rust code made from plans captured on the demo databases. */
 export type ShareSample = {
-  compares: { engine: Plan["engine"] | "mariadb"; names: [string, string]; a: Plan; b: Plan; diff: PlanDiff; reverse: PlanDiff; markdown: string; html: string; plan_markdown: [string, string] }[];
+  compares: { product: DatabaseProduct; names: [string, string]; a: Plan; b: Plan; diff: PlanDiff; reverse: PlanDiff; markdown: string; html: string; plan_markdown: [string, string] }[];
   findings: Record<string, { markdown: string; html?: string }>;
 };
 
@@ -530,22 +532,22 @@ export async function demoApi(): Promise<Api> {
     diffPlans: async (a, b) => {
       const sample = await shareSample();
       for (const c of sample?.compares ?? []) {
-        if (c.a.total_cost === a.total_cost && c.b.total_cost === b.total_cost) return c.diff;
-        if (c.a.total_cost === b.total_cost && c.b.total_cost === a.total_cost) return c.reverse;
+        if (sameSamplePlan(c.a, a) && sameSamplePlan(c.b, b)) return c.diff;
+        if (sameSamplePlan(c.a, b) && sameSamplePlan(c.b, a)) return c.reverse;
       }
       return desktopOnly("The demo compares its sample plans; comparing other plans runs in the desktop app.");
     },
     exportPlan: async (plan, title, format) => {
       const sample = await shareSample();
       for (const c of sample?.compares ?? []) {
-        const contents = c.a.total_cost === plan.total_cost ? c.plan_markdown[0] : c.b.total_cost === plan.total_cost ? c.plan_markdown[1] : null;
+        const contents = sameSamplePlan(c.a, plan) ? c.plan_markdown[0] : sameSamplePlan(c.b, plan) ? c.plan_markdown[1] : null;
         if (contents && format === "markdown") return { name: `${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.md`, contents, format };
       }
       return desktopOnly("The demo exports its sample plans as Markdown; HTML pages and .sqlplan files come from the desktop app.");
     },
     exportDiff: async (a, b, nameA, nameB, format) => {
       const sample = await shareSample();
-      const c = sample?.compares.find((x) => x.a.total_cost === a.total_cost && x.b.total_cost === b.total_cost);
+      const c = sample?.compares.find((x) => sameSamplePlan(x.a, a) && sameSamplePlan(x.b, b));
       if (!c) return desktopOnly("The demo exports its sample comparisons; others come from the desktop app.");
       const stem = `compare-${nameA}-${nameB}`.toLowerCase().replace(/[^a-z0-9]+/g, "-");
       return format === "html" ? { name: `${stem}.html`, contents: c.html, format } : { name: `${stem}.md`, contents: c.markdown, format: "markdown" };

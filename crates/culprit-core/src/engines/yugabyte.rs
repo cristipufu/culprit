@@ -30,7 +30,11 @@ pub fn session_target(session: &str) -> crate::Result<(String, i32, String)> {
 
 impl EngineSpec for Yugabyte {
     fn products(&self) -> &'static [ProductSpec] {
-        const PRODUCTS: &[ProductSpec] = &[ProductSpec::primary(DatabaseProduct::Yugabyte, "YugabyteDB")];
+        const PRODUCTS: &[ProductSpec] = &[ProductSpec::primary(
+            DatabaseProduct::Yugabyte,
+            "YugabyteDB",
+            "EXPLAIN (ANALYZE, DIST, FORMAT JSON), including DocDB storage metrics",
+        )];
         PRODUCTS
     }
     fn unused_index_advice(&self, _server: &ServerInfo, _table_kind: Option<&str>) -> &'static str {

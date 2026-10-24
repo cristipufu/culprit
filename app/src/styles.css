@@ -5523,7 +5523,7 @@ table.rg {
 .plans-welcome {
   flex: 1;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   padding: 32px;
   overflow-y: auto;
@@ -5531,6 +5531,7 @@ table.rg {
 
 .welcome-card {
   width: min(560px, 100%);
+  margin-block: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -5576,10 +5577,16 @@ table.rg {
 
 .format-row {
   display: grid;
-  grid-template-columns: 92px 1fr;
+  grid-template-columns: 145px minmax(0, 1fr);
   gap: 10px;
   padding: 8px 12px;
   font-size: var(--fs-ui);
+}
+
+.format-row b {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .format-row + .format-row {
@@ -10995,7 +11002,7 @@ button.health-pill:hover {
   font-size: var(--fs-ui);
 }
 
-/* The label on its own line, so the four engine buttons stay together. */
+/* Keep the label above the product buttons as the catalog grows. */
 .welcome-samples > .muted {
   flex-basis: 100%;
 }

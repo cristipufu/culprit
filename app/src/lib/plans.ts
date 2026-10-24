@@ -1,7 +1,11 @@
 import { useSyncExternalStore } from "react";
 import type { Plan } from "../gen/Plan";
 import type { QueryStat } from "../gen/QueryStat";
+import type { DatabaseProduct } from "../gen/DatabaseProduct";
 import { api, errorMessage, type ApiError } from "./api";
+import { PRODUCTS } from "./engines";
+import { planSamples } from "./plan-samples";
+import { LatestRequest } from "./requests";
 import { setState, toast } from "./store";
 
 /** A plan opened in the Plans view: pasted, read from a file, or sent from a query. Kept for the session only. */
@@ -33,6 +37,7 @@ export type PlansState = {
 let state: PlansState = { items: [], selected: null, mode: "single", a: null, b: null, busy: false, error: null };
 const listeners = new Set<() => void>();
 let counter = 0;
+const sampleRequest = new LatestRequest();
 
 export function getPlans(): PlansState {
   return state;
@@ -55,6 +60,7 @@ export function usePlans<T>(select: (s: PlansState) => T): T {
 
 /** Add a plan and show it. The same plan object sent twice (e.g. "Open in Plans" again) is not duplicated. */
 export function addPlan(plan: Plan, name: string, origin: string, options: { show?: boolean; source?: PlanSource; query?: QueryStat } = {}): string {
+  sampleRequest.invalidate();
   const existing = state.items.find((p) => p.plan === plan);
   const id = existing?.id ?? `p${++counter}`;
   if (!existing) update({ items: [...state.items, { id, name, origin, plan, source: options.source, query: options.query && structuredClone(options.query) }] });
@@ -116,6 +122,7 @@ export function compare(a: Side, b: Side): void {
 
 /** Parse pasted or file text into a plan and show it; errors stay in the Plans view. */
 export async function importText(text: string, name: string, origin: string): Promise<boolean> {
+  sampleRequest.invalidate();
   update({ busy: true, error: null });
   setState({ view: "plans" });
   try {
@@ -199,23 +206,21 @@ export async function savePlan(item: LoadedPlan, asJson: boolean): Promise<void>
   }
 }
 
-/** The sample comparisons the browser demo ships: one per engine, MariaDB's own EXPLAIN dialect included. */
-export const SAMPLES = [
-  { key: "mssql", label: "SQL Server" },
-  { key: "postgres", label: "PostgreSQL" },
-  { key: "mysql", label: "MySQL" },
-  { key: "mariadb", label: "MariaDB" },
-] as const;
-export type SampleKey = (typeof SAMPLES)[number]["key"];
+/** Every product must have a captured comparison; backend and consumer tests enforce catalog parity. */
+export const SAMPLES = PRODUCTS;
 
 /** Compare two sample plans captured on the demo databases (a seek that became a scan), to see what Plans does. */
-export async function trySample(key: SampleKey = "mssql"): Promise<void> {
-  const { shareSample } = await import("./demo-api");
-  const sample = (await shareSample())?.compares.find((c) => c.engine === key);
-  if (!sample) {
-    toast("The sample plans ship with the browser demo; paste or open a plan instead");
-    return;
+export async function trySample(product: DatabaseProduct): Promise<void> {
+  const current = sampleRequest.start();
+  update({ busy: true, error: null });
+  try {
+    const sample = (await planSamples()).find((sample) => sample.product === product);
+    if (!current()) return;
+    if (!sample) throw new Error("This product's captured comparison is missing");
+    const origin = `Sample · ${PRODUCTS.find((p) => p.id === product)?.label ?? product}`;
+    compare({ plan: sample.plans[0], name: sample.names[0], origin }, { plan: sample.plans[1], name: sample.names[1], origin });
+    update({ busy: false });
+  } catch (error) {
+    if (current()) update({ busy: false, error: errorMessage(error) });
   }
-  const origin = `Sample · ${SAMPLES.find((s) => s.key === key)?.label ?? key}`;
-  compare({ plan: sample.a, name: sample.names[0], origin }, { plan: sample.b, name: sample.names[1], origin });
 }

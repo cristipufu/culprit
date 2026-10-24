@@ -1,0 +1,59 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Limit",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 452.20,
+      "Total Cost": 452.25,
+      "Plan Rows": 20,
+      "Plan Width": 20,
+      "Actual Startup Time": 2.089,
+      "Actual Total Time": 2.091,
+      "Actual Rows": 20,
+      "Actual Loops": 1,
+      "Plans": [
+        {
+          "Node Type": "Sort",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Startup Cost": 452.20,
+          "Total Cost": 471.40,
+          "Plan Rows": 7681,
+          "Plan Width": 20,
+          "Actual Startup Time": 2.088,
+          "Actual Total Time": 2.089,
+          "Actual Rows": 20,
+          "Actual Loops": 1,
+          "Sort Key": ["_hyper_1_14_chunk.observed_at DESC"],
+          "Sort Method": "top-N heapsort",
+          "Sort Space Used": 27,
+          "Sort Space Type": "Memory",
+          "Plans": [
+            {
+              "Node Type": "Seq Scan",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Relation Name": "_hyper_1_14_chunk",
+              "Alias": "_hyper_1_14_chunk",
+              "Startup Cost": 0.00,
+              "Total Cost": 247.81,
+              "Plan Rows": 7681,
+              "Plan Width": 20,
+              "Actual Startup Time": 0.004,
+              "Actual Total Time": 1.274,
+              "Actual Rows": 7681,
+              "Actual Loops": 1
+            }
+          ]
+        }
+      ]
+    },
+    "Planning Time": 1.247,
+    "Triggers": [
+    ],
+    "Execution Time": 2.118
+  }
+]

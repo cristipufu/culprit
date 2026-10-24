@@ -4,6 +4,15 @@ use ts_rs::TS;
 use crate::insights::PlanInsights;
 use crate::model::{Engine, Properties};
 
+/// A captured comparison bundled with the app, independently of live connections.
+#[derive(Serialize, Deserialize, TS, Clone, Debug)]
+#[ts(export)]
+pub struct PlanSample {
+    pub product: crate::DatabaseProduct,
+    pub names: [String; 2],
+    pub plans: [Plan; 2],
+}
+
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[ts(export)]

@@ -8,7 +8,11 @@ pub(super) struct Sqlite;
 
 impl EngineSpec for Sqlite {
     fn products(&self) -> &'static [ProductSpec] {
-        const PRODUCTS: &[ProductSpec] = &[ProductSpec::primary(DatabaseProduct::Sqlite, "SQLite")];
+        const PRODUCTS: &[ProductSpec] = &[ProductSpec::primary(
+            DatabaseProduct::Sqlite,
+            "SQLite",
+            "EXPLAIN QUERY PLAN, as the sqlite3 shell prints it",
+        )];
         PRODUCTS
     }
     fn unused_index_advice(&self, _server: &ServerInfo, _table_kind: Option<&str>) -> &'static str {

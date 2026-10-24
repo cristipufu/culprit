@@ -168,6 +168,8 @@ operational evidence, labeled with database/server scope and each counter's own 
 
 ### Plan viewer
 
+- Accepted formats and product labels come from the core product catalog. Every product has a captured comparison sample, available in desktop builds and the browser demo. Samples load only when requested. Catalog and parser tests require coverage for new products.
+
 An indented tree, read top-down like a profiler call tree, instead of a box-and-arrow graph. It scales to large plans and is scannable.
 
 - Each row: operator, object, estimated → actual rows with a misestimate badge (`×4,100 under`), self cost bar coloured by heat.

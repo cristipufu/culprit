@@ -9,6 +9,7 @@ mod golden;
 mod insights;
 mod invariants;
 mod measurement;
+mod plan_samples;
 mod plan_view;
 mod plans;
 mod plugin;

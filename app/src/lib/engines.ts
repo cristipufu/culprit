@@ -13,6 +13,8 @@ const FACTS = engines as Record<Engine, EngineFacts>;
 
 /** Every engine, in the order the engine files list them (`Engine::ALL`). */
 export const ENGINES = Object.keys(FACTS) as Engine[];
+/** Products and their execution providers, from the same generated catalog as core. */
+export const PRODUCTS = ENGINES.flatMap((engine) => FACTS[engine].products.map((product) => ({ ...product, engine })));
 export const sqlSyntax = (engine: Engine) => FACTS[engine].sql_syntax;
 export const statementMetrics = (engine: Engine) => FACTS[engine].statement_metrics;
 export const waitSampling = (engine: Engine) => FACTS[engine].wait_sampling;

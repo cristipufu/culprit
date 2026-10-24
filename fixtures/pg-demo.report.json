@@ -1266,7 +1266,7 @@
     "analyzer": {
       "component": "culprit-checks",
       "revision": null,
-      "version": "0.4.4"
+      "version": "0.5.0"
     },
     "baselines": [],
     "collection": null,
@@ -1279,7 +1279,7 @@
         "parser": {
           "component": "culprit-postgres",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "9065391607317686058"
       },
@@ -1289,7 +1289,7 @@
         "parser": {
           "component": "culprit-postgres",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "5308963031944094559"
       },
@@ -1299,7 +1299,7 @@
         "parser": {
           "component": "culprit-postgres",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "-8886085649470066503"
       },
@@ -1309,7 +1309,7 @@
         "parser": {
           "component": "culprit-postgres",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "4911431806993420100"
       },
@@ -1319,7 +1319,7 @@
         "parser": {
           "component": "culprit-postgres",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "-3722457391793582113"
       },
@@ -1329,7 +1329,7 @@
         "parser": {
           "component": "culprit-postgres",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "2004611025554862962"
       },
@@ -1339,7 +1339,7 @@
         "parser": {
           "component": "culprit-postgres",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "2885972271926804069"
       },
@@ -1349,7 +1349,7 @@
         "parser": {
           "component": "culprit-postgres",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "3432126458605143571"
       },
@@ -1359,7 +1359,7 @@
         "parser": {
           "component": "culprit-postgres",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "8465053948014496855"
       },
@@ -1369,7 +1369,7 @@
         "parser": {
           "component": "culprit-postgres",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "-6576252161252119529"
       },
@@ -1379,7 +1379,7 @@
         "parser": {
           "component": "culprit-postgres",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "5306524445554315840"
       },
@@ -1389,7 +1389,7 @@
         "parser": {
           "component": "culprit-postgres",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "2169115237613314459"
       },
@@ -1399,7 +1399,7 @@
         "parser": {
           "component": "culprit-postgres",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "-463560455567765064"
       },
@@ -1409,7 +1409,7 @@
         "parser": {
           "component": "culprit-postgres",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "-967240904657798800"
       },
@@ -1419,7 +1419,7 @@
         "parser": {
           "component": "culprit-postgres",
           "revision": null,
-          "version": "0.4.4"
+          "version": "0.5.0"
         },
         "query": "6425265648074738764"
       }
@@ -1536,7 +1536,7 @@
     "previous_analyzer": {
       "component": "culprit-checks",
       "revision": null,
-      "version": "0.4.3"
+      "version": "0.4.4"
     }
   },
   "refinement": [

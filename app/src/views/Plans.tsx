@@ -1,6 +1,7 @@
 import { Braces, ClipboardCopy, ClipboardPaste, Copy, FileCode, FileDown, FileUp, GitCompareArrows, Trash2, TriangleAlert, X } from "lucide-react";
 import { useRef, useState, type DragEvent } from "react";
 import { ShareMenu } from "../components/ShareMenu";
+import { PlanCatalog } from "../components/PlanCatalog";
 import { PlanCompare } from "./PlanCompare";
 import { LookToggle as PlanLookToggle, PlanSurface, rememberLook, rememberedLook as rememberedPlanLook, type PlanLook } from "../components/PlanSurface";
 import { Sql } from "../components/Sql";
@@ -18,7 +19,6 @@ import {
   setMode,
   setSide,
   swapSides,
-  SAMPLES,
   trySample,
   usePlans,
   type LoadedPlan,
@@ -164,35 +164,9 @@ function Welcome({ busy, error, onOpen, onPaste }: { busy: boolean; error: ApiEr
           </div>
         )}
         {error && <ErrorNote error={error} onDismiss={dismissError} />}
-        <div className="formats">
-          <Format engine="SQL Server" what=".sqlplan or showplan XML (SSMS, Query Store)" />
-          <Format engine="PostgreSQL" what="EXPLAIN or EXPLAIN ANALYZE, as text or FORMAT JSON" />
-          <Format engine="MySQL" what="EXPLAIN FORMAT=JSON, EXPLAIN ANALYZE or FORMAT=TREE" />
-          <Format engine="MariaDB" what="EXPLAIN FORMAT=JSON or ANALYZE FORMAT=JSON" />
-          <Format engine="SQLite" what="EXPLAIN QUERY PLAN, as the sqlite3 shell prints it" />
-        </div>
-        {/* The sample plans ship with the browser demo only; the desktop app doesn't offer buttons that can't load. */}
-        {import.meta.env.DEV && (
-          <div className="welcome-samples">
-            <span className="muted">See it with a sample comparison:</span>
-            {SAMPLES.map((e) => (
-              <button key={e.key} className="btn ghost small" onClick={() => trySample(e.key)}>
-                {e.label}
-              </button>
-            ))}
-          </div>
-        )}
+        <PlanCatalog onSample={(product) => void trySample(product)} />
         <p className="muted small">From Queries, any plan opens here, and two plans of the same query open side by side.</p>
       </div>
-    </div>
-  );
-}
-
-function Format({ engine, what }: { engine: string; what: string }) {
-  return (
-    <div className="format-row">
-      <b>{engine}</b>
-      <span className="muted">{what}</span>
     </div>
   );
 }

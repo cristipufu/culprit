@@ -4,4 +4,4 @@ import type { DatabaseProduct } from "./DatabaseProduct";
 /**
  * The same product identities and recognition rules consumed by the UI.
  */
-export type ProductFacts = { id: DatabaseProduct, label: string, prefix: string | null, };
+export type ProductFacts = { id: DatabaseProduct, label: string, plan_format: string, prefix: string | null, };
