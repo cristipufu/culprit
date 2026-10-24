@@ -29,10 +29,10 @@ pub async fn collect(client: &Client, probe: &Probe, snapshot: &mut Snapshot) {
                 (SELECT string_agg(d.column_name, chr(31) ORDER BY d.dimension_number)
                    FROM timescaledb_information.dimensions d
                   WHERE d.hypertable_schema = h.hypertable_schema AND d.hypertable_name = h.hypertable_name) AS dimensions,
-                {api}.approximate_row_count(format('%I.%I', h.hypertable_schema, h.hypertable_name)::regclass) AS rows,
+                {api}.approximate_row_count(to_regclass(format('%I.%I', h.hypertable_schema, h.hypertable_name))) AS rows,
                 sizes.table_bytes, sizes.index_bytes, sizes.toast_bytes, sizes.total_bytes
            FROM timescaledb_information.hypertables h
-           LEFT JOIN LATERAL {api}.hypertable_detailed_size(format('%I.%I', h.hypertable_schema, h.hypertable_name)::regclass) sizes ON true
+           LEFT JOIN LATERAL {api}.hypertable_detailed_size(to_regclass(format('%I.%I', h.hypertable_schema, h.hypertable_name))) sizes ON true
           WHERE h.hypertable_schema !~ '^_timescaledb_'"
     );
     let Some(hypertables) = coverage.read_rows(&sources::HYPERTABLES, query(client, &sql).await) else {
@@ -58,9 +58,9 @@ pub async fn collect(client: &Client, probe: &Probe, snapshot: &mut Snapshot) {
     let sql = format!(
         "SELECT h.hypertable_schema, h.hypertable_name, sizes.chunk_schema, sizes.chunk_name,
                 c.is_compressed, sizes.table_bytes, sizes.index_bytes, sizes.toast_bytes, sizes.total_bytes,
-                {api}.approximate_row_count(format('%I.%I', sizes.chunk_schema, sizes.chunk_name)::regclass) AS rows
+                {api}.approximate_row_count(to_regclass(format('%I.%I', sizes.chunk_schema, sizes.chunk_name))) AS rows
            FROM timescaledb_information.hypertables h
-           CROSS JOIN LATERAL {api}.chunks_detailed_size(format('%I.%I', h.hypertable_schema, h.hypertable_name)::regclass) sizes
+           CROSS JOIN LATERAL {api}.chunks_detailed_size(to_regclass(format('%I.%I', h.hypertable_schema, h.hypertable_name))) sizes
            JOIN timescaledb_information.chunks c ON c.chunk_schema = sizes.chunk_schema AND c.chunk_name = sizes.chunk_name
           WHERE h.hypertable_schema !~ '^_timescaledb_'"
     );
@@ -113,7 +113,7 @@ pub async fn collect(client: &Client, probe: &Probe, snapshot: &mut Snapshot) {
     }
     let sql = format!(
         "SELECT h.hypertable_schema AS schema_name, h.hypertable_name AS table_name, i.indexname,
-                {api}.hypertable_index_size(format('%I.%I', i.schemaname, i.indexname)::regclass) AS bytes
+                {api}.hypertable_index_size(to_regclass(format('%I.%I', i.schemaname, i.indexname))) AS bytes
            FROM timescaledb_information.hypertables h
            JOIN pg_indexes i ON i.schemaname = h.hypertable_schema AND i.tablename = h.hypertable_name
           WHERE h.hypertable_schema !~ '^_timescaledb_'"
@@ -251,6 +251,39 @@ fn apply_hypertables(snapshot: &mut Snapshot, rows: &[Hypertable]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires dev/timescale and CULPRIT_TIMESCALE_TEST_PORT"]
+    async fn live_disappeared_relations_leave_measurements_unknown_and_collection_succeeds() {
+        use culprit_core::{ConnectionSpec, Engine, Provider, SnapshotOptions};
+        let spec = ConnectionSpec {
+            engine: Some(Engine::Postgres),
+            host: "127.0.0.1".into(),
+            port: Some(std::env::var("CULPRIT_TIMESCALE_TEST_PORT").unwrap().parse().unwrap()),
+            user: Some("postgres".into()),
+            password: Some("culprit".into()),
+            database: Some("culprit_timescale".into()),
+            ..Default::default()
+        };
+        let provider = crate::PostgresProvider::new(&spec).unwrap();
+        let client = provider.connector.connect(crate::connect::COLLECTOR).await.unwrap();
+        let probe = crate::probe::probe(&client, &spec.host).await.unwrap();
+        let api = Engine::Postgres.dialect().quote(probe.timescale_schema.as_deref().unwrap());
+        let row = crate::rows::query_one(&client, &format!(
+            "SELECT {api}.approximate_row_count(to_regclass('public.culprit_absent_relation')) AS rows,
+                    {api}.hypertable_index_size(to_regclass('public.culprit_absent_relation')) AS bytes,
+                    (SELECT count(*) FROM {api}.hypertable_detailed_size(to_regclass('public.culprit_absent_relation'))) AS roots,
+                    (SELECT count(*) FROM {api}.chunks_detailed_size(to_regclass('public.culprit_absent_relation'))) AS chunks"
+        )).await.unwrap().unwrap();
+        assert!(row.number("rows").is_none() && row.number("bytes").is_none());
+        assert_eq!(row.number("roots"), Some(0.0));
+        assert_eq!(row.number("chunks"), Some(0.0));
+        let snapshot = provider.snapshot("timescale-collection-test", &SnapshotOptions::default()).await.unwrap();
+        assert!(snapshot.tables.iter().any(|t| t.storage.as_ref().is_some_and(|s| s.hypertable.is_some())));
+        for source in [sources::HYPERTABLES, sources::CHUNKS, sources::HYPERTABLE_INDEXES] {
+            assert!(snapshot.source_problem(&[source.name]).is_none(), "{}", source.name);
+        }
+    }
 
     fn snapshot() -> Snapshot {
         serde_json::from_str(include_str!("../../../fixtures/postgres-demo.json")).unwrap()
