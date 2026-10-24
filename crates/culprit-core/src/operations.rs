@@ -21,12 +21,15 @@ pub struct OperationalStats {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub termination_history: Option<TerminationHistory>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub node_resources: Option<NodeResources>,
 }
 
 impl OperationalStats {
-    /// Wait surfaces serialize retained histories separately. Borrow the remaining evidence so omitting raw
-    /// records does not first serialize or clone entire histories just to discard them.
-    pub fn without_retained_history(&self) -> impl Serialize + '_ {
+    /// Views project detailed observations separately. Borrow the remaining counters without first serializing
+    /// or cloning raw histories and node inventories just to discard them.
+    pub fn counters_only(&self) -> impl Serialize + '_ {
         #[derive(Serialize, TS)]
         struct Counters<'a> {
             log_failures: &'a [LoggedFailure],
@@ -47,9 +50,54 @@ impl OperationalStats {
             cluster,
             activity_history: _,
             termination_history: _,
+            node_resources: _,
         } = self;
         Counters { log_failures, spaces, counters, sequences, multixacts, sqlite, cluster }
     }
+}
+
+/// Shared node measurements, separate from the selected database's pressure signals and workload period.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct NodeResources {
+    pub source: String,
+    pub observed_from: String,
+    pub observed_until: String,
+    pub nodes_expected: Option<usize>,
+    pub partial: bool,
+    pub notes: Vec<String>,
+    pub nodes: Vec<NodeResource>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct NodeResource {
+    pub node: String,
+    pub available: bool,
+    pub cpu_user_fraction: Option<f64>,
+    pub cpu_system_fraction: Option<f64>,
+    pub host_memory_total_bytes: Option<f64>,
+    pub host_memory_available_bytes: Option<f64>,
+    pub host_memory_free_bytes: Option<f64>,
+    pub process_memory: Option<ProcessMemory>,
+}
+
+/// A process's tracked allocation; it is not necessarily RSS or the memory of SQL backend processes.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct ProcessMemory {
+    pub name: String,
+    pub tracked_bytes: Option<f64>,
+    pub hard_limit: Option<MemoryLimit>,
+    pub soft_limit: Option<MemoryLimit>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq)]
+#[serde(tag = "kind", content = "bytes", rename_all = "kebab-case")]
+#[ts(export)]
+pub enum MemoryLimit {
+    Unlimited,
+    Bytes(f64),
 }
 
 /// An evictable native buffer of unexpected terminations. It has no complete failure count or workload denominator.

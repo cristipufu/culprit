@@ -108,7 +108,9 @@ const RANK: Record<Signal["status"], number> = { bad: 0, watch: 1, info: 2, good
 /** One calm line under the vitals: the signals that need a look, or a note that all is well. */
 export function HealthLine({ report, onOpen }: { report: Report; onOpen: OpenWaits }) {
   const signals = report.snapshot.pressure?.signals ?? [];
-  if (signals.length === 0) return null;
+  const resources = report.snapshot.operations.node_resources;
+  const resourceMissing = report.snapshot.sources?.some((s) => s.source === "docdb-node-resources" && s.state === "unavailable");
+  if (signals.length === 0 && !resources && !resourceMissing) return null;
   const notable = signals.filter((s) => s.status === "bad" || s.status === "watch").sort((a, b) => RANK[a.status] - RANK[b.status]);
   const graded = signals.filter((s) => s.status !== "info").length;
   return (
@@ -116,7 +118,7 @@ export function HealthLine({ report, onOpen }: { report: Report; onOpen: OpenWai
       <span className="health-line-label">Health</span>
       {notable.length === 0 ? (
         <span className="health-pill">
-          <i className={`sig-dot ${graded > 0 ? "good" : "info"}`} /> {graded > 0 ? `${graded} measured signals look healthy` : "Counters recorded; no health verdict"}
+          <i className={`sig-dot ${graded > 0 ? "good" : "info"}`} /> {graded > 0 ? `${graded} measured signals look healthy` : signals.length === 0 ? resources?.nodes.some((n) => n.available) ? "Shared node observations; database pressure ungraded" : "Node measurements unavailable" : "Counters recorded; no health verdict"}
         </span>
       ) : (
         notable.slice(0, 1).map((s) => (

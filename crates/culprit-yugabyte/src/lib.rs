@@ -8,6 +8,7 @@ mod index_usage;
 pub mod plan;
 mod probe;
 mod progress;
+mod resources;
 mod sessions;
 pub mod sources;
 mod terminations;

@@ -74,6 +74,20 @@ resource-pressure verdicts from sample shares. Agent-output tests bound the resp
 
 ## Cluster-view verification
 
+Verify native node resource observations and their distinct administrative permissions:
+
+```sh
+CULPRIT_YSQL_TEST_PORT=55434 cargo test --locked -p culprit-yugabyte --lib live_node_resources_are_shared_native_samples_with_their_own_admin_permissions -- --ignored
+cargo test --locked -p culprit-checks --test all provider_audit::shared_node_cpu_and_memory_do_not_become_database_pressure
+cargo test --locked -p culprit-mcp --lib waits_view::tests
+```
+
+The live case keeps global views off, reads native shared resources, checks the node identity and finite values,
+then verifies ordinary-login/`pg_read_all_stats` refusals, `yb_db_admin` access and revocation. It creates no load
+spike and changes no cluster limits; temporary roles/grants are removed afterward. Shared view tests ensure that
+even busy host CPU and nearly exhausted shared memory do not become a database-pressure verdict. Agent tests
+bound node output while retaining totals, unknown values and scope.
+
 Verify unexpected termination records, native login visibility, independent dates, truncation, query identities and
 one-node global reads:
 

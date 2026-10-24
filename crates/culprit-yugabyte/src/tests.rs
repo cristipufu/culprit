@@ -7,6 +7,74 @@ static LIVE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
 #[ignore = "requires dev/yugabyte and CULPRIT_YSQL_TEST_PORT"]
+async fn live_node_resources_are_shared_native_samples_with_their_own_admin_permissions() {
+    let _fixture = LIVE.lock().await;
+    let provider = YugabyteProvider::new(&local_spec()).unwrap();
+    let admin = provider.connector.connect_observed(INTERACTIVE).await.unwrap();
+    admin.client.batch_execute(&tagged("SET yb_enable_global_views=off")).await.unwrap();
+    let p = crate::probe::read(&admin.client).await.unwrap();
+    let resources = crate::resources::read(&admin, 1000).await.unwrap();
+    assert!(!resources.partial);
+    assert_eq!(resources.nodes_expected, Some(1));
+    assert_eq!(resources.nodes.len(), 1);
+    let node = &resources.nodes[0];
+    assert!(node.available);
+    assert_eq!(Some(&node.node), p.node.as_ref());
+    for fraction in [node.cpu_user_fraction, node.cpu_system_fraction] {
+        assert!(fraction.is_some_and(|n| (0.0..=1.0).contains(&n)));
+    }
+    assert!(node.host_memory_total_bytes.is_some_and(|n| n > 0.0));
+    let memory = node.process_memory.as_ref().unwrap();
+    assert!(memory.tracked_bytes.is_some_and(|n| n >= 0.0));
+    assert!(memory.hard_limit.is_some() && memory.soft_limit.is_some());
+    assert!(
+        culprit_core::format::epoch_seconds(&resources.observed_until)
+            >= culprit_core::format::epoch_seconds(&resources.observed_from)
+    );
+    assert!(resources.notes.iter().any(|n| n.contains("container")));
+    let pid = query_one(&admin.client, "SELECT pg_backend_pid()::text AS pid").await.unwrap().unwrap().string("pid");
+    let role = format!("culprit_resource_reader_{pid}");
+    admin.client.batch_execute(&tagged("SET default_transaction_read_only=off")).await.unwrap();
+    admin.client.batch_execute(&tagged(&format!("CREATE ROLE {role} LOGIN"))).await.unwrap();
+    let access = async {
+        let mut spec = local_spec();
+        spec.user = Some(role.clone());
+        let reader = YugabyteProvider::new(&spec)?;
+        let session = reader.connector.connect_observed(INTERACTIVE).await?;
+        let denied = crate::resources::read(&session, 1000).await;
+        admin
+            .client
+            .batch_execute(&tagged(&format!("GRANT pg_read_all_stats TO {role}")))
+            .await
+            .map_err(culprit_postgres::wire::map_error)?;
+        let monitor_denied = crate::resources::read(&session, 1000).await;
+        admin
+            .client
+            .batch_execute(&tagged(&format!("GRANT yb_db_admin TO {role}")))
+            .await
+            .map_err(culprit_postgres::wire::map_error)?;
+        let permitted = crate::resources::read(&session, 1000).await;
+        admin
+            .client
+            .batch_execute(&tagged(&format!("REVOKE yb_db_admin FROM {role}")))
+            .await
+            .map_err(culprit_postgres::wire::map_error)?;
+        let revoked = crate::resources::read(&session, 1000).await;
+        Ok::<_, Error>((denied, monitor_denied, permitted, revoked))
+    }
+    .await;
+    admin.client.batch_execute(&tagged(&format!("DROP ROLE {role}"))).await.unwrap();
+    let (denied, monitor_denied, permitted, revoked) = access.unwrap();
+    for result in [denied, monitor_denied, revoked] {
+        let error = result.unwrap_err();
+        assert_eq!(error.code, culprit_core::ErrorCode::PermissionDenied);
+        assert!(error.hint.unwrap().contains("pg_read_all_stats alone does not grant access"));
+    }
+    assert!(permitted.unwrap().nodes.iter().any(|n| n.available));
+}
+
+#[tokio::test]
+#[ignore = "requires dev/yugabyte and CULPRIT_YSQL_TEST_PORT"]
 async fn live_terminations_preserve_visibility_period_nodes_and_omit_raw_sql() {
     let _fixture = LIVE.lock().await;
     let provider = YugabyteProvider::new(&local_spec()).unwrap();

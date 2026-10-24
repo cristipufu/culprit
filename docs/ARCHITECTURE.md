@@ -158,6 +158,13 @@ free-form messages. Their visibility, retention and dates stay separate from suc
 the dashboard does not divide them by workload calls or infer an ongoing incident. CLI output retains the bounded
 records, the UI pages them, and MCP bounds its event summary without serializing the history twice.
 
+`OperationalStats::node_resources` stores shared native node observations without turning host CPU, VM memory or
+TServer allocations into database-specific `Pressure` signals. The reader projects known scalar fields only,
+validates finite values, distinguishes unlimited limits from missing data, and checks node inventory across the
+read. UI, CLI and MCP retain the source's observation interval and process scope; UI pages nodes and MCP bounds its
+node summary without serializing the inventory twice. These observations remain informational, independent of
+workload rates and retained activity samples.
+
 ### Platforms: where a database runs
 
 A managed service changes how Culprit reads and advises (no superuser, settings in a parameter group, the cloud's own

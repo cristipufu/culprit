@@ -38,6 +38,7 @@ are not claimed as verified; optional views and functions that are absent or den
 | Live samples / progress | Bounded session sampling with native RPC/storage categories; scoped current activity and optional estimated plans; supported CREATE INDEX / ANALYZE phases without guessed percentages |
 | Activity history | Database- and role-scoped native ASH observations, with task weights, observation nodes, component/event names and query identities in an independent retained period |
 | Unexpected terminations | Native `yb_terminated_queries` records, with query IDs, recognized reasons, dates and nodes; database-filtered, with native login visibility and bounded retention |
+| Node resources | Native shared host CPU/memory and TServer memory-tracker observations; per-node status, inventory, observation interval and limits remain explicit |
 | Session actions | Non-production only; local node, database and backend-start guards; Connection Manager worker backends are refused |
 
 Workload retention streams at most 8 MiB of statement text and counters, without whole-row latency-histogram expansion.
@@ -152,14 +153,37 @@ Verified live: temporary-file-limit failures from bounded disposable sorts, data
 visibility, changed privileges, query-ID correlation and matching one-node global reads. No backend crash is induced
 by this verification. Multi-node failure and retention scenarios remain unverified.
 
+## Shared node resources
+
+The native `yb_servers_metrics()` function provides shared node measurements independently of the global-view
+preview. Culprit reads host CPU user/system fractions, host total/free/available memory, and TServer root tracked
+allocation with its soft/hard limits. The function requires **superuser or `yb_db_admin`**; `pg_read_all_stats` alone
+does not permit it. Permission failures become source notes while the rest of the scan continues.
+
+These are **not the selected database's CPU or memory pressure**, process RSS, or total YSQL-backend memory. Host
+memory may describe a VM rather than the container's allocation. CPU is sampled over a short native interval; exact
+per-node sample timestamps and duration are not returned. Culprit preserves the resource-read interval separately
+from the workload's dates and does not infer sustained pressure or which statements caused load. The native
+[resource reader](https://github.com/yugabyte/yugabyte-db/blob/master/src/yb/tserver/tablet_server.cc) and
+[CPU sampler](https://github.com/yugabyte/yugabyte-db/blob/master/src/yb/tserver/metrics_snapshotter.cc) define those
+measurements; the [SQL entry point](https://github.com/yugabyte/yugabyte-db/blob/master/src/postgres/src/backend/utils/misc/pg_yb_utils.c)
+enforces the administrative privilege.
+
+One resource phase has a 10-second deadline and retains at most 1,000 node rows or 8 MiB. It projects only known
+scalar values, omits addresses and free-form RPC errors, checks node inventory before/after collection, and marks
+missing, failed, invalid or truncated observations partial. Failed nodes remain visible without fabricated zeroes.
+Unknown memory limits stay distinct from native unlimited (`-1`) and measured zero limits. Health pages node rows;
+agent output carries a bounded summary and the total retained/expected counts. Verified live on the one-node
+fixture, including ordinary-login and `pg_read_all_stats` refusals, successful `yb_db_admin` access and revocation.
+
 ## Limits
 
 PostgreSQL heap pages, buffer ratios, dead tuples, HOT updates, autovacuum, XID/MultiXact wraparound and heap-oriented GUC
 advice are unavailable by design. Database size remains unknown. Configuration suggestions are restricted to supported
 YSQL database settings; other changes use YugabyteDB administration rather than PostgreSQL `ALTER SYSTEM` guesses.
 
-The current provider does not yet collect complete native operation progress,
-server resource pressure or distributed error/deadlock history. These are implementation gaps;
+The current provider does not yet collect complete native operation progress or distributed deadlock history.
+Database-attributed resource pressure and a complete SQL error history are not supplied by these native views;
 PostgreSQL placeholders are not substituted. Current session/lock collection is limited to 1,000 sessions and 2,000
 waits and labels truncated or node-local visibility incomplete. Live lowers the lock metadata reader's session-local
 minimum transaction age to include young waiters; native transaction/per-tablet caps still limit its evidence. A no-blocking result is not a whole-cluster assertion
@@ -195,6 +219,7 @@ published 0.4.4 build.
 ![YSQL workload scope and dashboard](../screenshots/yugabyte-dashboard.png)
 ![Native recorded task activity, independent sample weights and observation nodes](../screenshots/yugabyte-activity.png)
 ![Dated native termination records under Health, separate from workload failure rates](../screenshots/yugabyte-terminations.png)
+![Shared native node CPU, host memory and tracked process limits under Health](../screenshots/yugabyte-resources.png)
 ![Recorded native DocDB work per statement run](../screenshots/yugabyte-queries.png)
 ![Native retained plan history with independent cache periods](../screenshots/yugabyte-history.png)
 ![Native hash keys and unavailable local index-usage counters](../screenshots/yugabyte-schema.png)

@@ -46,6 +46,11 @@ pub const TERMINATIONS: Source = Source {
     reads: "bounded unexpected YSQL termination records, without raw SQL or free-form messages",
     delivers: &[],
 };
+pub const NODE_RESOURCES: Source = Source {
+    name: source_id::DOCDB_NODE_RESOURCES,
+    reads: "native shared node CPU samples, host memory and TServer memory-tracker allocations",
+    delivers: &[],
+};
 pub const EPOCHS: Source = Source {
     name: source_id::DOCDB_EPOCHS,
     reads: "statement reset epochs for every contributing YB-TServer",
@@ -71,6 +76,7 @@ pub const ALL: &[Source] = &[
     PLAN_HISTORY,
     ACTIVITY_HISTORY,
     TERMINATIONS,
+    NODE_RESOURCES,
     EPOCHS,
     SETTINGS,
     INDEX_USAGE,

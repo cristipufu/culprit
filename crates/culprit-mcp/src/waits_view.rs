@@ -85,13 +85,22 @@ pub fn report(report: &Report) -> Value {
         "signals": snapshot.pressure.as_ref().map(|p| p.signals.iter().map(signal).collect::<Vec<_>>()).unwrap_or_default(),
         "storage": snapshot.pressure.as_ref().map(|p| p.files.iter().take(12).map(file).collect::<Vec<_>>()).unwrap_or_default(),
         "replication": snapshot.pressure.as_ref().map(|p| p.replicas.clone()).unwrap_or_default(),
-        "operations": snapshot.operations.without_retained_history(),
+        "operations": snapshot.operations.counters_only(),
         "oldest_open_transaction": snapshot.pressure.as_ref().and_then(|p| p.oldest_transaction.as_ref()).map(|t| json!({
             "session": t.session, "open_for": format::duration(t.seconds * 1000.0), "state": t.state, "program": t.program,
         })),
     });
     if let Some(activity) = activity {
         response["activity"] = activity;
+    }
+    if let Some(resources) = &snapshot.operations.node_resources {
+        response["node_resources"] = json!({
+            "source":resources.source,"observed_from":resources.observed_from,"observed_until":resources.observed_until,
+            "nodes_expected":resources.nodes_expected,"nodes_retained":resources.nodes.len(),"nodes_available":resources.nodes.iter().filter(|n|n.available).count(),
+            "partial":resources.partial,"notes":resources.notes,"nodes":resources.nodes.iter().filter(|n|!n.available).chain(resources.nodes.iter().filter(|n|n.available)).take(12).collect::<Vec<_>>()
+        });
+    } else if let Some(reason) = snapshot.source_problem(&[culprit_core::source_id::DOCDB_NODE_RESOURCES]) {
+        response["node_resources_unavailable"] = json!(reason);
     }
     if let Some(history) = &snapshot.operations.termination_history {
         let mut by_reason = std::collections::BTreeMap::<String, usize>::new();
@@ -133,6 +142,48 @@ pub fn sample(s: &WaitSample) -> Value {
 mod tests {
     use super::*;
     use culprit_core::{Engine, SignalScope, SignalUnit};
+
+    #[test]
+    fn shared_node_resources_remain_bounded_and_separate_from_database_signals() {
+        let mut data: Report =
+            serde_json::from_str(include_str!("../../../fixtures/yugabyte-demo.report.json")).unwrap();
+        data.snapshot.operations.node_resources = Some(culprit_core::NodeResources {
+            source: "shared native nodes".into(),
+            observed_from: "2026-10-01T00:00:00Z".into(),
+            observed_until: "2026-10-01T00:00:01Z".into(),
+            nodes_expected: Some(10_001),
+            partial: true,
+            notes: vec!["Not database pressure".into()],
+            nodes: (0..10_000)
+                .map(|i| culprit_core::NodeResource {
+                    node: format!("{i:032x}"),
+                    available: true,
+                    cpu_user_fraction: Some(0.99),
+                    cpu_system_fraction: Some(0.01),
+                    host_memory_total_bytes: None,
+                    host_memory_available_bytes: None,
+                    host_memory_free_bytes: None,
+                    process_memory: None,
+                })
+                .collect(),
+        });
+        let resources = data.snapshot.operations.node_resources.as_mut().unwrap();
+        let mut failed = resources.nodes[0].clone();
+        failed.node = "ffffffffffffffffffffffffffffffff".into();
+        failed.available = false;
+        failed.cpu_user_fraction = None;
+        failed.cpu_system_fraction = None;
+        resources.nodes.push(failed);
+        let value = report(&data);
+        let resources = &value["node_resources"];
+        assert_eq!(resources["nodes"].as_array().unwrap().len(), 12);
+        assert_eq!(resources["nodes_retained"], 10_001);
+        assert_eq!(resources["nodes_available"], 10_000);
+        assert_eq!(resources["nodes"][0]["available"], false, "failed nodes must survive the presentation limit");
+        assert!(value["operations"].get("node_resources").is_none());
+        assert_eq!(resources["nodes"][0]["host_memory_total_bytes"], Value::Null);
+        assert!(serde_json::to_vec(resources).unwrap().len() < 6000);
+    }
 
     #[test]
     fn termination_output_bounds_records_and_keeps_native_limits_without_repeating_history() {

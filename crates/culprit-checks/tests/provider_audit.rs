@@ -230,6 +230,47 @@ fn dashboard_health_cannot_call_a_nearly_exhausted_identity_healthy() {
 }
 
 #[test]
+fn shared_node_cpu_and_memory_do_not_become_database_pressure() {
+    let mut s = snapshot(Engine::Yugabyte);
+    s.pressure = Some(culprit_core::Pressure::default());
+    s.operations.node_resources = Some(culprit_core::NodeResources {
+        source: "shared native nodes".into(),
+        observed_from: "2026-10-01T00:00:00Z".into(),
+        observed_until: "2026-10-01T00:00:01Z".into(),
+        nodes_expected: Some(1),
+        partial: false,
+        notes: vec!["Shared with other databases".into()],
+        nodes: vec![culprit_core::NodeResource {
+            node: "resource-node".into(),
+            available: true,
+            cpu_user_fraction: Some(0.99),
+            cpu_system_fraction: Some(0.01),
+            host_memory_total_bytes: Some(1e9),
+            host_memory_available_bytes: Some(1.0),
+            host_memory_free_bytes: Some(0.0),
+            process_memory: Some(culprit_core::ProcessMemory {
+                name: "TServer tracker".into(),
+                tracked_bytes: Some(1e9),
+                hard_limit: Some(culprit_core::MemoryLimit::Bytes(1e9)),
+                soft_limit: Some(culprit_core::MemoryLimit::Bytes(5e8)),
+            }),
+        }],
+    });
+    let report = culprit_checks::analyze(s.clone());
+    let dashboard = culprit_checks::dashboard(&report);
+    let tile = dashboard.tiles.iter().find(|t| t.key == culprit_core::TileKey::Health).unwrap();
+    assert_eq!(tile.status, culprit_core::TileStatus::Info);
+    assert!(tile.takeaway.contains("do not grade"));
+    assert!(report.snapshot.pressure.as_ref().unwrap().signals.is_empty());
+    s.operations.node_resources.as_mut().unwrap().nodes[0].available = false;
+    let dashboard = culprit_checks::dashboard(&culprit_checks::analyze(s));
+    assert_eq!(
+        dashboard.tiles.iter().find(|t| t.key == culprit_core::TileKey::Health).unwrap().status,
+        culprit_core::TileStatus::Unavailable
+    );
+}
+
+#[test]
 fn native_terminations_keep_their_own_dates_and_never_become_workload_failure_rates() {
     let mut s = snapshot(Engine::Yugabyte);
     s.operations.termination_history = Some(culprit_core::TerminationHistory {

@@ -10,16 +10,16 @@
     "activity_history": {
       "period": {
         "source": "yb_active_session_history (node 3d2d9e10555b4ae2a683a8402505e416)",
-        "requested_start": "2026-10-17T05:58:03.535887Z",
-        "requested_end": "2026-10-24T05:58:03.535887Z",
+        "requested_start": "2026-10-17T06:52:49.190547Z",
+        "requested_end": "2026-10-24T06:52:49.190547Z",
         "first_sample": "2026-10-23T21:02:32.797443Z",
-        "last_sample": "2026-10-24T05:57:59.765173Z",
+        "last_sample": "2026-10-24T06:47:07.261143Z",
         "scope": "node",
         "nodes": [
           "3d2d9e10555b4ae2a683a8402505e416"
         ],
-        "observations": 630.0,
-        "weighted_observations": 630.0,
+        "observations": 720.0,
+        "weighted_observations": 720.0,
         "partial": false,
         "notes": [
           "Weights describe sampled active tasks, not query elapsed time, exclusive wait time, or CPU utilization. YSQL and DocDB components can execute concurrently.",
@@ -34,8 +34,8 @@
           "wait_event": "OnCpu_Active",
           "query_id": null,
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 6.0,
-          "weighted_observations": 6.0
+          "observations": 8.0,
+          "weighted_observations": 8.0
         },
         {
           "category": "cpu",
@@ -63,6 +63,15 @@
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 2.0,
           "weighted_observations": 2.0
+        },
+        {
+          "category": "cpu",
+          "component": "TServer",
+          "wait_event": "OnCpu_Active",
+          "query_id": "-713168459184540613",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 5.0,
+          "weighted_observations": 5.0
         },
         {
           "category": "cpu",
@@ -106,8 +115,8 @@
           "wait_event": "OnCpu_Active",
           "query_id": "5719102014621219231",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 1.0,
-          "weighted_observations": 1.0
+          "observations": 2.0,
+          "weighted_observations": 2.0
         },
         {
           "category": "cpu",
@@ -124,8 +133,17 @@
           "wait_event": "OnCpu_Active",
           "query_id": "5921151122338638923",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 3.0,
-          "weighted_observations": 3.0
+          "observations": 4.0,
+          "weighted_observations": 4.0
+        },
+        {
+          "category": "cpu",
+          "component": "TServer",
+          "wait_event": "OnCpu_Active",
+          "query_id": "7006469591806129477",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
         },
         {
           "category": "cpu",
@@ -277,8 +295,8 @@
           "wait_event": "OnCpu_Passive",
           "query_id": "3271918854569934339",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 16.0,
-          "weighted_observations": 16.0
+          "observations": 17.0,
+          "weighted_observations": 17.0
         },
         {
           "category": "cpu",
@@ -356,6 +374,15 @@
           "category": "cpu",
           "component": "TServer",
           "wait_event": "OnCpu_Passive",
+          "query_id": "7523565620358372916",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "cpu",
+          "component": "TServer",
+          "wait_event": "OnCpu_Passive",
           "query_id": "814450674345135467",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
@@ -369,6 +396,15 @@
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 2.0,
           "weighted_observations": 2.0
+        },
+        {
+          "category": "cpu",
+          "component": "TServer",
+          "wait_event": "OnCpu_Passive",
+          "query_id": "8605776759770690123",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
         },
         {
           "category": "cpu",
@@ -394,14 +430,23 @@
           "wait_event": "OnCpu_Active",
           "query_id": null,
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 12.0,
-          "weighted_observations": 12.0
+          "observations": 15.0,
+          "weighted_observations": 15.0
         },
         {
           "category": "cpu",
           "component": "YSQL",
           "wait_event": "OnCpu_Active",
           "query_id": "-1028551508738045588",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "cpu",
+          "component": "YSQL",
+          "wait_event": "OnCpu_Active",
+          "query_id": "-2056459776884762677",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
           "weighted_observations": 1.0
@@ -428,7 +473,34 @@
           "category": "cpu",
           "component": "YSQL",
           "wait_event": "OnCpu_Active",
+          "query_id": "-7204468180729579037",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "cpu",
+          "component": "YSQL",
+          "wait_event": "OnCpu_Active",
+          "query_id": "-8917791705733506944",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "cpu",
+          "component": "YSQL",
+          "wait_event": "OnCpu_Active",
           "query_id": "-9004267941791404519",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "cpu",
+          "component": "YSQL",
+          "wait_event": "OnCpu_Active",
+          "query_id": "2928110151295439704",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
           "weighted_observations": 1.0
@@ -475,8 +547,8 @@
           "wait_event": "ConflictResolution_WaitOnConflictingTxns",
           "query_id": "-7152432444458441206",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 28.0,
-          "weighted_observations": 28.0
+          "observations": 30.0,
+          "weighted_observations": 30.0
         },
         {
           "category": "log",
@@ -510,6 +582,15 @@
           "component": "TServer",
           "wait_event": "Raft_WaitingForReplication",
           "query_id": "-2703255303163799507",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "log",
+          "component": "TServer",
+          "wait_event": "Raft_WaitingForReplication",
+          "query_id": "-2754644767582019477",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
           "weighted_observations": 1.0
@@ -655,8 +736,8 @@
           "wait_event": "Raft_WaitingForReplication",
           "query_id": "3271918854569934339",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 19.0,
-          "weighted_observations": 19.0
+          "observations": 20.0,
+          "weighted_observations": 20.0
         },
         {
           "category": "log",
@@ -781,8 +862,8 @@
           "wait_event": "PgSleep",
           "query_id": "-7325742767792124762",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 15.0,
-          "weighted_observations": 15.0
+          "observations": 19.0,
+          "weighted_observations": 19.0
         },
         {
           "category": "other",
@@ -790,8 +871,8 @@
           "wait_event": "PgSleep",
           "query_id": "-7611524858906631594",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 67.0,
-          "weighted_observations": 67.0
+          "observations": 71.0,
+          "weighted_observations": 71.0
         },
         {
           "category": "other",
@@ -799,8 +880,17 @@
           "wait_event": "PgSleep",
           "query_id": "4722964161584367629",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 7.0,
-          "weighted_observations": 7.0
+          "observations": 13.0,
+          "weighted_observations": 13.0
+        },
+        {
+          "category": "rpc",
+          "component": "TServer",
+          "wait_event": "YBClient_LookingUpTablet",
+          "query_id": null,
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
         },
         {
           "category": "rpc",
@@ -878,6 +968,15 @@
           "category": "rpc",
           "component": "TServer",
           "wait_event": "YBClient_WaitingOnMaster",
+          "query_id": "6451500124395707827",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "TServer",
+          "wait_event": "YBClient_WaitingOnMaster",
           "query_id": "6468024676927488686",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
@@ -889,8 +988,8 @@
           "wait_event": "CatalogRead",
           "query_id": null,
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 77.0,
-          "weighted_observations": 77.0
+          "observations": 94.0,
+          "weighted_observations": 94.0
         },
         {
           "category": "rpc",
@@ -927,6 +1026,15 @@
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 3.0,
           "weighted_observations": 3.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "CatalogRead",
+          "query_id": "-2860102644019654430",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
         },
         {
           "category": "rpc",
@@ -1004,6 +1112,15 @@
           "category": "rpc",
           "component": "YSQL",
           "wait_event": "CatalogRead",
+          "query_id": "-4153638838219698907",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "CatalogRead",
           "query_id": "-4289801482278566499",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 2.0,
@@ -1033,8 +1150,8 @@
           "wait_event": "CatalogRead",
           "query_id": "-5007079708436876482",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 12.0,
-          "weighted_observations": 12.0
+          "observations": 13.0,
+          "weighted_observations": 13.0
         },
         {
           "category": "rpc",
@@ -1085,6 +1202,24 @@
           "category": "rpc",
           "component": "YSQL",
           "wait_event": "CatalogRead",
+          "query_id": "-6985753706444711410",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "CatalogRead",
+          "query_id": "-7212225344362703587",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "CatalogRead",
           "query_id": "-7237359852250298158",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
@@ -1095,6 +1230,15 @@
           "component": "YSQL",
           "wait_event": "CatalogRead",
           "query_id": "-726154913371195336",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "CatalogRead",
+          "query_id": "-7504099400277568102",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
           "weighted_observations": 1.0
@@ -1384,8 +1528,8 @@
           "wait_event": "CatalogRead",
           "query_id": "6758665142378950909",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 1.0,
-          "weighted_observations": 1.0
+          "observations": 2.0,
+          "weighted_observations": 2.0
         },
         {
           "category": "rpc",
@@ -1463,6 +1607,15 @@
           "category": "rpc",
           "component": "YSQL",
           "wait_event": "CatalogRead",
+          "query_id": "8605776759770690123",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 2.0,
+          "weighted_observations": 2.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "CatalogRead",
           "query_id": "8805990718693291899",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
@@ -1482,6 +1635,24 @@
           "component": "YSQL",
           "wait_event": "CatalogWrite",
           "query_id": "-6537040776677608807",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "CatalogWrite",
+          "query_id": "3284295404673222535",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "CatalogWrite",
+          "query_id": "3394469831684051852",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
           "weighted_observations": 1.0
@@ -1553,6 +1724,15 @@
           "category": "rpc",
           "component": "YSQL",
           "wait_event": "StorageFlush",
+          "query_id": "-3306639839067324183",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "StorageFlush",
           "query_id": "-5340329820669083003",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
@@ -1582,8 +1762,8 @@
           "wait_event": "StorageFlush",
           "query_id": "-7152432444458441206",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 30.0,
-          "weighted_observations": 30.0
+          "observations": 32.0,
+          "weighted_observations": 32.0
         },
         {
           "category": "rpc",
@@ -1616,10 +1796,19 @@
           "category": "rpc",
           "component": "YSQL",
           "wait_event": "StorageFlush",
+          "query_id": "-8756337409846580508",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "StorageFlush",
           "query_id": "-8833146572111975712",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 3.0,
-          "weighted_observations": 3.0
+          "observations": 4.0,
+          "weighted_observations": 4.0
         },
         {
           "category": "rpc",
@@ -1662,6 +1851,15 @@
           "component": "YSQL",
           "wait_event": "StorageFlush",
           "query_id": "4779348807761320991",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "StorageFlush",
+          "query_id": "4997833971506889113",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
           "weighted_observations": 1.0
@@ -1724,6 +1922,15 @@
           "category": "rpc",
           "component": "YSQL",
           "wait_event": "StorageFlush",
+          "query_id": "8558517091041250994",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "StorageFlush",
           "query_id": "8839079152179972803",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
@@ -1770,6 +1977,15 @@
           "component": "YSQL",
           "wait_event": "TransactionCommit",
           "query_id": "-2703255303163799507",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "TransactionCommit",
+          "query_id": "-2754644767582019477",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
           "weighted_observations": 1.0
@@ -1832,6 +2048,15 @@
           "category": "rpc",
           "component": "YSQL",
           "wait_event": "TransactionCommit",
+          "query_id": "8605776759770690123",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "TransactionCommit",
           "query_id": "8629010497789226172",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
@@ -1843,8 +2068,8 @@
           "wait_event": "WaitingOnTServer",
           "query_id": null,
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 17.0,
-          "weighted_observations": 17.0
+          "observations": 18.0,
+          "weighted_observations": 18.0
         },
         {
           "category": "rpc",
@@ -1931,6 +2156,15 @@
           "category": "rpc",
           "component": "YSQL",
           "wait_event": "WaitingOnTServer",
+          "query_id": "-713168459184540613",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 5.0,
+          "weighted_observations": 5.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "WaitingOnTServer",
           "query_id": "-7601473890952630532",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
@@ -1969,8 +2203,8 @@
           "wait_event": "WaitingOnTServer",
           "query_id": "3271918854569934339",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 16.0,
-          "weighted_observations": 16.0
+          "observations": 17.0,
+          "weighted_observations": 17.0
         },
         {
           "category": "rpc",
@@ -2005,8 +2239,8 @@
           "wait_event": "WaitingOnTServer",
           "query_id": "5719102014621219231",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 1.0,
-          "weighted_observations": 1.0
+          "observations": 2.0,
+          "weighted_observations": 2.0
         },
         {
           "category": "rpc",
@@ -2023,8 +2257,8 @@
           "wait_event": "WaitingOnTServer",
           "query_id": "5921151122338638923",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
-          "observations": 3.0,
-          "weighted_observations": 3.0
+          "observations": 4.0,
+          "weighted_observations": 4.0
         },
         {
           "category": "rpc",
@@ -2034,6 +2268,15 @@
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 5.0,
           "weighted_observations": 5.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "WaitingOnTServer",
+          "query_id": "6451500124395707827",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
         },
         {
           "category": "rpc",
@@ -2057,7 +2300,25 @@
           "category": "rpc",
           "component": "YSQL",
           "wait_event": "WaitingOnTServer",
+          "query_id": "7006469591806129477",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "WaitingOnTServer",
           "query_id": "7273159468184047901",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "WaitingOnTServer",
+          "query_id": "7523565620358372916",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
           "weighted_observations": 1.0
@@ -2070,13 +2331,22 @@
           "node": "3d2d9e10555b4ae2a683a8402505e416",
           "observations": 1.0,
           "weighted_observations": 1.0
+        },
+        {
+          "category": "rpc",
+          "component": "YSQL",
+          "wait_event": "WaitingOnTServer",
+          "query_id": "8506135989504812233",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "observations": 1.0,
+          "weighted_observations": 1.0
         }
       ]
     },
     "termination_history": {
       "source": "yb_terminated_queries (node 3d2d9e10555b4ae2a683a8402505e416)",
-      "requested_start": "2026-10-17T05:58:03.535887Z",
-      "requested_end": "2026-10-24T05:58:03.535887Z",
+      "requested_start": "2026-10-17T06:52:49.190547Z",
+      "requested_end": "2026-10-24T06:52:49.190547Z",
       "scope": "node",
       "nodes": [
         "3d2d9e10555b4ae2a683a8402505e416"
@@ -2089,6 +2359,62 @@
         "SIGKILL alone does not prove an out-of-memory kill; inspect the node's logs. Raw SQL and free-form termination messages were not collected."
       ],
       "events": [
+        {
+          "query_id": "-1021371266374328930",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "started_at": "2026-10-24T06:47:02.735402Z",
+          "ended_at": "2026-10-24T06:47:02.747149Z",
+          "reason": "temp-file-limit"
+        },
+        {
+          "query_id": "-1021371266374328930",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "started_at": "2026-10-24T06:47:02.326329Z",
+          "ended_at": "2026-10-24T06:47:02.326536Z",
+          "reason": "temp-file-limit"
+        },
+        {
+          "query_id": "-1021371266374328930",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "started_at": "2026-10-24T06:47:02.325179Z",
+          "ended_at": "2026-10-24T06:47:02.325410Z",
+          "reason": "temp-file-limit"
+        },
+        {
+          "query_id": "-1021371266374328930",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "started_at": "2026-10-24T06:15:49.499769Z",
+          "ended_at": "2026-10-24T06:15:49.507993Z",
+          "reason": "temp-file-limit"
+        },
+        {
+          "query_id": "-1021371266374328930",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "started_at": "2026-10-24T06:15:49.083332Z",
+          "ended_at": "2026-10-24T06:15:49.083520Z",
+          "reason": "temp-file-limit"
+        },
+        {
+          "query_id": "-1021371266374328930",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "started_at": "2026-10-24T06:15:49.082324Z",
+          "ended_at": "2026-10-24T06:15:49.082566Z",
+          "reason": "temp-file-limit"
+        },
+        {
+          "query_id": "-1021371266374328930",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "started_at": "2026-10-24T06:14:15.609412Z",
+          "ended_at": "2026-10-24T06:14:15.609605Z",
+          "reason": "temp-file-limit"
+        },
+        {
+          "query_id": "-1021371266374328930",
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "started_at": "2026-10-24T06:14:15.607812Z",
+          "ended_at": "2026-10-24T06:14:15.608122Z",
+          "reason": "temp-file-limit"
+        },
         {
           "query_id": "-1021371266374328930",
           "node": "3d2d9e10555b4ae2a683a8402505e416",
@@ -2209,14 +2535,49 @@
           "reason": "sigsegv"
         }
       ]
+    },
+    "node_resources": {
+      "source": "yb_servers_metrics · shared YB-TServer nodes",
+      "observed_from": "2026-10-24T06:52:49.406861Z",
+      "observed_until": "2026-10-24T06:52:49.917691Z",
+      "nodes_expected": 1,
+      "partial": false,
+      "notes": [
+        "Host CPU and memory are shared with other databases and processes; these measurements do not grade the selected database's pressure or identify which queries caused load.",
+        "CPU fields are user/system fractions from a short native sample. Exact per-node sample timestamps and duration are not returned; the observation interval bounds this read, not a workload history.",
+        "Host memory can describe the VM or host rather than a container's allocation. The TServer root tracker is neither process RSS nor total YSQL-backend memory; its own limits stay separate from host capacity."
+      ],
+      "nodes": [
+        {
+          "node": "3d2d9e10555b4ae2a683a8402505e416",
+          "available": true,
+          "cpu_user_fraction": 0.001443,
+          "cpu_system_fraction": 0.001443,
+          "host_memory_total_bytes": 16818343936.0,
+          "host_memory_available_bytes": 14681309184.0,
+          "host_memory_free_bytes": 13936234496.0,
+          "process_memory": {
+            "name": "YB-TServer root memory tracker",
+            "tracked_bytes": 181338325.0,
+            "hard_limit": {
+              "kind": "bytes",
+              "bytes": 2147483648.0
+            },
+            "soft_limit": {
+              "kind": "bytes",
+              "bytes": 1825361100.0
+            }
+          }
+        }
+      ]
     }
   },
   "format": 1,
-  "id": "20261024T055803.535887Z",
+  "id": "20261024T065249.190547Z",
   "connection": "yugabyte-demo",
   "environment": "local",
-  "taken_at": "2026-10-24T05:58:03.535887Z",
-  "duration_ms": 1787.2887500000002,
+  "taken_at": "2026-10-24T06:52:49.190547Z",
+  "duration_ms": 1622.433166,
   "server": {
     "engine": "yugabyte",
     "product": "YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12)",
@@ -2248,10 +2609,10 @@
     "kind": "statement-stats",
     "windowed": false,
     "log": null,
-    "window_start": "2026-10-24T05:57:59.064177Z",
-    "window_end": "2026-10-24T05:58:03.535887Z",
-    "window_hours": 0.0012421416574054293,
-    "total_time_ms": 593.842318,
+    "window_start": "2026-10-24T06:52:43.828903Z",
+    "window_end": "2026-10-24T06:52:49.190547Z",
+    "window_hours": 0.001489345563782586,
+    "total_time_ms": 536.527688,
     "total_cpu_ms": null,
     "total_executions": 130.0,
     "query_count": 5.0,
@@ -2265,10 +2626,10 @@
         "parameters": null,
         "object_name": null,
         "executions": 30.0,
-        "total_time_ms": 283.145813,
-        "mean_time_ms": 9.438193766666666,
-        "max_time_ms": 13.153824,
-        "stddev_time_ms": 1.7477389779174615,
+        "total_time_ms": 252.867974,
+        "mean_time_ms": 8.428932466666668,
+        "max_time_ms": 13.649233,
+        "stddev_time_ms": 2.414820547812505,
         "cpu_time_ms": null,
         "rows": 600.0,
         "logical_reads": null,
@@ -2279,11 +2640,11 @@
         "plans": [
           {
             "id": "-235985156820883037",
-            "executions": 180.0,
-            "total_time_ms": 2783.210173,
-            "mean_time_ms": 15.46227873888889,
+            "executions": 210.0,
+            "total_time_ms": 3036.0781469999993,
+            "mean_time_ms": 14.457514985714282,
             "first_seen": "2026-10-23T23:01:53.392791Z",
-            "last_seen": "2026-10-24T05:57:59.654872Z",
+            "last_seen": "2026-10-24T06:52:44.347185Z",
             "is_forced": false,
             "min_time_ms": null,
             "max_time_ms": 39.015004,
@@ -2446,7 +2807,7 @@
         "waits": [],
         "trend": null,
         "spread": {
-          "min_ms": 6.757847,
+          "min_ms": 4.6986930000000005,
           "p50_ms": null,
           "p95_ms": null,
           "p99_ms": null,
@@ -2475,10 +2836,10 @@
             "write_operations": 0.0,
             "rows_scanned": 600000.0,
             "rows_returned": 211230.0,
-            "read_ms": 164.35099999999997,
+            "read_ms": 151.289,
             "write_ms": 0.0,
-            "wait_ms": 192.207604,
-            "catalog_ms": 14.69213,
+            "wait_ms": 161.38412,
+            "catalog_ms": 9.000368,
             "retries": 0.0,
             "conflict_retries": 0.0,
             "read_restarts": 0.0,
@@ -2640,16 +3001,311 @@
       {
         "requests": null,
         "resolved_write_target": null,
+        "id": "466454478821061062",
+        "query_hash": null,
+        "text": "SELECT id,status,total FROM public.orders WHERE customer_id = $1 LIMIT $2",
+        "parameters": null,
+        "object_name": null,
+        "executions": 30.0,
+        "total_time_ms": 113.86927100000001,
+        "mean_time_ms": 3.795642366666667,
+        "max_time_ms": 5.814245,
+        "stddev_time_ms": 0.8079847240303702,
+        "cpu_time_ms": null,
+        "rows": 300.0,
+        "logical_reads": null,
+        "physical_reads": null,
+        "temp_writes": null,
+        "first_seen": null,
+        "last_seen": null,
+        "plans": [
+          {
+            "id": "-3627985068787917270",
+            "executions": 210.0,
+            "total_time_ms": 1146.2143619999997,
+            "mean_time_ms": 5.458163628571427,
+            "first_seen": "2026-10-23T23:01:52.726135Z",
+            "last_seen": "2026-10-24T06:52:43.963276Z",
+            "is_forced": false,
+            "min_time_ms": null,
+            "max_time_ms": 26.410165,
+            "stddev_time_ms": null,
+            "compiled": null,
+            "variant_query": null,
+            "cpu_time_ms": null,
+            "logical_reads": null
+          }
+        ],
+        "plan": {
+          "engine": "yugabyte",
+          "kind": "generic",
+          "statement": "SELECT id,status,total FROM public.orders WHERE customer_id = $1 LIMIT $2",
+          "total_cost": 148.81,
+          "root": {
+            "id": 0,
+            "op": "Limit",
+            "kind": "other",
+            "detail": null,
+            "object": null,
+            "index": null,
+            "seek_predicate": null,
+            "predicate": null,
+            "est_rows": 1.0,
+            "est_executions": 1.0,
+            "act_rows": null,
+            "act_executions": null,
+            "rows_read": null,
+            "table_rows": null,
+            "subtree_cost": 148.81,
+            "self_cost": 0.0,
+            "act_time_ms": null,
+            "runtime": null,
+            "warnings": [],
+            "props": {
+              "Async Capable": "false",
+              "Parallel Aware": "false",
+              "Plan Width": "22",
+              "Startup Cost": "21.09"
+            },
+            "facts": {
+              "expression_cache": false,
+              "conditions": [],
+              "conversions": [],
+              "user_functions": [],
+              "columns_without_statistics": [],
+              "possible_index_names": [],
+              "estimated_row_bytes": 22.0
+            },
+            "children": [
+              {
+                "id": 1,
+                "op": "Seq Scan",
+                "kind": "scan",
+                "detail": null,
+                "object": "public.orders",
+                "index": null,
+                "seek_predicate": null,
+                "predicate": "(orders.customer_id = $1)",
+                "est_rows": 10.0,
+                "est_executions": 1.0,
+                "act_rows": null,
+                "act_executions": null,
+                "rows_read": null,
+                "table_rows": null,
+                "subtree_cost": 1298.35,
+                "self_cost": 1298.35,
+                "act_time_ms": null,
+                "runtime": null,
+                "warnings": [],
+                "props": {
+                  "Alias": "orders",
+                  "Async Capable": "false",
+                  "Parallel Aware": "false",
+                  "Parent Relationship": "Outer",
+                  "Plan Width": "22",
+                  "Startup Cost": "21.09",
+                  "Storage Filter": "(orders.customer_id = $1)"
+                },
+                "facts": {
+                  "parent_relationship": {
+                    "kind": "outer"
+                  },
+                  "table_alias": "orders",
+                  "expression_cache": false,
+                  "conditions": [
+                    "(orders.customer_id = $1)"
+                  ],
+                  "conversions": [],
+                  "user_functions": [],
+                  "columns_without_statistics": [],
+                  "possible_index_names": [],
+                  "estimated_row_bytes": 22.0
+                },
+                "children": []
+              }
+            ]
+          },
+          "warnings": [],
+          "index_hints": [],
+          "props": {
+            "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+            "Query Identifier": "666094635122827008"
+          },
+          "facts": {
+            "trigger_timings": [],
+            "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+            "conversions": [],
+            "changed_columns": [],
+            "query_identifier": "666094635122827008"
+          },
+          "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Limit\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 21.09,\n      \"Total Cost\": 148.81,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 22,\n      \"Output\": [\"id\", \"status\", \"total\"],\n      \"Plans\": [\n        {\n          \"Node Type\": \"Seq Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Relation Name\": \"orders\",\n          \"Schema\": \"public\",\n          \"Alias\": \"orders\",\n          \"Startup Cost\": 21.09,\n          \"Total Cost\": 1298.35,\n          \"Plan Rows\": 10,\n          \"Plan Width\": 22,\n          \"Output\": [\"id\", \"status\", \"total\"],\n          \"Storage Filter\": \"(orders.customer_id = $1)\"\n        }\n      ]\n    },\n    \"Query Identifier\": 666094635122827008\n  }\n]"
+        },
+        "waits": [],
+        "trend": null,
+        "spread": {
+          "min_ms": 3.0069290000000004,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "histogram": [],
+          "lock_ms": null
+        },
+        "costs": {
+          "failed": null,
+          "aborted": null,
+          "aborted_mean_ms": null,
+          "warnings": null,
+          "top_error": null,
+          "plan_ms": null,
+          "plans": null,
+          "jit_ms": null,
+          "jit_functions": null,
+          "log_bytes": null,
+          "log_share": null,
+          "log_full_pages": null,
+          "row_bytes": null,
+          "compile_history": null,
+          "docdb": {
+            "read_requests": 30.0,
+            "write_requests": 0.0,
+            "read_operations": 30.0,
+            "write_operations": 0.0,
+            "rows_scanned": 600000.0,
+            "rows_returned": 300.0,
+            "read_ms": 107.91299999999998,
+            "write_ms": 0.0,
+            "wait_ms": 111.65011900000003,
+            "catalog_ms": 7.763743,
+            "retries": 0.0,
+            "conflict_retries": 0.0,
+            "read_restarts": 0.0,
+            "obsolete_rows_scanned": 0.0,
+            "seeks": 30.0,
+            "nexts": 600000.0,
+            "prevs": 0.0
+          }
+        },
+        "rows_affected": null,
+        "plan_id": null,
+        "plan_history": {
+          "source": "yb_pg_stat_plans (node 3d2d9e10555b4ae2a683a8402505e416)",
+          "kind": "cache",
+          "note": "Retained plan-cache entries have their own first/last-use dates, resets and evictions. Their calls and timings are independent of this statement's statistics window; a cache entry's first use does not prove when its plan was introduced.",
+          "captured_plan_id": "-3627985068787917270",
+          "captured_plan": {
+            "engine": "yugabyte",
+            "kind": "estimated",
+            "statement": null,
+            "total_cost": 0.0,
+            "root": {
+              "id": 0,
+              "op": "Limit",
+              "kind": "other",
+              "detail": null,
+              "object": null,
+              "index": null,
+              "seek_predicate": null,
+              "predicate": null,
+              "est_rows": 0.0,
+              "est_executions": 1.0,
+              "act_rows": null,
+              "act_executions": null,
+              "rows_read": null,
+              "table_rows": null,
+              "subtree_cost": 0.0,
+              "self_cost": 0.0,
+              "act_time_ms": null,
+              "runtime": null,
+              "warnings": [],
+              "props": {
+                "Async Capable": "false",
+                "Parallel Aware": "false"
+              },
+              "facts": {
+                "estimated_rows_unavailable": true,
+                "expression_cache": false,
+                "conditions": [],
+                "conversions": [],
+                "user_functions": [],
+                "columns_without_statistics": [],
+                "possible_index_names": []
+              },
+              "children": [
+                {
+                  "id": 1,
+                  "op": "Seq Scan",
+                  "kind": "scan",
+                  "detail": null,
+                  "object": "orders",
+                  "index": null,
+                  "seek_predicate": null,
+                  "predicate": "(customer_id = ?)",
+                  "est_rows": 0.0,
+                  "est_executions": 1.0,
+                  "act_rows": null,
+                  "act_executions": null,
+                  "rows_read": null,
+                  "table_rows": null,
+                  "subtree_cost": 0.0,
+                  "self_cost": 0.0,
+                  "act_time_ms": null,
+                  "runtime": null,
+                  "warnings": [],
+                  "props": {
+                    "Alias": "orders",
+                    "Async Capable": "false",
+                    "Parallel Aware": "false",
+                    "Parent Relationship": "Outer",
+                    "Selectivity": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.",
+                    "Storage Filter": "(customer_id = ?)"
+                  },
+                  "facts": {
+                    "estimated_rows_unavailable": true,
+                    "selectivity_guess": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.",
+                    "parent_relationship": {
+                      "kind": "outer"
+                    },
+                    "table_alias": "orders",
+                    "expression_cache": false,
+                    "conditions": [
+                      "(customer_id = ?)"
+                    ],
+                    "conversions": [],
+                    "user_functions": [],
+                    "columns_without_statistics": [],
+                    "possible_index_names": []
+                  },
+                  "children": []
+                }
+              ]
+            },
+            "warnings": [],
+            "index_hints": [],
+            "props": {},
+            "facts": {
+              "constants_redacted": true,
+              "estimated_cost_unavailable": true,
+              "trigger_timings": [],
+              "conversions": [],
+              "changed_columns": []
+            },
+            "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Limit\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Plans\": [\n        {\n          \"Node Type\": \"Seq Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Relation Name\": \"orders\",\n          \"Alias\": \"orders\",\n          \"Storage Filter\": \"(customer_id = ?)\"\n        }\n      ]\n    }\n  }\n]"
+          }
+        }
+      },
+      {
+        "requests": null,
+        "resolved_write_target": null,
         "id": "4357247400045295631",
         "query_hash": null,
         "text": "SELECT count(*) FROM public.orders WHERE status = $1",
         "parameters": null,
         "object_name": null,
         "executions": 30.0,
-        "total_time_ms": 118.70125300000001,
-        "mean_time_ms": 3.9567084333333336,
-        "max_time_ms": 4.918582000000001,
-        "stddev_time_ms": 0.382815749571409,
+        "total_time_ms": 107.137245,
+        "mean_time_ms": 3.5712414999999997,
+        "max_time_ms": 6.036563,
+        "stddev_time_ms": 0.6935227743968565,
         "cpu_time_ms": null,
         "rows": 30.0,
         "logical_reads": null,
@@ -2660,11 +3316,11 @@
         "plans": [
           {
             "id": "1037543280030318267",
-            "executions": 180.0,
-            "total_time_ms": 1265.8100110000007,
-            "mean_time_ms": 7.032277838888893,
+            "executions": 210.0,
+            "total_time_ms": 1372.9472560000006,
+            "mean_time_ms": 6.5378440761904795,
             "first_seen": "2026-10-23T23:01:53.023248Z",
-            "last_seen": "2026-10-24T05:57:59.344339Z",
+            "last_seen": "2026-10-24T06:52:44.077521Z",
             "is_forced": false,
             "min_time_ms": null,
             "max_time_ms": 39.601789,
@@ -2786,7 +3442,7 @@
         "waits": [],
         "trend": null,
         "spread": {
-          "min_ms": 3.398442,
+          "min_ms": 3.079424,
           "p50_ms": null,
           "p95_ms": null,
           "p99_ms": null,
@@ -2815,10 +3471,10 @@
             "write_operations": 0.0,
             "rows_scanned": 600000.0,
             "rows_returned": 30.0,
-            "read_ms": 109.57999999999998,
+            "read_ms": 101.75400000000003,
             "write_ms": 0.0,
-            "wait_ms": 113.088764,
-            "catalog_ms": 2.80335,
+            "wait_ms": 105.357362,
+            "catalog_ms": 1.561776,
             "retries": 0.0,
             "conflict_retries": 0.0,
             "read_restarts": 0.0,
@@ -2943,311 +3599,16 @@
       {
         "requests": null,
         "resolved_write_target": null,
-        "id": "466454478821061062",
-        "query_hash": null,
-        "text": "SELECT id,status,total FROM public.orders WHERE customer_id = $1 LIMIT $2",
-        "parameters": null,
-        "object_name": null,
-        "executions": 30.0,
-        "total_time_ms": 116.16649499999998,
-        "mean_time_ms": 3.8722164999999995,
-        "max_time_ms": 6.477716,
-        "stddev_time_ms": 0.6475355634699865,
-        "cpu_time_ms": null,
-        "rows": 300.0,
-        "logical_reads": null,
-        "physical_reads": null,
-        "temp_writes": null,
-        "first_seen": null,
-        "last_seen": null,
-        "plans": [
-          {
-            "id": "-3627985068787917270",
-            "executions": 180.0,
-            "total_time_ms": 1032.345091,
-            "mean_time_ms": 5.735250505555555,
-            "first_seen": "2026-10-23T23:01:52.726135Z",
-            "last_seen": "2026-10-24T05:57:59.212033Z",
-            "is_forced": false,
-            "min_time_ms": null,
-            "max_time_ms": 26.410165,
-            "stddev_time_ms": null,
-            "compiled": null,
-            "variant_query": null,
-            "cpu_time_ms": null,
-            "logical_reads": null
-          }
-        ],
-        "plan": {
-          "engine": "yugabyte",
-          "kind": "generic",
-          "statement": "SELECT id,status,total FROM public.orders WHERE customer_id = $1 LIMIT $2",
-          "total_cost": 148.81,
-          "root": {
-            "id": 0,
-            "op": "Limit",
-            "kind": "other",
-            "detail": null,
-            "object": null,
-            "index": null,
-            "seek_predicate": null,
-            "predicate": null,
-            "est_rows": 1.0,
-            "est_executions": 1.0,
-            "act_rows": null,
-            "act_executions": null,
-            "rows_read": null,
-            "table_rows": null,
-            "subtree_cost": 148.81,
-            "self_cost": 0.0,
-            "act_time_ms": null,
-            "runtime": null,
-            "warnings": [],
-            "props": {
-              "Async Capable": "false",
-              "Parallel Aware": "false",
-              "Plan Width": "22",
-              "Startup Cost": "21.09"
-            },
-            "facts": {
-              "expression_cache": false,
-              "conditions": [],
-              "conversions": [],
-              "user_functions": [],
-              "columns_without_statistics": [],
-              "possible_index_names": [],
-              "estimated_row_bytes": 22.0
-            },
-            "children": [
-              {
-                "id": 1,
-                "op": "Seq Scan",
-                "kind": "scan",
-                "detail": null,
-                "object": "public.orders",
-                "index": null,
-                "seek_predicate": null,
-                "predicate": "(orders.customer_id = $1)",
-                "est_rows": 10.0,
-                "est_executions": 1.0,
-                "act_rows": null,
-                "act_executions": null,
-                "rows_read": null,
-                "table_rows": null,
-                "subtree_cost": 1298.35,
-                "self_cost": 1298.35,
-                "act_time_ms": null,
-                "runtime": null,
-                "warnings": [],
-                "props": {
-                  "Alias": "orders",
-                  "Async Capable": "false",
-                  "Parallel Aware": "false",
-                  "Parent Relationship": "Outer",
-                  "Plan Width": "22",
-                  "Startup Cost": "21.09",
-                  "Storage Filter": "(orders.customer_id = $1)"
-                },
-                "facts": {
-                  "parent_relationship": {
-                    "kind": "outer"
-                  },
-                  "table_alias": "orders",
-                  "expression_cache": false,
-                  "conditions": [
-                    "(orders.customer_id = $1)"
-                  ],
-                  "conversions": [],
-                  "user_functions": [],
-                  "columns_without_statistics": [],
-                  "possible_index_names": [],
-                  "estimated_row_bytes": 22.0
-                },
-                "children": []
-              }
-            ]
-          },
-          "warnings": [],
-          "index_hints": [],
-          "props": {
-            "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
-            "Query Identifier": "666094635122827008"
-          },
-          "facts": {
-            "trigger_timings": [],
-            "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
-            "conversions": [],
-            "changed_columns": [],
-            "query_identifier": "666094635122827008"
-          },
-          "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Limit\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 21.09,\n      \"Total Cost\": 148.81,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 22,\n      \"Output\": [\"id\", \"status\", \"total\"],\n      \"Plans\": [\n        {\n          \"Node Type\": \"Seq Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Relation Name\": \"orders\",\n          \"Schema\": \"public\",\n          \"Alias\": \"orders\",\n          \"Startup Cost\": 21.09,\n          \"Total Cost\": 1298.35,\n          \"Plan Rows\": 10,\n          \"Plan Width\": 22,\n          \"Output\": [\"id\", \"status\", \"total\"],\n          \"Storage Filter\": \"(orders.customer_id = $1)\"\n        }\n      ]\n    },\n    \"Query Identifier\": 666094635122827008\n  }\n]"
-        },
-        "waits": [],
-        "trend": null,
-        "spread": {
-          "min_ms": 3.365862,
-          "p50_ms": null,
-          "p95_ms": null,
-          "p99_ms": null,
-          "histogram": [],
-          "lock_ms": null
-        },
-        "costs": {
-          "failed": null,
-          "aborted": null,
-          "aborted_mean_ms": null,
-          "warnings": null,
-          "top_error": null,
-          "plan_ms": null,
-          "plans": null,
-          "jit_ms": null,
-          "jit_functions": null,
-          "log_bytes": null,
-          "log_share": null,
-          "log_full_pages": null,
-          "row_bytes": null,
-          "compile_history": null,
-          "docdb": {
-            "read_requests": 30.0,
-            "write_requests": 0.0,
-            "read_operations": 30.0,
-            "write_operations": 0.0,
-            "rows_scanned": 600000.0,
-            "rows_returned": 300.0,
-            "read_ms": 106.76,
-            "write_ms": 0.0,
-            "wait_ms": 111.35161200000003,
-            "catalog_ms": 11.579484,
-            "retries": 0.0,
-            "conflict_retries": 0.0,
-            "read_restarts": 0.0,
-            "obsolete_rows_scanned": 0.0,
-            "seeks": 30.0,
-            "nexts": 600000.0,
-            "prevs": 0.0
-          }
-        },
-        "rows_affected": null,
-        "plan_id": null,
-        "plan_history": {
-          "source": "yb_pg_stat_plans (node 3d2d9e10555b4ae2a683a8402505e416)",
-          "kind": "cache",
-          "note": "Retained plan-cache entries have their own first/last-use dates, resets and evictions. Their calls and timings are independent of this statement's statistics window; a cache entry's first use does not prove when its plan was introduced.",
-          "captured_plan_id": "-3627985068787917270",
-          "captured_plan": {
-            "engine": "yugabyte",
-            "kind": "estimated",
-            "statement": null,
-            "total_cost": 0.0,
-            "root": {
-              "id": 0,
-              "op": "Limit",
-              "kind": "other",
-              "detail": null,
-              "object": null,
-              "index": null,
-              "seek_predicate": null,
-              "predicate": null,
-              "est_rows": 0.0,
-              "est_executions": 1.0,
-              "act_rows": null,
-              "act_executions": null,
-              "rows_read": null,
-              "table_rows": null,
-              "subtree_cost": 0.0,
-              "self_cost": 0.0,
-              "act_time_ms": null,
-              "runtime": null,
-              "warnings": [],
-              "props": {
-                "Async Capable": "false",
-                "Parallel Aware": "false"
-              },
-              "facts": {
-                "estimated_rows_unavailable": true,
-                "expression_cache": false,
-                "conditions": [],
-                "conversions": [],
-                "user_functions": [],
-                "columns_without_statistics": [],
-                "possible_index_names": []
-              },
-              "children": [
-                {
-                  "id": 1,
-                  "op": "Seq Scan",
-                  "kind": "scan",
-                  "detail": null,
-                  "object": "orders",
-                  "index": null,
-                  "seek_predicate": null,
-                  "predicate": "(customer_id = ?)",
-                  "est_rows": 0.0,
-                  "est_executions": 1.0,
-                  "act_rows": null,
-                  "act_executions": null,
-                  "rows_read": null,
-                  "table_rows": null,
-                  "subtree_cost": 0.0,
-                  "self_cost": 0.0,
-                  "act_time_ms": null,
-                  "runtime": null,
-                  "warnings": [],
-                  "props": {
-                    "Alias": "orders",
-                    "Async Capable": "false",
-                    "Parallel Aware": "false",
-                    "Parent Relationship": "Outer",
-                    "Selectivity": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.",
-                    "Storage Filter": "(customer_id = ?)"
-                  },
-                  "facts": {
-                    "estimated_rows_unavailable": true,
-                    "selectivity_guess": "This retained YSQL plan redacts constants; the original values cannot establish filter selectivity.",
-                    "parent_relationship": {
-                      "kind": "outer"
-                    },
-                    "table_alias": "orders",
-                    "expression_cache": false,
-                    "conditions": [
-                      "(customer_id = ?)"
-                    ],
-                    "conversions": [],
-                    "user_functions": [],
-                    "columns_without_statistics": [],
-                    "possible_index_names": []
-                  },
-                  "children": []
-                }
-              ]
-            },
-            "warnings": [],
-            "index_hints": [],
-            "props": {},
-            "facts": {
-              "constants_redacted": true,
-              "estimated_cost_unavailable": true,
-              "trigger_timings": [],
-              "conversions": [],
-              "changed_columns": []
-            },
-            "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Limit\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Plans\": [\n        {\n          \"Node Type\": \"Seq Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Relation Name\": \"orders\",\n          \"Alias\": \"orders\",\n          \"Storage Filter\": \"(customer_id = ?)\"\n        }\n      ]\n    }\n  }\n]"
-          }
-        }
-      },
-      {
-        "requests": null,
-        "resolved_write_target": null,
         "id": "-71879613880347319",
         "query_hash": null,
         "text": "SELECT o.id,c.name FROM public.orders o JOIN public.customers c ON c.id=o.customer_id WHERE o.id < $1",
         "parameters": null,
         "object_name": null,
         "executions": 10.0,
-        "total_time_ms": 55.625831000000005,
-        "mean_time_ms": 5.5625831,
-        "max_time_ms": 7.929406999999999,
-        "stddev_time_ms": 0.9410107170418877,
+        "total_time_ms": 51.815822,
+        "mean_time_ms": 5.181582199999999,
+        "max_time_ms": 7.49776,
+        "stddev_time_ms": 1.2381343092638095,
         "cpu_time_ms": null,
         "rows": 200.0,
         "logical_reads": null,
@@ -3258,11 +3619,11 @@
         "plans": [
           {
             "id": "-8345723963170102064",
-            "executions": 60.0,
-            "total_time_ms": 458.18832599999996,
-            "mean_time_ms": 7.6364721,
+            "executions": 70.0,
+            "total_time_ms": 510.004148,
+            "mean_time_ms": 7.285773542857143,
             "first_seen": "2026-10-23T23:01:53.821498Z",
-            "last_seen": "2026-10-24T05:57:59.784470Z",
+            "last_seen": "2026-10-24T06:52:44.446748Z",
             "is_forced": false,
             "min_time_ms": null,
             "max_time_ms": 21.425948,
@@ -3472,7 +3833,7 @@
         "waits": [],
         "trend": null,
         "spread": {
-          "min_ms": 4.51405,
+          "min_ms": 3.474731,
           "p50_ms": null,
           "p95_ms": null,
           "p99_ms": null,
@@ -3501,10 +3862,10 @@
             "write_operations": 0.0,
             "rows_scanned": 200200.0,
             "rows_returned": 400.0,
-            "read_ms": 36.483,
+            "read_ms": 38.423,
             "write_ms": 0.0,
-            "wait_ms": 50.588556,
-            "catalog_ms": 27.388762,
+            "wait_ms": 49.398397,
+            "catalog_ms": 15.34737,
             "retries": 0.0,
             "conflict_retries": 0.0,
             "read_restarts": 0.0,
@@ -3686,10 +4047,10 @@
         "parameters": null,
         "object_name": null,
         "executions": 30.0,
-        "total_time_ms": 20.202925999999998,
-        "mean_time_ms": 0.6734308666666666,
-        "max_time_ms": 2.8088919999999997,
-        "stddev_time_ms": 0.5199429050393085,
+        "total_time_ms": 10.837375999999999,
+        "mean_time_ms": 0.36124586666666664,
+        "max_time_ms": 0.9981009999999999,
+        "stddev_time_ms": 0.18929466561681618,
         "cpu_time_ms": null,
         "rows": 30.0,
         "logical_reads": null,
@@ -3700,11 +4061,11 @@
         "plans": [
           {
             "id": "1767271698225980175",
-            "executions": 178.0,
-            "total_time_ms": 243.59452000000005,
-            "mean_time_ms": 1.368508539325843,
+            "executions": 207.0,
+            "total_time_ms": 253.4337950000001,
+            "mean_time_ms": 1.2243178502415464,
             "first_seen": "2026-10-23T21:59:38.239502Z",
-            "last_seen": "2026-10-24T05:57:59.691502Z",
+            "last_seen": "2026-10-24T06:52:44.370847Z",
             "is_forced": false,
             "min_time_ms": null,
             "max_time_ms": 12.030971,
@@ -3716,11 +4077,11 @@
           },
           {
             "id": "6828047944719173985",
-            "executions": 3.0,
-            "total_time_ms": 11.965205000000001,
-            "mean_time_ms": 3.988401666666667,
+            "executions": 4.0,
+            "total_time_ms": 12.963306000000003,
+            "mean_time_ms": 3.2408265000000007,
             "first_seen": "2026-10-24T03:46:28.531066Z",
-            "last_seen": "2026-10-24T05:57:59.692311Z",
+            "last_seen": "2026-10-24T06:52:44.372060Z",
             "is_forced": false,
             "min_time_ms": null,
             "max_time_ms": 9.148353,
@@ -3797,7 +4158,7 @@
         "waits": [],
         "trend": null,
         "spread": {
-          "min_ms": 0.212098,
+          "min_ms": 0.090327,
           "p50_ms": null,
           "p95_ms": null,
           "p99_ms": null,
@@ -3826,10 +4187,10 @@
             "write_operations": 0.0,
             "rows_scanned": 2029.0,
             "rows_returned": 30.0,
-            "read_ms": 0.7790000000000001,
+            "read_ms": 0.8850000000000002,
             "write_ms": 0.0,
-            "wait_ms": 18.913386999999997,
-            "catalog_ms": 10.23282,
+            "wait_ms": 9.362433,
+            "catalog_ms": 6.939964,
             "retries": 0.0,
             "conflict_retries": 0.0,
             "read_restarts": 0.0,
@@ -3932,18 +4293,18 @@
       "scope": "database",
       "period": {
         "kind": "cumulative",
-        "observed_at": "2026-10-24T05:58:03.535887Z",
-        "hours": 0.0012421416574054293
+        "observed_at": "2026-10-24T06:52:49.190547Z",
+        "hours": 0.001489345563782586
       },
       "reset": {
         "kind": "generation",
-        "value": "4e0ed7d1e58662685cd69efbd13f4446ca3ab97b357d32be2e3330813858c5ec"
+        "value": "b9f8c876533dadfe3ba615a4ffda303eb5a004e5518cf34cceed8a9dc37200cf"
       }
     },
     "counter_set": {
       "scope": "node",
       "members": {
-        "3d2d9e10555b4ae2a683a8402505e416": "2026-10-24T05:57:59.064177Z"
+        "3d2d9e10555b4ae2a683a8402505e416": "2026-10-24T06:52:43.828903Z"
       },
       "complete": true
     }
@@ -5763,6 +6124,11 @@
       "source": "docdb-index-usage",
       "state": "unavailable",
       "reason": "Node-local index counters cannot prove cluster-wide use or absence. Configured, enabled global views are required."
+    },
+    {
+      "source": "docdb-node-resources",
+      "state": "collected",
+      "reason": null
     },
     {
       "source": "docdb-activity-history",

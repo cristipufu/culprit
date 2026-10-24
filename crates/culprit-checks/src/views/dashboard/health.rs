@@ -4,6 +4,52 @@ use super::*;
 
 pub(super) fn health(report: &Report) -> Tile {
     let s = &report.snapshot;
+    if s.pressure.as_ref().is_none_or(|p| p.signals.is_empty()) {
+        if let Some(resources) = &s.operations.node_resources {
+            let available = resources.nodes.iter().filter(|n| n.available).count();
+            let mut tile = Tile::new(
+                TileKey::Health,
+                if available > 0 { TileStatus::Info } else { TileStatus::Unavailable },
+                if available > 0 {
+                    format!(
+                        "Shared resource measurements from {}. They do not grade this database's pressure.",
+                        plural(available, "node", "nodes")
+                    )
+                } else {
+                    "No node returned usable resource measurements.".into()
+                },
+            );
+            tile.detail = Some(format!(
+                "{} · observed {} to {}. {}Host CPU and memory include other databases and processes; tracked allocations keep their native process scope.",
+                resources.source,
+                resources.observed_from,
+                resources.observed_until,
+                if resources.partial { "Partial read. " } else { "" }
+            ));
+            tile.metrics.push(TileMetric::new(
+                "available-nodes",
+                "Nodes with measurements",
+                Some(available as f64),
+                available.to_string(),
+            ));
+            tile.metrics.push(TileMetric::new(
+                "expected-nodes",
+                "Nodes expected",
+                resources.nodes_expected.map(|n| n as f64),
+                resources.nodes_expected.map_or_else(|| "unknown".into(), |n| n.to_string()),
+            ));
+            return operational(report, tile);
+        }
+        if let Some(reason) = s.source_problem(&[culprit_core::source_id::DOCDB_NODE_RESOURCES]) {
+            let mut tile = Tile::new(
+                TileKey::Health,
+                TileStatus::Unavailable,
+                "Shared node resource measurements were unavailable.",
+            );
+            tile.detail = Some(reason);
+            return operational(report, tile);
+        }
+    }
     let Some(p) = &s.pressure else {
         let o = &s.operations;
         if !o.spaces.is_empty()

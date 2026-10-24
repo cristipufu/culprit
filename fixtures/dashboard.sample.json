@@ -4163,8 +4163,8 @@
     "environment": "local",
     "headline": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) covers only the 1 minute since statistics were reset, so the numbers are thin until it has seen more.",
     "product": "YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12)",
-    "report_id": "20261024T055803.535887Z",
-    "taken_at": "2026-10-24T05:58:03.535887Z",
+    "report_id": "20261024T065249.190547Z",
+    "taken_at": "2026-10-24T06:52:49.190547Z",
     "tiles": [
       {
         "detail": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) keeps running totals only, so the trend comes from Culprit's own scans; it appears after the next scan.",
@@ -4175,8 +4175,8 @@
           {
             "key": "total",
             "label": "Database time",
-            "text": "594 ms",
-            "value": 593.842318
+            "text": "537 ms",
+            "value": 536.527688
           },
           {
             "key": "runs",
@@ -4188,12 +4188,12 @@
             "key": "window-hours",
             "label": "Covers",
             "text": "1 minute",
-            "value": 0.0012421416574054291
+            "value": 0.001489345563782586
           }
         ],
         "next": "culprit changes yugabyte-demo",
         "status": "info",
-        "takeaway": "594 ms of database time over the 1 minute since statistics were reset.",
+        "takeaway": "537 ms of database time over the 1 minute since statistics were reset.",
         "title": "Database time"
       },
       {
@@ -4205,22 +4205,11 @@
             "finding_id": "heavy-query:8345917977273313509",
             "id": "heavy-query:8345917977273313509",
             "kind": "finding",
-            "label": "A read from orders takes 283 ms of database time over the 1 minute since statistics were reset (48%)",
+            "label": "A read from orders takes 253 ms of database time over the 1 minute since statistics were reset (47%)",
             "query_id": null,
-            "share": 0.4768030239973568,
+            "share": 0.4713046123353097,
             "status": "info",
-            "value": "283 ms of database time over the 1 minute since statistics were reset (48%)"
-          },
-          {
-            "at": null,
-            "finding_id": "heavy-query:4357247400045295631",
-            "id": "heavy-query:4357247400045295631",
-            "kind": "finding",
-            "label": "A read from orders takes 119 ms of database time over the 1 minute since statistics were reset (20%)",
-            "query_id": null,
-            "share": 0.199886820797436,
-            "status": "info",
-            "value": "119 ms of database time over the 1 minute since statistics were reset (20%)"
+            "value": "253 ms of database time over the 1 minute since statistics were reset (47%)"
           },
           {
             "at": null,
@@ -4229,9 +4218,20 @@
             "kind": "finding",
             "label": "orders has no index on customer_id, its foreign key to customers",
             "query_id": null,
-            "share": 0.19561841835596497,
+            "share": 0.21223372725547016,
             "status": "info",
-            "value": "20% of DB time"
+            "value": "21% of DB time"
+          },
+          {
+            "at": null,
+            "finding_id": "heavy-query:4357247400045295631",
+            "id": "heavy-query:4357247400045295631",
+            "kind": "finding",
+            "label": "A read from orders takes 107 ms of database time over the 1 minute since statistics were reset (20%)",
+            "query_id": null,
+            "share": 0.19968633007435768,
+            "status": "info",
+            "value": "107 ms of database time over the 1 minute since statistics were reset (20%)"
           }
         ],
         "key": "findings",
@@ -4263,7 +4263,7 @@
         ],
         "next": "culprit findings yugabyte-demo",
         "status": "info",
-        "takeaway": "4 opportunities; the top ones touch 518 ms of database time over the 1 minute since statistics were reset (87%).",
+        "takeaway": "4 opportunities; the top ones touch 474 ms of database time over the 1 minute since statistics were reset (88%).",
         "title": "Findings"
       },
       {
@@ -4277,20 +4277,9 @@
             "kind": "query",
             "label": "a read from orders",
             "query_id": "8345917977273313509",
-            "share": 0.4768030239973568,
+            "share": 0.4713046123353097,
             "status": null,
-            "value": "48%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "4357247400045295631",
-            "kind": "query",
-            "label": "a read from orders",
-            "query_id": "4357247400045295631",
-            "share": 0.199886820797436,
-            "status": null,
-            "value": "20%"
+            "value": "47%"
           },
           {
             "at": null,
@@ -4299,7 +4288,18 @@
             "kind": "query",
             "label": "a read from orders",
             "query_id": "466454478821061062",
-            "share": 0.19561841835596497,
+            "share": 0.21223372725547016,
+            "status": null,
+            "value": "21%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "4357247400045295631",
+            "kind": "query",
+            "label": "a read from orders",
+            "query_id": "4357247400045295631",
+            "share": 0.19968633007435768,
             "status": null,
             "value": "20%"
           },
@@ -4310,9 +4310,9 @@
             "kind": "query",
             "label": "a read from orders",
             "query_id": "-71879613880347319",
-            "share": 0.09367104585497056,
+            "share": 0.0965762311226704,
             "status": null,
-            "value": "9%"
+            "value": "10%"
           },
           {
             "at": null,
@@ -4321,9 +4321,9 @@
             "kind": "query",
             "label": "a read from customers",
             "query_id": "-1395695495724611761",
-            "share": 0.03402069099427165,
+            "share": 0.02019909921219201,
             "status": null,
-            "value": "3%"
+            "value": "2%"
           }
         ],
         "key": "top-queries",
@@ -4331,8 +4331,8 @@
           {
             "key": "top-share",
             "label": "Top query",
-            "text": "48%",
-            "value": 0.4768030239973568
+            "text": "47%",
+            "value": 0.4713046123353097
           },
           {
             "key": "top5-share",
@@ -4349,11 +4349,11 @@
         ],
         "next": "culprit top yugabyte-demo",
         "status": "info",
-        "takeaway": "One query is 48% of database time: a read from orders.",
+        "takeaway": "One query is 47% of database time: a read from orders.",
         "title": "Top queries"
       },
       {
-        "detail": "yb_active_session_history (node 3d2d9e10555b4ae2a683a8402505e416) · observations 2026-10-23T21:02:32.797443Z to 2026-10-24T05:57:59.765173Z. Sampling describes active tasks, not elapsed query time or CPU utilization.",
+        "detail": "yb_active_session_history (node 3d2d9e10555b4ae2a683a8402505e416) · observations 2026-10-23T21:02:32.797443Z to 2026-10-24T06:47:07.261143Z. Sampling describes active tasks, not elapsed query time or CPU utilization.",
         "fix_sql": null,
         "items": [
           {
@@ -4363,7 +4363,7 @@
             "kind": "wait",
             "label": "Distributed RPCs",
             "query_id": null,
-            "share": 0.5492063492063493,
+            "share": 0.5527777777777778,
             "status": null,
             "value": "55% of sample weight"
           },
@@ -4374,9 +4374,9 @@
             "kind": "wait",
             "label": "CPU",
             "query_id": null,
-            "share": 0.16031746031746033,
+            "share": 0.16805555555555557,
             "status": null,
-            "value": "16% of sample weight"
+            "value": "17% of sample weight"
           },
           {
             "at": null,
@@ -4385,7 +4385,7 @@
             "kind": "wait",
             "label": "Everything else",
             "query_id": null,
-            "share": 0.14285714285714285,
+            "share": 0.14444444444444443,
             "status": null,
             "value": "14% of sample weight"
           },
@@ -4396,9 +4396,9 @@
             "kind": "wait",
             "label": "Log writes",
             "query_id": null,
-            "share": 0.10317460317460317,
+            "share": 0.09305555555555556,
             "status": null,
-            "value": "10% of sample weight"
+            "value": "9% of sample weight"
           },
           {
             "at": null,
@@ -4407,7 +4407,7 @@
             "kind": "wait",
             "label": "Locks",
             "query_id": null,
-            "share": 0.044444444444444446,
+            "share": 0.041666666666666664,
             "status": null,
             "value": "4% of sample weight"
           }
@@ -4417,14 +4417,14 @@
           {
             "key": "observations",
             "label": "Retained observations",
-            "text": "630",
-            "value": 630.0
+            "text": "720",
+            "value": 720.0
           },
           {
             "key": "sample-weight",
             "label": "Sample weight",
-            "text": "630",
-            "value": 630.0
+            "text": "720",
+            "value": 720.0
           }
         ],
         "next": "culprit waits yugabyte-demo",
@@ -4444,14 +4444,27 @@
         "title": "Right now"
       },
       {
-        "detail": "Scan again to read compiles, memory, cache and connection counters.",
+        "detail": "yb_servers_metrics · shared YB-TServer nodes · observed 2026-10-24T06:52:49.406861Z to 2026-10-24T06:52:49.917691Z. Host CPU and memory include other databases and processes; tracked allocations keep their native process scope.",
         "fix_sql": null,
         "items": [],
         "key": "health",
-        "metrics": [],
+        "metrics": [
+          {
+            "key": "available-nodes",
+            "label": "Nodes with measurements",
+            "text": "1",
+            "value": 1.0
+          },
+          {
+            "key": "expected-nodes",
+            "label": "Nodes expected",
+            "text": "1",
+            "value": 1.0
+          }
+        ],
         "next": "culprit waits yugabyte-demo",
-        "status": "unavailable",
-        "takeaway": "This scan recorded no health counters.",
+        "status": "info",
+        "takeaway": "Shared resource measurements from 1 node. They do not grade this database's pressure.",
         "title": "Health"
       },
       {
@@ -4559,7 +4572,7 @@
         "title": "Replication"
       },
       {
-        "detail": "yb_terminated_queries (node 3d2d9e10555b4ae2a683a8402505e416) · 2026-10-17T05:58:03.535887Z to 2026-10-24T05:58:03.535887Z · Complete monitoring privilege for this database. The evictable buffer is independent of statement statistics and does not include all SQL errors, cancellations or deadlocks.",
+        "detail": "yb_terminated_queries (node 3d2d9e10555b4ae2a683a8402505e416) · 2026-10-17T06:52:49.190547Z to 2026-10-24T06:52:49.190547Z · Complete monitoring privilege for this database. The evictable buffer is independent of statement statistics and does not include all SQL errors, cancellations or deadlocks.",
         "fix_sql": null,
         "items": [
           {
@@ -4571,7 +4584,7 @@
             "query_id": null,
             "share": null,
             "status": null,
-            "value": "2026-10-24T05:56:32.802524Z"
+            "value": "2026-10-24T06:47:02.747149Z"
           },
           {
             "at": null,
@@ -4582,7 +4595,7 @@
             "query_id": null,
             "share": null,
             "status": null,
-            "value": "2026-10-24T05:56:32.337487Z"
+            "value": "2026-10-24T06:47:02.326536Z"
           },
           {
             "at": null,
@@ -4593,7 +4606,7 @@
             "query_id": null,
             "share": null,
             "status": null,
-            "value": "2026-10-24T05:56:32.335738Z"
+            "value": "2026-10-24T06:47:02.325410Z"
           },
           {
             "at": null,
@@ -4604,7 +4617,7 @@
             "query_id": null,
             "share": null,
             "status": null,
-            "value": "2026-10-24T05:54:37.771173Z"
+            "value": "2026-10-24T06:15:49.507993Z"
           }
         ],
         "key": "failures",
@@ -4612,13 +4625,13 @@
           {
             "key": "records",
             "label": "Retained records",
-            "text": "17",
-            "value": 17.0
+            "text": "25",
+            "value": 25.0
           }
         ],
         "next": "culprit findings yugabyte-demo",
         "status": "info",
-        "takeaway": "17 unexpected termination records remain in the native buffer; this is not a failure rate.",
+        "takeaway": "25 unexpected termination records remain in the native buffer; this is not a failure rate.",
         "title": "Recorded terminations"
       },
       {
@@ -4643,7 +4656,7 @@
             "key": "window-hours",
             "label": "Covers",
             "text": "1 minute",
-            "value": 0.0012421416574054291
+            "value": 0.001489345563782586
           },
           {
             "key": "locked",

@@ -113,6 +113,11 @@ records, with native login visibility and their own node/window scope, rather th
 The table is paginated; missing query identities remain unresolved. Raw SQL and arbitrary messages are not collected,
 and a SIGKILL record alone never becomes a claim that the node ran out of memory.
 
+Native YugabyteDB node resources appear separately under Health: host CPU user/system fractions, host memory and
+the TServer's tracked memory with its own soft/hard limits. They cover shared nodes and processes, have their own
+observation interval, and never grade the selected database's pressure. Unknown, zero and unlimited remain distinct;
+missing nodes and partial reads are explicit, and larger node lists are paginated.
+
 ### Finding detail (the heart of the product)
 
 ```

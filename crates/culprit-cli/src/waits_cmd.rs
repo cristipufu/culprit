@@ -71,13 +71,17 @@ pub async fn run(ws: &Workspace, args: WaitsArgs, out: &Out) -> Result<u8> {
     let waits = culprit_engine::explain_waits(&snapshot);
     match out.format() {
         Format::Json => {
-            let mut value = json!({ "connection": name, "waits": waits, "pressure": snapshot.pressure, "operations": snapshot.operations.without_retained_history() });
+            let mut value = json!({ "connection": name, "waits": waits, "pressure": snapshot.pressure, "operations": snapshot.operations.counters_only() });
+            if let Some(resources) = &snapshot.operations.node_resources {
+                value["node_resources"] = json!(resources);
+            }
             if let Some(history) = &snapshot.operations.termination_history {
                 value["terminations"] = json!(history);
             }
             if let Some(reason) = snapshot.source_problem(&[
                 culprit_core::source_id::DOCDB_ACTIVITY_HISTORY,
                 culprit_core::source_id::DOCDB_TERMINATIONS,
+                culprit_core::source_id::DOCDB_NODE_RESOURCES,
             ]) {
                 value["notes"] = json!([reason]);
             }
@@ -209,6 +213,57 @@ fn print_report(name: &str, snapshot: &Snapshot, waits: Option<&WaitsReport>) {
         print_signals("Health", p, &p.signals);
         print_storage(&p.files);
         print_replicas(&p.replicas);
+    }
+    if let Some(resources) = &snapshot.operations.node_resources {
+        println!(
+            "\nShared node resources · {} · observed {} to {}",
+            resources.source, resources.observed_from, resources.observed_until
+        );
+        let limit = |limit: Option<culprit_core::MemoryLimit>| match limit {
+            Some(culprit_core::MemoryLimit::Unlimited) => "unlimited".into(),
+            Some(culprit_core::MemoryLimit::Bytes(n)) => format::bytes(n),
+            None => "unknown".into(),
+        };
+        for node in resources
+            .nodes
+            .iter()
+            .filter(|n| !n.available)
+            .chain(resources.nodes.iter().filter(|n| n.available))
+            .take(12)
+        {
+            if !node.available {
+                println!("  {}: resource measurements unavailable", node.node);
+                continue;
+            }
+            println!(
+                "  {}: host CPU user {}, system {}; host memory available {} of {}",
+                node.node,
+                node.cpu_user_fraction.map_or_else(|| "unknown".into(), format::percent),
+                node.cpu_system_fraction.map_or_else(|| "unknown".into(), format::percent),
+                node.host_memory_available_bytes.map_or_else(|| "unknown".into(), format::bytes),
+                node.host_memory_total_bytes.map_or_else(|| "unknown".into(), format::bytes)
+            );
+            if let Some(memory) = &node.process_memory {
+                println!(
+                    "    {}: tracked {}; soft limit {}; hard limit {}",
+                    memory.name,
+                    memory.tracked_bytes.map_or_else(|| "unknown".into(), format::bytes),
+                    limit(memory.soft_limit),
+                    limit(memory.hard_limit)
+                );
+            }
+        }
+        if resources.nodes.len() > 12 {
+            println!("  Showing the first 12 retained nodes; use --json for the full retained set.");
+        }
+        if resources.partial {
+            println!("  This resource read was partial.");
+        }
+        for note in &resources.notes {
+            println!("  {note}");
+        }
+    } else if let Some(reason) = snapshot.source_problem(&[culprit_core::source_id::DOCDB_NODE_RESOURCES]) {
+        println!("Node resources unavailable: {reason}");
     }
     let o = &snapshot.operations;
     for space in &o.spaces {
