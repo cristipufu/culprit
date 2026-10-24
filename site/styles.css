@@ -560,6 +560,7 @@ section {
 
 .finding-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   font-size: 14px;
@@ -572,6 +573,11 @@ section {
   font-weight: 600;
   color: #fff;
   background: #b4232b;
+}
+
+.share {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .share b {
@@ -917,7 +923,7 @@ section {
 
 .engine-grid {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 18px;
   margin-top: 36px;
 }
@@ -946,6 +952,15 @@ section {
 
 .badge.pg {
   background: #2f5d8a;
+}
+
+.badge.ts {
+  background: #f4ce41;
+  color: #1b1a18;
+}
+
+.badge.yb {
+  background: #b64420;
 }
 
 .badge.my {

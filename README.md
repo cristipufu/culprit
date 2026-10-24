@@ -9,13 +9,15 @@
 </p>
 
 <p align="center">
-  A fast desktop app and CLI for SQL Server, PostgreSQL, MySQL, MariaDB and SQLite, on macOS, Linux and Windows.<br>
+  A fast desktop app and CLI for SQL Server, PostgreSQL, YugabyteDB, TimescaleDB, MySQL, MariaDB and SQLite, on macOS, Linux and Windows.<br>
   Plain-language answers for people. Safe, structured access for coding agents.
 </p>
 
 <p align="center">
   <img alt="SQL Server" src="https://img.shields.io/badge/SQL%20Server-CC2927?style=flat-square&logo=microsoftsqlserver&logoColor=white">
   <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-336791?style=flat-square&logo=postgresql&logoColor=white">
+  <img alt="YugabyteDB" src="https://img.shields.io/badge/YugabyteDB-C94B25?style=flat-square">
+  <img alt="TimescaleDB" src="https://img.shields.io/badge/TimescaleDB-F4CE41?style=flat-square">
   <img alt="MySQL" src="https://img.shields.io/badge/MySQL-00758F?style=flat-square&logo=mysql&logoColor=white">
   <img alt="MariaDB" src="https://img.shields.io/badge/MariaDB-003545?style=flat-square&logo=mariadb&logoColor=white">
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white">
@@ -88,9 +90,9 @@ A 14 MB app that opens in under a second and shows the last report instantly whi
 </td>
 <td valign="top">
 
-**🧭 One tool, six databases**
+**🧭 One workflow across your databases**
 
-The same views, wording and workflow on SQL Server, PostgreSQL, MySQL, MariaDB, SQLite and YugabyteDB. When an engine can't show something, Culprit says why in one sentence.
+The same views, wording and workflow on SQL Server, PostgreSQL, YugabyteDB, TimescaleDB, MySQL, MariaDB and SQLite. When an engine can't show something, Culprit says why in one sentence.
 
 </td>
 <td valign="top">
@@ -116,12 +118,12 @@ claude mcp add culprit -- culprit mcp   # Claude Code; Cursor and Codex take the
 culprit agent init                      # teach agents in this repository to use Culprit
 ```
 
-From the terminal, you can also print a finding's brief directly or test whether PostgreSQL (`hypopg`) uses a proposed index without building it:
+From the terminal, you can also print a finding's brief directly or test whether PostgreSQL or YugabyteDB uses a proposed index without building it (`hypopg`; YugabyteDB requires a direct YSQL backend):
 
 ```sh
 culprit show shop 'filtered-scan:public.orders'
 culprit explain shop --sql "SELECT * FROM orders WHERE status = 'open'" \
-  --with-index "CREATE INDEX ON orders (status)"
+  --with-index "CREATE INDEX ON orders (status ASC)"
 ```
 
 You decide what agents may do, per connection: nothing, read statistics and plans (the default), or run read-only queries that you approve one by one. Approval shows the exact statement and what Culprit guarantees about it, and every tool call lands in a local audit log.
@@ -173,7 +175,7 @@ culprit digest shop > digest.json                     # redacted JSON summary fo
 
 ### Plans that explain themselves
 
-Every captured plan comes with insights in plain words ("repeats its read of order_items 1.5M times, once per row"), a diagram that shows where the cost goes, and the operator's details one click away. 35 rules cover SQL Server, PostgreSQL, MySQL, MariaDB and SQLite plans. Measure a run safely (writes are rolled back), and on SQL Server see the last actual plan without re-running the query or watch a long query's progress step by step.
+Every captured plan comes with insights in plain words ("repeats its read of order_items 1.5M times, once per row"), a diagram that shows where the cost goes, and the operator's details one click away. 35 rules cover SQL Server, PostgreSQL (including TimescaleDB), YugabyteDB, MySQL, MariaDB and SQLite plans. Measure a run safely (writes are rolled back), and on SQL Server see the last actual plan without re-running the query or watch a long query's progress step by step.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/queries-dark.png">
@@ -191,7 +193,7 @@ Drag across the database-time chart to compare two periods. Culprit lists what g
 
 ### Compare any two plans
 
-Paste or drop a plan from anywhere (SSMS `.sqlplan`, PostgreSQL `EXPLAIN`, MySQL `EXPLAIN FORMAT=JSON`) and compare it with another. The headline says what matters: "Plan 13 is estimated 3.5K× more expensive because it scans orders where Plan 12 seeks orders_status_created_idx." Every changed step is marked in both diagrams.
+Paste or drop a plan from anywhere (SSMS `.sqlplan`, PostgreSQL `EXPLAIN`, YugabyteDB `EXPLAIN (ANALYZE, DIST, FORMAT JSON)`, MySQL `EXPLAIN FORMAT=JSON`) and compare it with another. The headline says what matters: "Plan 13 is estimated 3.5K× more expensive because it scans orders where Plan 12 seeks orders_status_created_idx." Every changed step is marked in both diagrams.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/compare-dark.png">
@@ -223,7 +225,7 @@ Live sessions turn a wall of lock waits into one sentence and a tree: which sess
 ## Safe on production
 
 - **Read-only by design.** Scans read statistics and catalog views only, with short lock timeouts. Estimated plans never execute anything.
-- **Planning never lends your privileges.** On PostgreSQL the planner runs the functions a statement reaches, so a login with more than `pg_monitor` plans only the statements it ran itself, and none while functions other roles wrote are in reach. Every plan is made in a read-only transaction that is rolled back.
+- **Planning never lends your privileges.** On PostgreSQL and YugabyteDB, planning can invoke functions. Elevated logins plan only their own recorded statements, and none while functions other roles wrote are in reach. Every plan is made in a read-only transaction that is rolled back.
 - **Production is guarded.** Statements Culprit can prove only read run in a read-only transaction. Anything else on a production connection needs an explicit confirmation that says what it will do, and destructive statements need the connection's name typed.
 - **Fixes are suggestions.** Every fix is shown and copied, never applied, and uses online or concurrent operations where the server supports them.
 - **Secrets stay put.** Passwords live in the OS keychain, Entra ID uses your `az login`, and nothing about your servers leaves your machine. Exports redact literal values by default.
@@ -235,10 +237,13 @@ Live sessions turn a wall of lock waits into one sentence and a tree: which sess
 |---|---|---|
 | **SQL Server** | SQL Server 2022, Azure SQL Database | Query Store, plan cache, DMVs, the deadlock history in extended events |
 | **PostgreSQL** | PostgreSQL 15 to 18, including Amazon RDS | `pg_stat_statements`, statistics views, `EXPLAIN` (generic plans from version 12), `hypopg` (virtual index testing) |
-| **YugabyteDB** | 2026.1.2.0 (YSQL 15.12) | Dedicated YSQL/DocDB collection, native DIST plans, hash/range sharding, optional cluster-wide statistics; [coverage and limits](docs/providers/yugabyte.md). Development support after 0.4.4 |
+| **YugabyteDB** | 2026.1.2.0 (YSQL 15.12) | Dedicated YSQL/DocDB provider, native DIST plans and HypoPG, sharding-aware index advice, retained activity and plan history, shared node resources and optional cluster-wide statistics; [coverage and limits](docs/providers/yugabyte.md) |
+| **TimescaleDB** | 2.31.0 on PostgreSQL 17.11 | Automatically detected through the PostgreSQL provider: logical hypertable sizes and row estimates, managed and compressed chunks, and hypertable-aware index advice; [coverage and limits](docs/providers/timescale.md) |
 | **MySQL** | MySQL 5.7 to 8.4 | `performance_schema`, `sys`, `EXPLAIN FORMAT=JSON` |
 | **MariaDB** | MariaDB 10.5 to 11.8 | `performance_schema`, the slow query log, user statistics, `ANALYZE FORMAT=JSON`, `SHOW ANALYZE` |
 | **SQLite** | SQLite 3 files | The file itself, opened read-only: schema, `sqlite_stat1`, `dbstat`, pragmas, `EXPLAIN QUERY PLAN`. No changes to your app. SQLite is a file (no live sessions or wait counters); workload comes from the log your framework already writes (Rails, Django, EF Core, Phoenix, OpenTelemetry and structured `.jsonl` logs), found beside the database or chosen once, or a [one-line-per-query log](docs/sqlite.md#logging-queries-yourself) you write |
+
+**YugabyteDB and TimescaleDB support is available from source on `main`; the published 0.4.4 release predates both additions.** For TimescaleDB, choose PostgreSQL and use its usual connection string; the extension is detected automatically. For YugabyteDB, choose YugabyteDB or use a `yugabyte://` URL.
 
 When a source is switched off (Query Store, `pg_stat_statements`, `performance_schema`), Culprit shows the one statement that turns it on and what you'll get once it's on.
 
@@ -274,6 +279,9 @@ culprit conn add shop --env staging --url 'postgres://app@db.example.com:5432/sh
 culprit dashboard shop       # the database at a glance
 culprit scan shop            # every finding, ranked
 
+culprit conn add ysql --env staging --url 'yugabyte://app@db.example.com:5433/shop'
+culprit conn add metrics --env staging --url 'postgres://app@db.example.com:5432/metrics'  # TimescaleDB: detected automatically
+
 culprit conn add app --url db/production.sqlite3   # a SQLite file, read-only; its framework's log is found beside it
 ```
 
@@ -287,7 +295,9 @@ Or open the desktop app, pick the engine and paste its connection string (or cho
 - **[Architecture](docs/ARCHITECTURE.md):** the analysis pipeline, the evidence rules every check follows and the crate map
 - **[Design](docs/DESIGN.md):** how the product behaves and why
 - **[Coding agents](docs/agents.md):** MCP tools, permissions, approvals and the audit log
-- **[Engine parity](docs/parity.md):** every feature on SQL Server, PostgreSQL, MySQL, MariaDB and SQLite, and where each answer comes from
+- **[Engine parity](docs/parity.md):** feature coverage and where each answer comes from
+- **[YugabyteDB](docs/providers/yugabyte.md):** native YSQL/DocDB measurements, node and role scope, and verified limits
+- **[TimescaleDB](docs/providers/timescale.md):** hypertables, managed chunks, compression and PostgreSQL integration
 
 Culprit is open source under the [MIT license](LICENSE).
 

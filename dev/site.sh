@@ -11,16 +11,17 @@ mkdir -p _site/docs
 cp -R site/. _site/
 
 # The docs, as markdown, at stable lowercase paths (llms.txt links to them).
-cp README.md _site/docs/readme.md
+# Provider guides stay on GitHub; preserve those links when Markdown moves under /docs/.
+sed 's|(docs/providers/|(https://github.com/cristipufu/culprit-sql-studio/blob/main/docs/providers/|g' README.md > _site/docs/readme.md
 cp docs/guide.md _site/docs/guide.md
 cp docs/agents.md _site/docs/agents.md
-cp docs/parity.md _site/docs/parity.md
+sed 's|(providers/|(https://github.com/cristipufu/culprit-sql-studio/blob/main/docs/providers/|g' docs/parity.md > _site/docs/parity.md
 cp docs/DESIGN.md _site/docs/design.md
 {
   echo "# Culprit SQL Studio: full documentation"
   echo
   echo "Source: https://github.com/cristipufu/culprit-sql-studio · Website: https://culpritsql.com"
-  for f in README.md docs/guide.md docs/agents.md docs/parity.md; do
+  for f in README.md docs/guide.md docs/agents.md docs/parity.md docs/providers/yugabyte.md docs/providers/timescale.md; do
     echo
     echo "---"
     echo
