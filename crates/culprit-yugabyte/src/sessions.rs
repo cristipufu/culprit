@@ -126,7 +126,7 @@ pub(crate) async fn live(connector: &Connector, environment: Environment) -> Res
                         .then(|| transactions.get(&tx).cloned().unwrap_or_else(|| format!("transaction/{tx}")))
                 });
                 if let Some(s) = sessions.iter_mut().find(|s| s.id == waiter) {
-                    s.blocked_by = blocker;
+                    s.blocked_by = s.blocked_by.take().or(blocker);
                 }
                 waits.push(LockWait {
                     session: waiter,
