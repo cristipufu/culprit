@@ -67,6 +67,7 @@ pub use finding::*;
 pub use finding_facts::*;
 pub use measurement::*;
 pub use model::*;
+pub use operations::{QueryTermination, TerminationHistory, TerminationReason};
 pub use plan::*;
 pub use plan_compare::{CompareContext, Scenario, ScenarioKind};
 pub use plan_diff::{

@@ -328,6 +328,49 @@ pub(super) fn replication(report: &Report) -> Tile {
 /// Statements whose runs fail or are cancelled (timeouts), from the counts the engine keeps per statement.
 pub(super) fn failures(report: &Report) -> Tile {
     let s = &report.snapshot;
+    if let Some(history) = &s.operations.termination_history {
+        let count = history.events.len();
+        let mut tile = Tile::new(
+            TileKey::Failures,
+            TileStatus::Info,
+            if count == 0 {
+                "No unexpected termination records were retained in this read; ordinary SQL errors are not counted here.".into()
+            } else {
+                format!(
+                    "{} in the native buffer; this is not a failure rate.",
+                    plural(count, "unexpected termination record remains", "unexpected termination records remain")
+                )
+            },
+        );
+        tile.title = "Recorded terminations".into();
+        tile.detail = Some(format!(
+            "{} · {} to {} · {}. {}The evictable buffer is independent of statement statistics and does not include all SQL errors, cancellations or deadlocks.",
+            history.source,
+            history.requested_start,
+            history.requested_end,
+            history.visibility,
+            if history.partial { "Partial read. " } else { "" }
+        ));
+        tile.metrics.push(TileMetric::new("records", "Retained records", Some(count as f64), count.to_string()));
+        tile.items = history
+            .events
+            .iter()
+            .take(4)
+            .enumerate()
+            .map(|(i, e)| {
+                let mut item = TileItem::new(ItemKind::Signal, i.to_string(), e.reason.label());
+                item.value = Some(e.ended_at.clone());
+                item
+            })
+            .collect();
+        return tile;
+    }
+    if let Some(reason) = s.source_problem(&[culprit_core::source_id::DOCDB_TERMINATIONS]) {
+        let mut tile =
+            Tile::new(TileKey::Failures, TileStatus::Unavailable, "Native termination history was unavailable.");
+        tile.detail = Some(reason);
+        return tile;
+    }
     if !s.operations.log_failures.is_empty() {
         let total: f64 = s.operations.log_failures.iter().map(|f| f.count).sum();
         let found: Vec<_> = report.findings.iter().filter(|f| f.check == "logged-errors").collect();

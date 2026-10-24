@@ -1,10 +1,11 @@
 import type { Report } from "../gen/Report";
 import type { OperationalCounterKind } from "../gen/OperationalCounterKind";
 import { bytes, count, percent } from "../lib/format";
+import { TerminationHistoryView } from "./TerminationHistory";
 
 export function hasOperationalHealth(report: Report): boolean {
   const o = report.snapshot.operations;
-  return !!o && (!!o.spaces.length || !!o.counters.length || !!o.sequences.length || !!o.multixacts.length || !!o.sqlite || !!o.cluster);
+  return !!o && (!!o.spaces.length || !!o.counters.length || !!o.sequences.length || !!o.multixacts.length || !!o.sqlite || !!o.cluster || !!o.termination_history || !!report.snapshot.sources?.some((s) => s.source === "docdb-terminations" && s.state === "unavailable"));
 }
 
 const COUNTERS: Record<OperationalCounterKind, string> = {
@@ -28,6 +29,7 @@ export function OperationalHealth({ report }: { report: Report }) {
   return <section className="operational-health">
     <h3>Capacity and operational evidence</h3>
     <p className="muted">Allocation and node state were measured when this scan ran. Counters retain their own reset dates; shared measurements cover the whole server. These measurements alone do not establish that requests are slow.</p>
+    {o.termination_history ? <TerminationHistoryView key={o.termination_history.requested_end} history={o.termination_history} report={report} /> : report.snapshot.sources?.filter((s) => s.source === "docdb-terminations" && s.state === "unavailable").map((s) => <div className="operational-card" key={s.source}><h4>Recorded terminations unavailable</h4><p>{s.reason}</p></div>)}
     {o.spaces.length > 0 && <div className="operational-grid">{o.spaces.map((s) => <div className="operational-card" key={`${s.scope}:${s.name}`}>
       <h4>{s.name}</h4>
       <p><b>{bytes(s.used_bytes)}</b> used of {bytes(s.total_bytes)} currently allocated</p>

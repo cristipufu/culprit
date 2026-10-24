@@ -74,6 +74,19 @@ resource-pressure verdicts from sample shares. Agent-output tests bound the resp
 
 ## Cluster-view verification
 
+Verify unexpected termination records, native login visibility, independent dates, truncation, query identities and
+one-node global reads:
+
+```sh
+CULPRIT_YSQL_TEST_PORT=55434 cargo test --locked -p culprit-yugabyte --lib live_terminations_preserve_visibility_period_nodes_and_omit_raw_sql -- --ignored
+cargo test --locked -p culprit-checks --test all provider_audit::native_terminations_keep_their_own_dates_and_never_become_workload_failure_rates
+cargo test --locked -p culprit-mcp --lib waits_view::tests
+```
+
+The live case uses 20,000-row sorts with a 64 kB work memory and a session-local zero temporary-file limit on owned
+connections to the disposable databases. It induces a bounded resource-limit error; it never sends a process-kill
+signal or crashes a backend. Temporary login roles and grants are removed afterward. No raw failed SQL is collected.
+
 [Cluster-wide views](https://docs.yugabyte.com/stable/launch-and-manage/monitor-and-alert/cluster-wide-db-views/) are a disabled-by-default preview in 2026.1.2. Their `server_uuid` identifies each contributing node, and warnings can indicate skipped nodes. A successful SQL response alone does not establish complete cluster coverage.
 
 The default views do not include the statement reset metadata. For testing it in this disposable database, an administrator can add a corresponding global view:

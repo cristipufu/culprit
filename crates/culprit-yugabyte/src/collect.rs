@@ -65,6 +65,8 @@ pub(crate) async fn snapshot(
     catalog::details(&session.client, &mut snapshot, &mut coverage).await;
     crate::index_usage::read(&session, &probe, &mut snapshot, &mut coverage).await;
     snapshot.operations.activity_history = crate::ash::collect(&session, &probe, options, &mut coverage).await;
+    snapshot.operations.termination_history =
+        crate::terminations::collect(&session, &probe, options, &mut coverage).await;
     snapshot.statistics = snapshot
         .tables
         .iter()

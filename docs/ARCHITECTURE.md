@@ -152,6 +152,12 @@ The waits view derives sample shares, keeps elapsed time unknown and adds no res
 bound the native function by time; configured global views receive constant filters. UI event groups are paginated,
 and wait-tool summaries borrow operational evidence without serializing the raw history a second time.
 
+`OperationalStats::termination_history` independently retains native unexpected-termination records. Collectors
+project recognized reason codes, query IDs, timestamps and observation nodes, without transferring raw SQL or
+free-form messages. Their visibility, retention and dates stay separate from successful statement statistics;
+the dashboard does not divide them by workload calls or infer an ongoing incident. CLI output retains the bounded
+records, the UI pages them, and MCP bounds its event summary without serializing the history twice.
+
 ### Platforms: where a database runs
 
 A managed service changes how Culprit reads and advises (no superuser, settings in a parameter group, the cloud's own

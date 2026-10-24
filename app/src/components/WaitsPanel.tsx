@@ -63,6 +63,7 @@ export default function WaitsPanel({
 
   const categories = loaded.status === "ready" ? (loaded.report?.categories ?? []) : [];
   const activity = loaded.status === "ready" ? loaded.report?.activity : undefined;
+  const title = tab === "health" ? "Database health" : tab === "now" ? "Live database activity" : activity ? "Recorded database activity" : "Where database time goes";
   const navigation = activity?.categories ?? categories;
   const current = categories.find((c) => c.key === selected) ?? categories[0];
 
@@ -89,13 +90,13 @@ export default function WaitsPanel({
 
   return (
     <div className="waits-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="waits-sheet" role="dialog" aria-modal="true" aria-label={activity ? "Recorded database activity" : "Where database time goes"} tabIndex={-1} ref={sheet} onKeyDown={onKey}>
+      <div className="waits-sheet" role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} ref={sheet} onKeyDown={onKey}>
         <header className="waits-header">
           <div>
-            <h2>{activity ? "Recorded database activity" : "Where database time goes"}</h2>
+            <h2>{title}</h2>
             <div className="waits-sub">
               {connection} · {engine}
-              {loaded.status === "ready" && loaded.report ? ` · ${activity?.period.source ?? loaded.report.source}` : ""}
+              {tab === "waits" && loaded.status === "ready" && loaded.report ? ` · ${activity?.period.source ?? loaded.report.source}` : ""}
             </div>
           </div>
           <button className="icon-btn" onClick={onClose} title="Close (Esc)" aria-label="Close">

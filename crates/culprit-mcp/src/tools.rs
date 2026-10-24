@@ -448,7 +448,8 @@ pub fn definitions() -> Vec<Tool> {
                  explained in plain words with the queries behind it, plus pressure signals (compiles, memory grants, \
                  cache hits, connections opened per second, the oldest open transaction), storage latency per file and \
                  replica lag. Native activity history keeps weighted task observations and its own dates; these \
-                 are not elapsed query time or CPU utilization. With `now`, samples the server for a few \
+                 are not elapsed query time or CPU utilization. Native termination records retain their own dates, \
+                 node and login visibility; they are not a general error log or a failure rate. With `now`, samples the server for a few \
                  seconds instead. Reads statistics views only.{DATA_NOTE}"
             ),
         ),

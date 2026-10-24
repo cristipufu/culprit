@@ -6,6 +6,140 @@ use culprit_postgres::wire::{INTERACTIVE, query_one, tagged};
 static LIVE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
+#[ignore = "requires dev/yugabyte and CULPRIT_YSQL_TEST_PORT"]
+async fn live_terminations_preserve_visibility_period_nodes_and_omit_raw_sql() {
+    let _fixture = LIVE.lock().await;
+    let provider = YugabyteProvider::new(&local_spec()).unwrap();
+    let session = provider.connector.connect_observed(INTERACTIVE).await.unwrap();
+    let fail = "SELECT count(*) FROM (SELECT generate_series(1,20000) AS n ORDER BY n DESC) native_termination_test /* PRIVATE-TERMINATION-SQL */";
+    session.client.batch_execute(&tagged("SET work_mem='64kB'")).await.unwrap();
+    session.client.simple_query(fail).await.unwrap();
+    // Aliases do not change the native fingerprint; PGSS can retain the first alias seen for the same shape.
+    let query_id=query_one(&session.client,"SELECT queryid::text AS id FROM pg_stat_statements WHERE query LIKE 'SELECT count(*) FROM (SELECT generate_series%' AND userid=(SELECT oid FROM pg_roles WHERE rolname=current_user) LIMIT 1").await.unwrap().unwrap().string("id");
+    let began = crate::probe::read(&session.client).await.unwrap();
+    let began = culprit_core::format::epoch_seconds(&began.now).unwrap();
+    let mut foreign_spec = local_spec();
+    foreign_spec.database = Some("yugabyte".into());
+    let foreign = YugabyteProvider::new(&foreign_spec).unwrap().connector.connect(INTERACTIVE).await.unwrap();
+    foreign.batch_execute(&tagged("SET work_mem='64kB'; SET temp_file_limit=0")).await.unwrap();
+    assert!(foreign.simple_query(fail).await.is_err());
+    session.client.batch_execute(&tagged("SET work_mem='64kB'; SET temp_file_limit=0")).await.unwrap();
+    for _ in 0..2 {
+        let error = session.client.simple_query(fail).await.unwrap_err();
+        assert_eq!(error.as_db_error().unwrap().code().code(), "53400");
+    }
+    // The collector's shared buffer refresh is asynchronous; wait for these owned records, not a fixed long delay.
+    let options = SnapshotOptions { window_minutes: Some(60), ..Default::default() };
+    let mut observed = None;
+    for _ in 0..50 {
+        let p = crate::probe::read(&session.client).await.unwrap();
+        let h = crate::terminations::read(&session, &p, &options, 1000).await.unwrap();
+        if h.events
+            .iter()
+            .filter(|e| {
+                e.reason == culprit_core::TerminationReason::TempFileLimit
+                    && culprit_core::format::epoch_seconds(&e.ended_at).unwrap() >= began
+            })
+            .count()
+            >= 2
+        {
+            observed = Some((p, h));
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let (probe, local) = observed.expect("owned temporary-file-limit failures were not retained");
+    assert!(!local.partial);
+    assert!(
+        local
+            .events
+            .iter()
+            .filter(|e| e.query_id.as_deref() == Some(query_id.as_str())
+                && culprit_core::format::epoch_seconds(&e.ended_at).unwrap() >= began)
+            .count()
+            >= 2
+    );
+    assert!(local.events.iter().all(|e| e.node == probe.node));
+    let encoded = serde_json::to_string(&local).unwrap();
+    assert!(
+        !encoded.contains("PRIVATE-TERMINATION-SQL")
+            && !encoded.contains("query_text")
+            && !encoded.contains("backend_pid")
+    );
+    let expected=query_one(&session.client,&format!("SELECT count(*)::text AS n FROM pg_catalog.yb_terminated_queries WHERE databasename=current_database() AND query_end_time>='{}'::timestamptz AND query_end_time<'{}'::timestamptz",local.requested_start,local.requested_end)).await.unwrap().unwrap().string("n").parse::<usize>().unwrap();
+    assert_eq!(local.events.len(), expected);
+    let foreign_records=query_one(&session.client,&format!("SELECT count(*)::text AS n FROM pg_catalog.yb_terminated_queries WHERE databasename='yugabyte' AND query_end_time>='{}'::timestamptz AND query_end_time<'{}'::timestamptz",local.requested_start,local.requested_end)).await.unwrap().unwrap().string("n").parse::<usize>().unwrap();
+    assert!(foreign_records > 0, "the database filter needs real foreign-database counterexamples");
+    assert!(crate::terminations::read(&session, &probe, &options, 1).await.unwrap().partial);
+    session.client.batch_execute(&tagged("SET yb_enable_global_views=on")).await.unwrap();
+    let mut global_probe = crate::probe::read(&session.client).await.unwrap();
+    global_probe.now = probe.now.clone();
+    let global = crate::terminations::read(&session, &global_probe, &options, 1000).await.unwrap();
+    assert_eq!(global.events, local.events);
+    assert_eq!(global.scope, culprit_core::CounterScope::Cluster);
+    assert!(!global.partial);
+    let pid = query_one(&session.client, "SELECT pg_backend_pid()::text AS pid").await.unwrap().unwrap().string("pid");
+    let role = format!("culprit_termination_reader_{pid}");
+    session.client.batch_execute(&tagged("SET default_transaction_read_only=off")).await.unwrap();
+    session
+        .client
+        .batch_execute(&tagged(&format!("CREATE ROLE {role} LOGIN; ALTER ROLE {role} SET temp_file_limit=0; ALTER ROLE {role} SET yb_enable_global_views=on")))
+        .await
+        .unwrap();
+    let own = async {
+        let mut spec = local_spec();
+        spec.user = Some(role.clone());
+        let reader = YugabyteProvider::new(&spec)?;
+        let own = reader.connector.connect_observed(INTERACTIVE).await?;
+        let p = crate::probe::read(&own.client).await?;
+        let before = crate::terminations::read(&own, &p, &options, 1000).await?;
+        own.client.batch_execute(&tagged("SET work_mem='64kB'")).await.map_err(culprit_postgres::wire::map_error)?;
+        if own.client.simple_query(fail).await.is_ok() {
+            return Err(Error::invalid("The limited-role sort unexpectedly completed"));
+        }
+        let mut retained = None;
+        for _ in 0..50 {
+            let p = crate::probe::read(&own.client).await?;
+            let h = crate::terminations::read(&own, &p, &options, 1000).await?;
+            if !h.events.is_empty() {
+                retained = Some(h);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        session
+            .client
+            .batch_execute(&tagged(&format!("GRANT pg_read_all_stats TO {role}")))
+            .await
+            .map_err(culprit_postgres::wire::map_error)?;
+        let widened = crate::terminations::read(&own, &p, &options, 1000).await;
+        let full = crate::probe::read(&own.client).await?;
+        let monitored = crate::terminations::read(&own, &full, &options, 1000).await?;
+        session
+            .client
+            .batch_execute(&tagged(&format!("REVOKE pg_read_all_stats FROM {role}")))
+            .await
+            .map_err(culprit_postgres::wire::map_error)?;
+        let narrowed = crate::terminations::read(&own, &full, &options, 1000).await;
+        Ok::<_, Error>((before, retained, monitored, widened, narrowed))
+    }
+    .await;
+    session.client.batch_execute(&tagged(&format!("DROP ROLE {role}"))).await.unwrap();
+    let (before, retained, monitored, widened, narrowed) = own.unwrap();
+    assert!(before.events.is_empty(), "foreign roles' records entered a new login's native visibility");
+    assert_eq!(before.scope, culprit_core::CounterScope::Node);
+    assert!(before.notes.iter().any(|n| n.contains("Global termination reads require")));
+    assert_eq!(retained.unwrap().events.len(), 1);
+    assert!(
+        monitored.events.len() > local.events.len(),
+        "an effective monitoring grant should include other logins' records and the new own record"
+    );
+    assert_eq!(monitored.scope, culprit_core::CounterScope::Cluster);
+    assert_eq!(widened.unwrap_err().code, culprit_core::ErrorCode::PermissionDenied);
+    assert_eq!(narrowed.unwrap_err().code, culprit_core::ErrorCode::PermissionDenied);
+}
+
+#[tokio::test]
 async fn invalid_retained_plan_identifiers_are_rejected_before_connecting() {
     let provider = YugabyteProvider::new(&ConnectionSpec {
         engine: Some(Engine::Yugabyte),

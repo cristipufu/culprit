@@ -108,6 +108,11 @@ scope. Percentages are shares of sample weight; YSQL and DocDB components can ov
 time or CPU utilization. Event groups are paginated, query links use matching identities without borrowing runtime
 statistics, and partial or unavailable history says why. Live sampling remains a separate measurement.
 
+YugabyteDB's **Recorded terminations** opens dated unexpected backend terminations under Health. These are retained
+records, with native login visibility and their own node/window scope, rather than a complete count of failed runs.
+The table is paginated; missing query identities remain unresolved. Raw SQL and arbitrary messages are not collected,
+and a SIGKILL record alone never becomes a claim that the node ran out of memory.
+
 ### Finding detail (the heart of the product)
 
 ```

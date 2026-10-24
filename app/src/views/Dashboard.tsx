@@ -163,9 +163,9 @@ export default function Dashboard({ report, connection }: { report: Report; conn
         <SignalsTile
           tile={tile("failures")}
           report={report}
-          action="Findings"
-          onOpen={() => setState({ view: "overview" })}
-          onRow={(item) => (item.query_id ? openQuery(item.query_id) : setState({ view: "overview" }))}
+          action={report.snapshot.operations.termination_history ? "Recorded terminations" : "Findings"}
+          onOpen={() => report.snapshot.operations.termination_history ? openWaits("health") : setState({ view: "overview" })}
+          onRow={(item) => report.snapshot.operations.termination_history ? openWaits("health") : item.query_id ? openQuery(item.query_id) : setState({ view: "overview" })}
         />
         <StatisticsTile tile={tile("statistics")} report={report} />
       </div>

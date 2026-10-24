@@ -71,8 +71,14 @@ pub async fn run(ws: &Workspace, args: WaitsArgs, out: &Out) -> Result<u8> {
     let waits = culprit_engine::explain_waits(&snapshot);
     match out.format() {
         Format::Json => {
-            let mut value = json!({ "connection": name, "waits": waits, "pressure": snapshot.pressure, "operations": snapshot.operations.without_activity() });
-            if let Some(reason) = snapshot.source_problem(&[culprit_core::source_id::DOCDB_ACTIVITY_HISTORY]) {
+            let mut value = json!({ "connection": name, "waits": waits, "pressure": snapshot.pressure, "operations": snapshot.operations.without_retained_history() });
+            if let Some(history) = &snapshot.operations.termination_history {
+                value["terminations"] = json!(history);
+            }
+            if let Some(reason) = snapshot.source_problem(&[
+                culprit_core::source_id::DOCDB_ACTIVITY_HISTORY,
+                culprit_core::source_id::DOCDB_TERMINATIONS,
+            ]) {
                 value["notes"] = json!([reason]);
             }
             println!("{}", serde_json::to_string_pretty(&value).unwrap_or_default());
@@ -171,6 +177,33 @@ fn print_report(name: &str, snapshot: &Snapshot, waits: Option<&WaitsReport>) {
             }
             println!("Sample what it waits on right now: culprit waits {name} --now");
         }
+    }
+    if let Some(history) = &snapshot.operations.termination_history {
+        println!("\nRetained unexpected terminations · {} · {} records", history.source, history.events.len());
+        println!(
+            "Requested {} to {}. {}. {}",
+            history.requested_start,
+            history.requested_end,
+            history.visibility,
+            if history.partial { "Partial read." } else { "" }
+        );
+        for event in history.events.iter().take(12) {
+            println!(
+                "  {} · {} · node {} · query {}",
+                event.ended_at,
+                event.reason.label(),
+                event.node.as_deref().unwrap_or("unknown"),
+                event.query_id.as_deref().unwrap_or("unresolved")
+            );
+        }
+        if history.events.len() > 12 {
+            println!("  Showing the first 12 retained records; use --json for the full retained set.");
+        }
+        for note in &history.notes {
+            println!("  {note}");
+        }
+    } else if let Some(reason) = snapshot.source_problem(&[culprit_core::source_id::DOCDB_TERMINATIONS]) {
+        println!("Recorded terminations unavailable: {reason}");
     }
     if let Some(p) = &snapshot.pressure {
         print_signals("Health", p, &p.signals);

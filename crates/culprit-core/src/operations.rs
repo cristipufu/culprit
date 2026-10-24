@@ -18,12 +18,15 @@ pub struct OperationalStats {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub activity_history: Option<crate::waits::ActivityHistory>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub termination_history: Option<TerminationHistory>,
 }
 
 impl OperationalStats {
-    /// Wait surfaces serialize their bounded activity projection separately. Borrow the remaining evidence so
-    /// omitting raw samples does not first serialize or clone the entire history just to discard it.
-    pub fn without_activity(&self) -> impl Serialize + '_ {
+    /// Wait surfaces serialize retained histories separately. Borrow the remaining evidence so omitting raw
+    /// records does not first serialize or clone entire histories just to discard them.
+    pub fn without_retained_history(&self) -> impl Serialize + '_ {
         #[derive(Serialize, TS)]
         struct Counters<'a> {
             log_failures: &'a [LoggedFailure],
@@ -34,8 +37,64 @@ impl OperationalStats {
             sqlite: &'a Option<SqliteFileHealth>,
             cluster: &'a Option<ClusterHealth>,
         }
-        let Self { log_failures, spaces, counters, sequences, multixacts, sqlite, cluster, activity_history: _ } = self;
+        let Self {
+            log_failures,
+            spaces,
+            counters,
+            sequences,
+            multixacts,
+            sqlite,
+            cluster,
+            activity_history: _,
+            termination_history: _,
+        } = self;
         Counters { log_failures, spaces, counters, sequences, multixacts, sqlite, cluster }
+    }
+}
+
+/// An evictable native buffer of unexpected terminations. It has no complete failure count or workload denominator.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct TerminationHistory {
+    pub source: String,
+    pub requested_start: String,
+    pub requested_end: String,
+    pub scope: crate::CounterScope,
+    pub nodes: Vec<String>,
+    pub visibility: String,
+    pub partial: bool,
+    pub notes: Vec<String>,
+    pub events: Vec<QueryTermination>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct QueryTermination {
+    pub query_id: Option<String>,
+    pub node: Option<String>,
+    pub started_at: Option<String>,
+    pub ended_at: String,
+    pub reason: TerminationReason,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export)]
+pub enum TerminationReason {
+    TempFileLimit,
+    Sigkill,
+    Sigsegv,
+    Other,
+}
+
+impl TerminationReason {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TempFileLimit => "Temporary-file limit exceeded",
+            Self::Sigkill => "Backend terminated by SIGKILL",
+            Self::Sigsegv => "Backend terminated by SIGSEGV",
+            Self::Other => "Other native termination",
+        }
     }
 }
 

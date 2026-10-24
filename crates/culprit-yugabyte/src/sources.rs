@@ -41,6 +41,11 @@ pub const ACTIVITY_HISTORY: Source = Source {
     reads: "bounded native active-task observations in their own database, role, node and time scope",
     delivers: &[],
 };
+pub const TERMINATIONS: Source = Source {
+    name: source_id::DOCDB_TERMINATIONS,
+    reads: "bounded unexpected YSQL termination records, without raw SQL or free-form messages",
+    delivers: &[],
+};
 pub const EPOCHS: Source = Source {
     name: source_id::DOCDB_EPOCHS,
     reads: "statement reset epochs for every contributing YB-TServer",
@@ -65,6 +70,7 @@ pub const ALL: &[Source] = &[
     COSTS,
     PLAN_HISTORY,
     ACTIVITY_HISTORY,
+    TERMINATIONS,
     EPOCHS,
     SETTINGS,
     INDEX_USAGE,

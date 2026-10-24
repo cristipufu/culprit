@@ -230,6 +230,51 @@ fn dashboard_health_cannot_call_a_nearly_exhausted_identity_healthy() {
 }
 
 #[test]
+fn native_terminations_keep_their_own_dates_and_never_become_workload_failure_rates() {
+    let mut s = snapshot(Engine::Yugabyte);
+    s.operations.termination_history = Some(culprit_core::TerminationHistory {
+        source: "native retained buffer".into(),
+        requested_start: "2026-10-01T00:00:00Z".into(),
+        requested_end: "2026-10-08T00:00:00Z".into(),
+        scope: culprit_core::CounterScope::Node,
+        nodes: vec!["recorded-node".into()],
+        visibility: "native login visibility".into(),
+        partial: false,
+        notes: vec!["This buffer is not a general error log".into()],
+        events: vec![culprit_core::QueryTermination {
+            query_id: Some(s.queries()[0].id.clone()),
+            node: Some("recorded-node".into()),
+            started_at: Some("2026-10-02T00:00:00Z".into()),
+            ended_at: "2026-10-02T00:00:01Z".into(),
+            reason: culprit_core::TerminationReason::Sigkill,
+        }],
+    });
+    let report = culprit_checks::analyze(s.clone());
+    let dashboard = culprit_checks::dashboard(&report);
+    let tile = dashboard.tiles.iter().find(|t| t.key == culprit_core::TileKey::Failures).unwrap();
+    assert_eq!(tile.status, culprit_core::TileStatus::Info);
+    assert!(tile.takeaway.contains("not a failure rate"));
+    assert!(tile.detail.as_ref().unwrap().contains("2026-10-01T00:00:00Z"));
+    assert!(!report.findings.iter().any(|f| f.check == "failing-query" || f.check == "logged-errors"));
+    s.operations.termination_history.as_mut().unwrap().events.clear();
+    let dashboard = culprit_checks::dashboard(&culprit_checks::analyze(s.clone()));
+    let tile = dashboard.tiles.iter().find(|t| t.key == culprit_core::TileKey::Failures).unwrap();
+    assert_eq!(tile.status, culprit_core::TileStatus::Info);
+    assert!(tile.takeaway.contains("ordinary SQL errors are not counted"));
+    s.operations.termination_history = None;
+    s.sources.retain(|s| s.source != culprit_core::source_id::DOCDB_TERMINATIONS);
+    s.sources.push(culprit_core::SourceOutcome {
+        source: culprit_core::source_id::DOCDB_TERMINATIONS.into(),
+        state: culprit_core::SourceState::Unavailable,
+        reason: Some("The native view was denied".into()),
+    });
+    let dashboard = culprit_checks::dashboard(&culprit_checks::analyze(s));
+    let tile = dashboard.tiles.iter().find(|t| t.key == culprit_core::TileKey::Failures).unwrap();
+    assert_eq!(tile.status, culprit_core::TileStatus::Unavailable);
+    assert!(tile.detail.as_ref().unwrap().contains("native view was denied"));
+}
+
+#[test]
 fn logs_with_observations_are_not_disabled_by_their_success_note() {
     let mut s = snapshot(Engine::Sqlite);
     s.server.capabilities.push(culprit_core::Capability::QueryLog);

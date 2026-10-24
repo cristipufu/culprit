@@ -4163,8 +4163,8 @@
     "environment": "local",
     "headline": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) covers only the 1 minute since statistics were reset, so the numbers are thin until it has seen more.",
     "product": "YugabyteDB 2026.1.2.0-b0 (YSQL PostgreSQL 15.12)",
-    "report_id": "20261024T052130.020268Z",
-    "taken_at": "2026-10-24T05:21:30.020268Z",
+    "report_id": "20261024T055803.535887Z",
+    "taken_at": "2026-10-24T05:58:03.535887Z",
     "tiles": [
       {
         "detail": "YSQL pg_stat_statements (node 3d2d9e10555b4ae2a683a8402505e416) keeps running totals only, so the trend comes from Culprit's own scans; it appears after the next scan.",
@@ -4175,25 +4175,25 @@
           {
             "key": "total",
             "label": "Database time",
-            "text": "1.1 s",
-            "value": 1069.4668350000002
+            "text": "594 ms",
+            "value": 593.842318
           },
           {
             "key": "runs",
             "label": "Runs",
-            "text": "153",
-            "value": 153.0
+            "text": "130",
+            "value": 130.0
           },
           {
             "key": "window-hours",
             "label": "Covers",
             "text": "1 minute",
-            "value": 0.001425094140900506
+            "value": 0.0012421416574054291
           }
         ],
         "next": "culprit changes yugabyte-demo",
         "status": "info",
-        "takeaway": "1.1 s of database time over the 1 minute since statistics were reset.",
+        "takeaway": "594 ms of database time over the 1 minute since statistics were reset.",
         "title": "Database time"
       },
       {
@@ -4205,22 +4205,22 @@
             "finding_id": "heavy-query:8345917977273313509",
             "id": "heavy-query:8345917977273313509",
             "kind": "finding",
-            "label": "A read from orders takes 571 ms of database time over the 1 minute since statistics were reset (53%)",
+            "label": "A read from orders takes 283 ms of database time over the 1 minute since statistics were reset (48%)",
             "query_id": null,
-            "share": 0.5342356539742533,
+            "share": 0.4768030239973568,
             "status": "info",
-            "value": "571 ms of database time over the 1 minute since statistics were reset (53%)"
+            "value": "283 ms of database time over the 1 minute since statistics were reset (48%)"
           },
           {
             "at": null,
             "finding_id": "heavy-query:4357247400045295631",
             "id": "heavy-query:4357247400045295631",
             "kind": "finding",
-            "label": "A read from orders takes 232 ms of database time over the 1 minute since statistics were reset (22%)",
+            "label": "A read from orders takes 119 ms of database time over the 1 minute since statistics were reset (20%)",
             "query_id": null,
-            "share": 0.21683737579389264,
+            "share": 0.199886820797436,
             "status": "info",
-            "value": "232 ms of database time over the 1 minute since statistics were reset (22%)"
+            "value": "119 ms of database time over the 1 minute since statistics were reset (20%)"
           },
           {
             "at": null,
@@ -4229,9 +4229,9 @@
             "kind": "finding",
             "label": "orders has no index on customer_id, its foreign key to customers",
             "query_id": null,
-            "share": 0.132349098043793,
+            "share": 0.19561841835596497,
             "status": "info",
-            "value": "13% of DB time"
+            "value": "20% of DB time"
           }
         ],
         "key": "findings",
@@ -4263,11 +4263,11 @@
         ],
         "next": "culprit findings yugabyte-demo",
         "status": "info",
-        "takeaway": "4 opportunities; the top ones touch 945 ms of database time over the 1 minute since statistics were reset (88%).",
+        "takeaway": "4 opportunities; the top ones touch 518 ms of database time over the 1 minute since statistics were reset (87%).",
         "title": "Findings"
       },
       {
-        "detail": "10 queries tracked over the 1 minute since statistics were reset.",
+        "detail": "5 queries tracked over the 1 minute since statistics were reset.",
         "fix_sql": null,
         "items": [
           {
@@ -4277,9 +4277,9 @@
             "kind": "query",
             "label": "a read from orders",
             "query_id": "8345917977273313509",
-            "share": 0.5342356539742533,
+            "share": 0.4768030239973568,
             "status": null,
-            "value": "53%"
+            "value": "48%"
           },
           {
             "at": null,
@@ -4288,9 +4288,9 @@
             "kind": "query",
             "label": "a read from orders",
             "query_id": "4357247400045295631",
-            "share": 0.21683737579389264,
+            "share": 0.199886820797436,
             "status": null,
-            "value": "22%"
+            "value": "20%"
           },
           {
             "at": null,
@@ -4299,9 +4299,9 @@
             "kind": "query",
             "label": "a read from orders",
             "query_id": "466454478821061062",
-            "share": 0.132349098043793,
+            "share": 0.19561841835596497,
             "status": null,
-            "value": "13%"
+            "value": "20%"
           },
           {
             "at": null,
@@ -4310,9 +4310,9 @@
             "kind": "query",
             "label": "a read from orders",
             "query_id": "-71879613880347319",
-            "share": 0.06892048877794325,
+            "share": 0.09367104585497056,
             "status": null,
-            "value": "7%"
+            "value": "9%"
           },
           {
             "at": null,
@@ -4321,7 +4321,7 @@
             "kind": "query",
             "label": "a read from customers",
             "query_id": "-1395695495724611761",
-            "share": 0.028131500683702827,
+            "share": 0.03402069099427165,
             "status": null,
             "value": "3%"
           }
@@ -4331,29 +4331,29 @@
           {
             "key": "top-share",
             "label": "Top query",
-            "text": "53%",
-            "value": 0.5342356539742533
+            "text": "48%",
+            "value": 0.4768030239973568
           },
           {
             "key": "top5-share",
             "label": "Top five",
-            "text": "98%",
-            "value": 0.980474117273585
+            "text": "100%",
+            "value": 0.9999999999999999
           },
           {
             "key": "queries",
             "label": "Queries",
-            "text": "10",
-            "value": 10.0
+            "text": "5",
+            "value": 5.0
           }
         ],
         "next": "culprit top yugabyte-demo",
         "status": "info",
-        "takeaway": "One query is 53% of database time: a read from orders.",
+        "takeaway": "One query is 48% of database time: a read from orders.",
         "title": "Top queries"
       },
       {
-        "detail": "yb_active_session_history (node 3d2d9e10555b4ae2a683a8402505e416) · observations 2026-10-23T21:02:32.797443Z to 2026-10-24T05:21:25.680211Z. Sampling describes active tasks, not elapsed query time or CPU utilization.",
+        "detail": "yb_active_session_history (node 3d2d9e10555b4ae2a683a8402505e416) · observations 2026-10-23T21:02:32.797443Z to 2026-10-24T05:57:59.765173Z. Sampling describes active tasks, not elapsed query time or CPU utilization.",
         "fix_sql": null,
         "items": [
           {
@@ -4363,7 +4363,7 @@
             "kind": "wait",
             "label": "Distributed RPCs",
             "query_id": null,
-            "share": 0.5482233502538071,
+            "share": 0.5492063492063493,
             "status": null,
             "value": "55% of sample weight"
           },
@@ -4374,7 +4374,7 @@
             "kind": "wait",
             "label": "CPU",
             "query_id": null,
-            "share": 0.15736040609137056,
+            "share": 0.16031746031746033,
             "status": null,
             "value": "16% of sample weight"
           },
@@ -4385,7 +4385,7 @@
             "kind": "wait",
             "label": "Everything else",
             "query_id": null,
-            "share": 0.14382402707275804,
+            "share": 0.14285714285714285,
             "status": null,
             "value": "14% of sample weight"
           },
@@ -4396,7 +4396,7 @@
             "kind": "wait",
             "label": "Log writes",
             "query_id": null,
-            "share": 0.10490693739424704,
+            "share": 0.10317460317460317,
             "status": null,
             "value": "10% of sample weight"
           },
@@ -4407,9 +4407,9 @@
             "kind": "wait",
             "label": "Locks",
             "query_id": null,
-            "share": 0.04568527918781726,
+            "share": 0.044444444444444446,
             "status": null,
-            "value": "5% of sample weight"
+            "value": "4% of sample weight"
           }
         ],
         "key": "waits",
@@ -4417,14 +4417,14 @@
           {
             "key": "observations",
             "label": "Retained observations",
-            "text": "591",
-            "value": 591.0
+            "text": "630",
+            "value": 630.0
           },
           {
             "key": "sample-weight",
             "label": "Sample weight",
-            "text": "591",
-            "value": 591.0
+            "text": "630",
+            "value": 630.0
           }
         ],
         "next": "culprit waits yugabyte-demo",
@@ -4559,15 +4559,67 @@
         "title": "Replication"
       },
       {
-        "detail": null,
+        "detail": "yb_terminated_queries (node 3d2d9e10555b4ae2a683a8402505e416) · 2026-10-17T05:58:03.535887Z to 2026-10-24T05:58:03.535887Z · Complete monitoring privilege for this database. The evictable buffer is independent of statement statistics and does not include all SQL errors, cancellations or deadlocks.",
         "fix_sql": null,
-        "items": [],
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "0",
+            "kind": "signal",
+            "label": "Temporary-file limit exceeded",
+            "query_id": null,
+            "share": null,
+            "status": null,
+            "value": "2026-10-24T05:56:32.802524Z"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "1",
+            "kind": "signal",
+            "label": "Temporary-file limit exceeded",
+            "query_id": null,
+            "share": null,
+            "status": null,
+            "value": "2026-10-24T05:56:32.337487Z"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "2",
+            "kind": "signal",
+            "label": "Temporary-file limit exceeded",
+            "query_id": null,
+            "share": null,
+            "status": null,
+            "value": "2026-10-24T05:56:32.335738Z"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "3",
+            "kind": "signal",
+            "label": "Temporary-file limit exceeded",
+            "query_id": null,
+            "share": null,
+            "status": null,
+            "value": "2026-10-24T05:54:37.771173Z"
+          }
+        ],
         "key": "failures",
-        "metrics": [],
+        "metrics": [
+          {
+            "key": "records",
+            "label": "Retained records",
+            "text": "17",
+            "value": 17.0
+          }
+        ],
         "next": "culprit findings yugabyte-demo",
-        "status": "unavailable",
-        "takeaway": "YugabyteDB reported no failed or cancelled runs per statement in this scan.",
-        "title": "Failing queries"
+        "status": "info",
+        "takeaway": "17 unexpected termination records remain in the native buffer; this is not a failure rate.",
+        "title": "Recorded terminations"
       },
       {
         "detail": "3 checks are locked: Unused indexes, Overlapping indexes and Repeated statements within logged requests need Application query log and Index usage statistics.",
@@ -4578,8 +4630,8 @@
           {
             "key": "queries",
             "label": "Queries",
-            "text": "10",
-            "value": 10.0
+            "text": "5",
+            "value": 5.0
           },
           {
             "key": "plans",
@@ -4591,7 +4643,7 @@
             "key": "window-hours",
             "label": "Covers",
             "text": "1 minute",
-            "value": 0.001425094140900506
+            "value": 0.0012421416574054291
           },
           {
             "key": "locked",

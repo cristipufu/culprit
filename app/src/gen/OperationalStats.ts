@@ -7,5 +7,6 @@ import type { OperationalCounter } from "./OperationalCounter";
 import type { SequenceCapacity } from "./SequenceCapacity";
 import type { SpaceUsage } from "./SpaceUsage";
 import type { SqliteFileHealth } from "./SqliteFileHealth";
+import type { TerminationHistory } from "./TerminationHistory";
 
-export type OperationalStats = { log_failures: Array<LoggedFailure>, spaces: Array<SpaceUsage>, counters: Array<OperationalCounter>, sequences: Array<SequenceCapacity>, multixacts: Array<FreezeAge>, sqlite: SqliteFileHealth | null, cluster: ClusterHealth | null, activity_history?: ActivityHistory, };
+export type OperationalStats = { log_failures: Array<LoggedFailure>, spaces: Array<SpaceUsage>, counters: Array<OperationalCounter>, sequences: Array<SequenceCapacity>, multixacts: Array<FreezeAge>, sqlite: SqliteFileHealth | null, cluster: ClusterHealth | null, activity_history?: ActivityHistory, termination_history?: TerminationHistory, };

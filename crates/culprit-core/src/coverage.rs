@@ -50,6 +50,7 @@ pub mod source_id {
     pub const DOCDB_INDEX_USAGE: &str = "docdb-index-usage";
     pub const DOCDB_PLAN_HISTORY: &str = "docdb-plan-history";
     pub const DOCDB_ACTIVITY_HISTORY: &str = "docdb-activity-history";
+    pub const DOCDB_TERMINATIONS: &str = "docdb-terminations";
 
     pub const WORKLOAD: &str = "workload";
     pub const QUERY_STORE: &str = "query_store";
@@ -123,6 +124,7 @@ pub mod source_id {
         DOCDB_INDEX_USAGE,
         DOCDB_PLAN_HISTORY,
         DOCDB_ACTIVITY_HISTORY,
+        DOCDB_TERMINATIONS,
         WORKLOAD,
         QUERY_STORE,
         QUERY_WAITS,

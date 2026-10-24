@@ -37,6 +37,7 @@ are not claimed as verified; optional views and functions that are absent or den
 | Live | Current-database sessions and native `yb_lock_status` blocking evidence; node-qualified identities include backend start time |
 | Live samples / progress | Bounded session sampling with native RPC/storage categories; scoped current activity and optional estimated plans; supported CREATE INDEX / ANALYZE phases without guessed percentages |
 | Activity history | Database- and role-scoped native ASH observations, with task weights, observation nodes, component/event names and query identities in an independent retained period |
+| Unexpected terminations | Native `yb_terminated_queries` records, with query IDs, recognized reasons, dates and nodes; database-filtered, with native login visibility and bounded retention |
 | Session actions | Non-production only; local node, database and backend-start guards; Connection Manager worker backends are refused |
 
 Workload retention streams at most 8 MiB of statement text and counters, without whole-row latency-histogram expansion.
@@ -128,6 +129,29 @@ do not produce resource-pressure or query-regression verdicts. Current live samp
 Verified live: bounded local reads, query-ID/node correlation, role isolation, revoked monitoring grants and matching counts through one-node global
 views. Multi-node failure and independent retention scenarios still require verification.
 
+## Unexpected terminations
+
+[Native termination history](https://docs.yugabyte.com/stable/explore/observability/yb-pg-stat-get-queries/) records
+unexpected backend exits and temporary-file-limit failures. It does not count ordinary SQL errors, all cancellations
+or distributed deadlocks. Culprit retains the newest 1,000 records or 8 MiB for the requested period, independently of
+statement-statistics resets; node-local or configured global visibility is explicit. The complete source read,
+including inventory and permission checks, has one 10-second deadline. The native buffer can evict older records,
+so even a successful, untruncated read does not establish complete history. Empty history is not a healthy
+error-rate verdict. SIGKILL alone does not identify an OOM killer; correlate the dated record with the node's logs.
+
+Only query IDs, recognized reason codes, timestamps and nodes leave the server. Raw SQL, backend PIDs and arbitrary
+termination messages are omitted. Native permissions control which records the login can see; inherited role
+privileges may expose records from other roles. A change to effective monitoring privilege during a read rejects
+the result. Records may include administrative and monitoring connections. Health shows the retained records with
+pagination; the dashboard, CLI and agent tools preserve their
+scope and limitations. Records outside the retained workload remain identified without borrowed runtime statistics.
+Global termination reads require effective monitoring privileges; restricted logins retain node-local native
+visibility even when global views are configured, with the fallback stated explicitly.
+
+Verified live: temporary-file-limit failures from bounded disposable sorts, database isolation, restricted-login
+visibility, changed privileges, query-ID correlation and matching one-node global reads. No backend crash is induced
+by this verification. Multi-node failure and retention scenarios remain unverified.
+
 ## Limits
 
 PostgreSQL heap pages, buffer ratios, dead tuples, HOT updates, autovacuum, XID/MultiXact wraparound and heap-oriented GUC
@@ -170,6 +194,7 @@ published 0.4.4 build.
 
 ![YSQL workload scope and dashboard](../screenshots/yugabyte-dashboard.png)
 ![Native recorded task activity, independent sample weights and observation nodes](../screenshots/yugabyte-activity.png)
+![Dated native termination records under Health, separate from workload failure rates](../screenshots/yugabyte-terminations.png)
 ![Recorded native DocDB work per statement run](../screenshots/yugabyte-queries.png)
 ![Native retained plan history with independent cache periods](../screenshots/yugabyte-history.png)
 ![Native hash keys and unavailable local index-usage counters](../screenshots/yugabyte-schema.png)

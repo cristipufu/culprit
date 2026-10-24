@@ -85,13 +85,26 @@ pub fn report(report: &Report) -> Value {
         "signals": snapshot.pressure.as_ref().map(|p| p.signals.iter().map(signal).collect::<Vec<_>>()).unwrap_or_default(),
         "storage": snapshot.pressure.as_ref().map(|p| p.files.iter().take(12).map(file).collect::<Vec<_>>()).unwrap_or_default(),
         "replication": snapshot.pressure.as_ref().map(|p| p.replicas.clone()).unwrap_or_default(),
-        "operations": snapshot.operations.without_activity(),
+        "operations": snapshot.operations.without_retained_history(),
         "oldest_open_transaction": snapshot.pressure.as_ref().and_then(|p| p.oldest_transaction.as_ref()).map(|t| json!({
             "session": t.session, "open_for": format::duration(t.seconds * 1000.0), "state": t.state, "program": t.program,
         })),
     });
     if let Some(activity) = activity {
         response["activity"] = activity;
+    }
+    if let Some(history) = &snapshot.operations.termination_history {
+        let mut by_reason = std::collections::BTreeMap::<String, usize>::new();
+        for event in &history.events {
+            *by_reason.entry(culprit_core::wire_name(&event.reason)).or_default() += 1;
+        }
+        response["terminations"] = json!({
+            "source":history.source,"requested_start":history.requested_start,"requested_end":history.requested_end,
+            "scope":history.scope,"nodes":history.nodes,"visibility":history.visibility,"partial":history.partial,"notes":history.notes,
+            "records_retained":history.events.len(),"by_reason":by_reason,"events":history.events.iter().take(12).collect::<Vec<_>>()
+        });
+    } else if let Some(reason) = snapshot.source_problem(&[culprit_core::source_id::DOCDB_TERMINATIONS]) {
+        response["terminations_unavailable"] = json!(reason);
     }
     response
 }
@@ -120,6 +133,49 @@ pub fn sample(s: &WaitSample) -> Value {
 mod tests {
     use super::*;
     use culprit_core::{Engine, SignalScope, SignalUnit};
+
+    #[test]
+    fn termination_output_bounds_records_and_keeps_native_limits_without_repeating_history() {
+        let mut data: Report =
+            serde_json::from_str(include_str!("../../../fixtures/yugabyte-demo.report.json")).unwrap();
+        data.snapshot.operations.termination_history = Some(culprit_core::TerminationHistory {
+            source: "native termination buffer".into(),
+            requested_start: "2026-10-01T00:00:00Z".into(),
+            requested_end: "2026-10-08T00:00:00Z".into(),
+            scope: culprit_core::CounterScope::Node,
+            nodes: vec!["sample-node".into()],
+            visibility: "native login visibility".into(),
+            partial: true,
+            notes: vec!["No failure-rate denominator".into()],
+            events: vec![
+                culprit_core::QueryTermination {
+                    query_id: None,
+                    node: Some("sample-node".into()),
+                    started_at: None,
+                    ended_at: "2026-10-02T00:00:00Z".into(),
+                    reason: culprit_core::TerminationReason::Sigkill
+                };
+                10_000
+            ],
+        });
+        let history = data.snapshot.operations.termination_history.as_mut().unwrap();
+        let mut older = history.events[0].clone();
+        older.reason = culprit_core::TerminationReason::Sigsegv;
+        history.events.push(older);
+        let value = report(&data);
+        let history = &value["terminations"];
+        assert_eq!(history["events"].as_array().unwrap().len(), 12);
+        assert_eq!(history["records_retained"], 10_001);
+        assert_eq!(history["by_reason"]["sigkill"], 10_000);
+        assert_eq!(
+            history["by_reason"]["sigsegv"], 1,
+            "older termination categories must survive the event-list limit"
+        );
+        assert_eq!(history["requested_start"], "2026-10-01T00:00:00Z");
+        assert_eq!(history["partial"], true);
+        assert!(value["operations"].get("termination_history").is_none());
+        assert!(serde_json::to_vec(history).unwrap().len() < 5000);
+    }
 
     #[test]
     fn activity_output_is_bounded_and_does_not_repeat_raw_history_or_invent_durations() {

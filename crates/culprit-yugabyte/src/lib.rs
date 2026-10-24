@@ -10,6 +10,7 @@ mod probe;
 mod progress;
 mod sessions;
 pub mod sources;
+mod terminations;
 #[cfg(test)]
 mod tests;
 mod waits;
