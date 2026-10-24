@@ -244,7 +244,7 @@ fn apply_hypertables(snapshot: &mut Snapshot, rows: &[Hypertable]) {
         table.index_bytes = sum(|r| r.index_bytes);
         table.data_bytes = sum(|r| r.table_bytes).zip(sum(|r| r.toast_bytes)).map(|(a, b)| a + b);
         clear_parent_counters(table);
-        table.storage = Some(TableStorage { hypertable: Some(first.storage.clone()), ..Default::default() });
+        table.storage.get_or_insert_with(TableStorage::default).hypertable = Some(first.storage.clone());
     }
 }
 
@@ -279,6 +279,8 @@ mod tests {
     #[test]
     fn logical_storage_replaces_parent_heap_counters_without_changing_other_tables() {
         let mut snapshot = snapshot();
+        snapshot.tables[0].storage =
+            Some(TableStorage { options: vec!["trigger=audit:INSERT".into()], ..Default::default() });
         let other = serde_json::to_value(&snapshot.tables[1]).unwrap();
         let metadata = metadata(&snapshot, Some(1000.0));
         apply_hypertables(&mut snapshot, &[metadata]);
@@ -287,6 +289,7 @@ mod tests {
         assert_eq!(table.total_bytes, Some(1030.0));
         assert_eq!(table.kind.as_deref(), Some("hypertable"));
         assert_eq!(table.storage.as_ref().unwrap().hypertable.as_ref().unwrap().compressed_chunks, Some(7));
+        assert_eq!(table.storage.as_ref().unwrap().options, vec!["trigger=audit:INSERT"]);
         assert!(table.dead_rows.is_none() && table.xid_age.is_none() && table.seq_scans.is_none());
         assert!(table.modifications_since_analyze.is_none() && table.inserts.is_none());
         assert_eq!(serde_json::to_value(&snapshot.tables[1]).unwrap(), other);
