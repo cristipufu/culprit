@@ -76,12 +76,14 @@ mod tests {
     struct Temp(PathBuf);
     impl Temp {
         fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             let path = std::env::temp_dir().join(format!(
-                "culprit-exports-{}-{}",
+                "culprit-exports-{}-{}-{}",
                 std::process::id(),
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
-            std::fs::create_dir_all(&path).unwrap();
+            std::fs::create_dir(&path).unwrap();
             Self(path)
         }
     }
