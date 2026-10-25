@@ -2,6 +2,23 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.5.2
+
+### Added
+
+- **SSH jump hosts.** Connect to private databases through a host or alias from your OpenSSH configuration. Add a route in the connection form or a saved connection's SSH settings, test it before saving, or use the CLI's `--ssh`, `--ssh-port`, `--ssh-key` and `--no-ssh` options. Culprit uses the system OpenSSH client, configured agent and already-trusted host keys; encrypted keys must be unlocked in the agent. The real database endpoint stays intact for TLS verification, AWS IAM, Microsoft Entra ID and cloud metrics.
+- **Result value and row inspector.** Double-click a cell, press Enter or choose Inspect to explore long text and JSON in a side panel. Switch between raw and formatted JSON, inspect a whole row, move between rows and copy complete values. Large values expand on request, and JSON formatting preserves large numbers, duplicate keys and escapes.
+- **CSV and JSON file export.** Export all loaded query-result rows across grid pages. CSV protects formula-like values when opened in spreadsheets; JSON preserves duplicate column names and native value types. Desktop files go to Downloads without overwriting existing files, and the browser demo downloads the same formats.
+- **Data-tab filtering and sorting.** Enter a WHERE expression or click a column header to cycle ascending, descending and unsorted reads. Previews request up to 1,000 rows, show at most 100 per grid page and use read-only sessions, execution deadlines and the result-size budget. Sorting uses the applied filter; unsent edits remain marked as drafts. Open in editor carries the current filter and ordering into SQL.
+- **Editor tabs remembered per connection.** Open tabs, unsaved SQL, saved-query links and the active tab survive restarts and connection switches. Renaming a connection carries its workspace along. Restoring tabs never executes their SQL or restores execution consent.
+
+### Fixes
+
+- **Reliable preview cancellation.** Leaving a table or Data tab, switching connections, reloading or closing a window retires its backend preview. Replacements wait for the retired request to release its slot. MySQL/MariaDB previews tolerate refused timeout settings and explicitly cancel their own tagged query when needed. Setup round-trips no longer consume the query's execution budget, and late server timeout replies no longer cause a false unconfirmed-cancellation warning.
+- **Safer SSH routing and clearer connection feedback.** Parallel database connections keep separate SSH diagnostics, half-closed streams drain their final response, and owned routes and processes are bounded and cleaned up. IPv6 destinations and literal identity-file paths are validated consistently. Loopback databases reached through SSH retain remote environment defaults; invalid advanced fields are revealed, and unchanged settings do not show a misleading success toast.
+- **Resilient editor state.** Opening SQL or a saved query does not duplicate tabs under development-mode remounts. Actions rejected at the tab limit are consumed once and cannot leak into another connection. Corrupt legacy state cannot block saving new workspaces; storage failures stay visible and preserve the last stored copy. Typing saves only changed SQL, and adding a tab updates its metadata and selection together.
+- **Modal keyboard handling and long-text layout.** Result inspection and SSH settings keep Escape and keyboard focus contained when controls disappear or become disabled. Inline SQL, identifiers and finding verification steps wrap within their panels. The SQLite demo uses its database file path correctly.
+
 ## 0.5.1
 
 ### Improvements
