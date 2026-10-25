@@ -4,6 +4,7 @@ import { ScreenshotButton } from "./components/ScreenshotButton";
 import { SignInDialog } from "./components/SignInDialog";
 import { Sidebar } from "./components/Sidebar";
 import { WindowPicker } from "./components/WindowPicker";
+import { editorScope } from "./lib/editor-tabs";
 import { when, windowLabel } from "./lib/format";
 import { useHotkeys } from "./lib/hotkeys";
 import { installPlanPaste } from "./lib/plans";
@@ -179,7 +180,7 @@ function Workspace({ view, name }: { view: View; name: string }) {
   if (view === "editor" && connection) {
     return (
       <Suspense fallback={<div className="empty"><div className="spinner" /></div>}>
-        <Editor connection={connection} />
+        <Editor key={editorScope(connection)} connection={connection} />
       </Suspense>
     );
   }

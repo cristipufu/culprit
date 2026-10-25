@@ -70,6 +70,10 @@ five-second budget: PostgreSQL/YSQL statement timeouts, MySQL/MariaDB session ti
 and a SQL Server worker that retains its client to send Attention on timeout or caller cancellation. Limits protect
 returned data and query lifetime; a server-side sort or selective-looking predicate can still need a scan.
 
+The editor keeps scratch SQL in device storage, scoped by the saved alias and logical database endpoint.
+A bounded metadata index records tabs and selection; each tab has its own SQL body so a keystroke does not
+serialize other queries. Renaming moves only the index. Results and execution confirmations are never restored,
+and failed writes keep the prior index and surface an error in the editor.
 
 Cloud discovery uses `discover/paging.rs` and returns `DiscoveryResult` to the CLI and desktop: up to 20 matches,
 a `has_more` indicator and bounded warnings. It retains one source page plus matching rows, stopping after the 21st

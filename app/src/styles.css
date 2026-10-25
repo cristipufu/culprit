@@ -2375,6 +2375,19 @@ table.grid td.sqlcell {
   color: var(--text);
 }
 
+.editor-storage-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: var(--fs-ui);
+}
+.editor-storage-error > svg { flex-shrink: 0; color: var(--medium-text); }
+.editor-storage-error > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.editor-storage-error .btn { flex-shrink: 0; }
+
 .editor-main {
   flex: 1;
   display: flex;

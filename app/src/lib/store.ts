@@ -4,6 +4,7 @@ import type { ConnectionInfo } from "../gen/ConnectionInfo";
 import type { Report } from "../gen/Report";
 import type { SavedQuery } from "../gen/SavedQuery";
 import { api } from "./api";
+import { renameEditorTabs } from "./editor-tabs";
 import { ReportRequests, type ReportState, withConnectionName } from "./report-requests";
 import { LatestRequest } from "./requests";
 export type { ReportState } from "./report-requests";
@@ -170,6 +171,9 @@ export async function renameConnection(old: string, next: string): Promise<Conne
   connectionRequests.invalidate();
   const current = getState();
   const active = current.active === old;
+  const previous = current.connections.find((c) => c.name === old) ?? { ...saved, name: old };
+  const tabError = renameEditorTabs(previous, saved);
+  if (tabError) toast(tabError);
   try {
     const remembered = active ? String(current.windowMinutes) : localStorage.getItem(windowKey(old));
     if (remembered !== null) localStorage.setItem(windowKey(saved.name), remembered);

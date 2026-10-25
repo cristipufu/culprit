@@ -21,6 +21,7 @@ import type { SavedQuery } from "../gen/SavedQuery";
 import { api, errorMessage, type ApiError } from "../lib/api";
 import { catalogFromReport, completionConfig } from "../lib/completion";
 import { splitSqlStatements } from "../lib/editor-sql";
+import { EditorTabStorage, MAX_EDITOR_TABS, newEditorTab, type EditorTab as Tab, type EditorTabs as Tabs } from "../lib/editor-tabs";
 import { duration, oneLine } from "../lib/format";
 import { currentReport, getState, loadSaved, setState, toast, useStore } from "../lib/store";
 import { can, isMariadb, measuresRuns, sqlSyntax } from "../lib/engines";
@@ -35,10 +36,6 @@ type Output =
   | { kind: "rows"; results: StatementResult[] }
   | { kind: "error"; error: ApiError };
 
-type Tab = { id: string; title: string; sql: string; saved: string | null };
-type Tabs = { tabs: Tab[]; active: string };
-
-const TABS_KEY = "culprit.editor.tabs";
 const SPLIT_KEY = "culprit.editor.split";
 const RAIL_KEY = "culprit.editor.rail";
 const ROW_LIMIT = 1000;
@@ -375,10 +372,6 @@ const sqlColors = syntaxHighlighting(
 /** Catalogs fetched this session, per connection. */
 const catalogs = new Map<string, Catalog>();
 
-function newId(): string {
-  return Math.random().toString(36).slice(2, 10);
-}
-
 function titleFor(sql: string, index: number): string {
   const words = sql
     .replace(/--.*$/gm, "")
@@ -389,21 +382,6 @@ function titleFor(sql: string, index: number): string {
     .slice(0, 4)
     .join(" ");
   return words ? (words.length > 28 ? `${words.slice(0, 27)}…` : words) : `Query ${index}`;
-}
-
-function loadTabs(): Tabs {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(TABS_KEY) ?? "null") as Tabs | null;
-    if (parsed?.tabs?.length && parsed.tabs.some((t) => t.id === parsed.active)) return parsed;
-  } catch {}
-  const id = newId();
-  return { tabs: [{ id, title: "Query 1", sql: PLACEHOLDER, saved: null }], active: id };
-}
-
-function storeTabs(tabs: Tabs): void {
-  try {
-    localStorage.setItem(TABS_KEY, JSON.stringify(tabs));
-  } catch {}
 }
 
 function remembered<T extends string>(key: string, fallback: T, allowed: readonly T[]): T {
@@ -426,7 +404,15 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
   const view = useRef<EditorView | null>(null);
   const states = useRef(new Map<string, EditorState>());
   const language = useRef(new Compartment());
-  const [tabs, setTabs] = useState<Tabs>(loadTabs);
+  const [tabStorage] = useState(() => new EditorTabStorage(connection, PLACEHOLDER));
+  const [tabs, setTabs] = useState<Tabs>(tabStorage.initial);
+  const [persistenceError, setPersistenceError] = useState(tabStorage.error);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    setPersistenceError(tabStorage.migrate());
+    return () => { mounted.current = false; };
+  }, [tabStorage]);
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
   const [outputs, setOutputs] = useState<Record<string, Output>>({});
@@ -449,7 +435,7 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
   const openSaved = useStore((s) => s.editorSaved);
   const incoming = useStore((s) => s.editorSql);
   const production = connection.environment === "production";
-  // loadTabs and closeTab never leave the list empty.
+  // Loading and closing tabs always leave one tab.
   const activeTab = tabs.tabs.find((t) => t.id === tabs.active) ?? tabs.tabs[0]!;
   const output = outputs[activeTab.id] ?? { kind: "none" };
 
@@ -470,12 +456,12 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
 
   // ── tab bookkeeping ────────────────────────────────────────────────────────────────────────────
   const updateTabs = useCallback((next: (t: Tabs) => Tabs) => {
-    setTabs((current) => {
-      const value = next(current);
-      storeTabs(value);
-      return value;
-    });
-  }, []);
+    if (!mounted.current || getState().active !== connection.name) return;
+    const value = next(tabsRef.current);
+    tabsRef.current = value;
+    setTabs(value);
+    setPersistenceError(tabStorage.write(value));
+  }, [tabStorage, connection.name]);
 
   const currentText = () => view.current?.state.doc.toString() ?? "";
 
@@ -487,7 +473,10 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
     return selected || state.doc.toString().trim();
   };
 
-  const setOutput = (id: string, value: Output) => setOutputs((o) => ({ ...o, [id]: value }));
+  const setOutput = (id: string, value: Output) => {
+    if (!mounted.current || !tabsRef.current.tabs.some((t) => t.id === id)) return;
+    setOutputs((o) => ({ ...o, [id]: value }));
+  };
 
   const stateFor = useCallback(
     (tab: Tab, actions: Extension) =>
@@ -712,9 +701,9 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
     (id: string) => {
       const editor = view.current;
       const current = tabsRef.current.active;
-      if (editor) states.current.set(current, editor.state);
+      if (!tabsRef.current.tabs.some((t) => t.id === id)) return;
+      if (editor && tabsRef.current.tabs.some((t) => t.id === current)) states.current.set(current, editor.state);
       updateTabs((t) => ({ ...t, active: id }));
-      tabsRef.current = { ...tabsRef.current, active: id };
       const tab = tabsRef.current.tabs.find((t) => t.id === id);
       if (editor && tab) {
         editor.setState(states.current.get(id) ?? stateFor(tab, actionKeys.current));
@@ -726,10 +715,13 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
 
   const newTab = useCallback(
     (sql = "", title?: string, savedName: string | null = null) => {
-      const id = newId();
-      const tab: Tab = { id, title: title ?? titleFor(sql, tabsRef.current.tabs.length + 1), sql, saved: savedName };
+      if (tabsRef.current.tabs.length >= MAX_EDITOR_TABS) {
+        toast(`Close a tab before opening another (${MAX_EDITOR_TABS} tabs open)`);
+        return null;
+      }
+      const tab = newEditorTab(sql, title ?? titleFor(sql, tabsRef.current.tabs.length + 1), savedName);
+      const { id } = tab;
       updateTabs((t) => ({ ...t, tabs: [...t.tabs, tab] }));
-      tabsRef.current = { ...tabsRef.current, tabs: [...tabsRef.current.tabs, tab] };
       activate(id);
       return id;
     },
@@ -739,14 +731,16 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
   const closeTab = useCallback(
     (id: string) => {
       const list = tabsRef.current.tabs;
+      if (!list.some((t) => t.id === id)) return;
       if (list.length === 1) {
         states.current.delete(id);
-        const fresh = { id: newId(), title: "Query 1", sql: "", saved: null };
+        setOutputs({});
+        const fresh = newEditorTab();
         updateTabs(() => ({ tabs: [fresh], active: fresh.id }));
-        tabsRef.current = { tabs: [fresh], active: fresh.id };
         view.current?.setState(stateFor(fresh, actionKeys.current));
         return;
       }
+      const wasActive = tabsRef.current.active === id;
       const index = list.findIndex((t) => t.id === id);
       const rest = list.filter((t) => t.id !== id);
       states.current.delete(id);
@@ -754,11 +748,15 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
         const { [id]: _, ...others } = o;
         return others;
       });
-      updateTabs((t) => ({ ...t, tabs: rest }));
-      tabsRef.current = { ...tabsRef.current, tabs: rest };
-      if (tabsRef.current.active === id) activate(rest[Math.max(0, index - 1)]!.id);
+      const next = tabsRef.current.active === id ? rest[Math.max(0, index - 1)]!.id : tabsRef.current.active;
+      updateTabs(() => ({ tabs: rest, active: next }));
+      if (view.current && wasActive) {
+        const tab = rest.find((t) => t.id === next)!;
+        view.current.setState(states.current.get(next) ?? stateFor(tab, actionKeys.current));
+        view.current.focus();
+      }
     },
-    [activate, stateFor, updateTabs],
+    [stateFor, updateTabs],
   );
 
   const cycle = (delta: number) => {
@@ -771,7 +769,7 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
     (query: SavedQuery, thenRun: boolean) => {
       const open = tabsRef.current.tabs.find((t) => t.saved === query.name);
       if (open) activate(open.id);
-      else newTab(query.sql, query.name, query.name);
+      else if (newTab(query.sql, query.name, query.name) === null) return;
       if (thenRun) void run(query.sql);
     },
     // run reads the latest connection through closures; re-binding on connection change is enough.
@@ -805,7 +803,7 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
       editor.destroy();
       view.current = null;
     };
-    // The view is created once per engine; tab switches swap states.
+    // The connection owns this view; tab switches swap states.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connection.engine]);
 
@@ -847,9 +845,9 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
       tab.id === tabsRef.current.active && view.current ? view.current.state.doc.toString() : (states.current.get(tab.id)?.doc.toString() ?? tab.sql);
     const open = wanted ? tabsRef.current.tabs.find((t) => textOf(t).trim() === wanted) : undefined;
     if (open) activate(open.id);
-    else newTab(incoming);
+    else if (newTab(incoming) === null) return;
     setState({ editorSql: null });
-  }, [incoming, newTab, activate]);
+  }, [incoming, newTab, activate, tabs.tabs.length]);
 
   // A saved query picked in the command palette.
   useEffect(() => {
@@ -906,11 +904,15 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
               </button>
             </div>
           ))}
-          <button className="icon-btn" title={keys("New tab (⌘T)")} onClick={() => newTab()}>
+          <button className="icon-btn" title={tabs.tabs.length >= MAX_EDITOR_TABS ? "Close a tab before opening another" : keys("New tab (⌘T)")} disabled={tabs.tabs.length >= MAX_EDITOR_TABS} onClick={() => newTab()}>
             <Plus size={14} />
           </button>
         </div>
       </div>
+      {persistenceError && <div className="editor-storage-error" role="alert">
+        <TriangleAlert size={15} /><span>{persistenceError}</span>
+        <button className="btn" onClick={() => save()}>Save query</button>
+      </div>}
       <div className="editor-main">
         {rail === "open" && <SavedRail current={connection} saved={saved} active={activeTab.saved} onOpen={openQuery} onRenamed={(from, to) => updateTabs((t) => ({ ...t, tabs: t.tabs.map((x) => (x.saved === from ? { ...x, saved: to, title: to } : x)) }))} onDeleted={(name) => updateTabs((t) => ({ ...t, tabs: t.tabs.map((x) => (x.saved === name ? { ...x, saved: null } : x)) }))} />}
         <div className="editor-work">

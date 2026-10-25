@@ -274,6 +274,11 @@ Keyboard: `j`/`k` move, `↵` opens, `c` copies the SQL, `o` opens the finding, 
 
 CodeMirror (loaded lazily). Run (⌘↵, read-only transaction), Explain (⌘E, estimated plan, safe everywhere), Explain Analyze (⌘⇧E, executes the query, needs confirmation on production). Pin a plan and run again to compare.
 
+Open SQL tabs, their order, saved-query links and the selected tab are remembered per connection on this device.
+Switching connections restores that connection's own workspace; renaming a connection carries it along. Only SQL
+and tab metadata are retained, never results or execution consent. Restoring tabs does not run them. Typing saves
+only the changed tab's SQL; storage failures remain visible with a way to save a named query.
+
 Result grids show a bounded page, with row numbers and arrow-key cell navigation. Double-click, Enter or **Inspect**
 opens a right-side value inspector, with Value / Row views, column selection, previous/next row navigation and copy.
 JSON can switch between formatted and raw text without changing number literals or escapes. Plain text wraps;
