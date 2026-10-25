@@ -842,14 +842,14 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
   // "Open in editor" from findings and queries: a new tab with that SQL, or the tab that already holds it.
   useEffect(() => {
     if (!incoming || getState().editorSql !== incoming || !view.current) return;
+    setState({ editorSql: null });
     const wanted = incoming.trim();
     const textOf = (tab: Tab) =>
       tab.id === tabsRef.current.active && view.current ? view.current.state.doc.toString() : (states.current.get(tab.id)?.doc.toString() ?? tab.sql);
     const open = wanted ? tabsRef.current.tabs.find((t) => textOf(t).trim() === wanted) : undefined;
     if (open) activate(open.id);
-    else if (newTab(incoming) === null) return;
-    setState({ editorSql: null });
-  }, [incoming, newTab, activate, tabs.tabs.length]);
+    else newTab(incoming);
+  }, [incoming, newTab, activate]);
 
   // A saved query picked in the command palette.
   useEffect(() => {

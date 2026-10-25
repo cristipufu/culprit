@@ -200,7 +200,7 @@ export async function renameConnection(old: string, next: string): Promise<Conne
 export async function openConnection(name: string, options: { rescan?: boolean } = {}): Promise<void> {
   const rescan = options.rescan ?? true;
   const windowMinutes = rememberedWindow(name);
-  setState({ active: name, view: "dashboard", finding: null, query: null, changes: null, report: { status: "loading" }, windowMinutes });
+  setState({ active: name, view: "dashboard", finding: null, query: null, changes: null, editorSql: null, editorSaved: null, report: { status: "loading" }, windowMinutes });
   rememberLast(name);
   await reports.open(name, windowMinutes, rescan);
 }
