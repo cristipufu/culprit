@@ -1184,9 +1184,8 @@ button.update-item:hover {
 
 .steps li {
   counter-increment: step;
-  display: grid;
-  grid-template-columns: 22px 1fr;
-  gap: 6px;
+  position: relative;
+  padding-left: 28px;
   color: var(--text-2);
   line-height: 1.55;
 }
@@ -1197,6 +1196,9 @@ button.update-item:hover {
 
 .steps li::before {
   content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 1px;
   width: 18px;
   height: 18px;
   border-radius: 50%;
@@ -1207,7 +1209,6 @@ button.update-item:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-top: 1px;
 }
 
 .caveats {
@@ -10279,8 +10280,6 @@ button.health-pill:hover {
 .ins-detail .inline-code,
 .ins-block .inline-code {
   font-size: var(--fs-ui-sm);
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
 }
 
 .detail .insights {
@@ -13032,12 +13031,21 @@ button.as-callout:hover {
   }
 }
 
-/* Long expressions inside prose wrap as whole chips, line by line. */
+/* Database identifiers and paths can be longer than a prose pane. */
+.detail,
+.ia,
+.insights,
+.nd,
+.notice {
+  overflow-wrap: anywhere;
+}
+
+/* Inline SQL follows prose across lines without repeated padding widening a line. */
 p code,
 li code,
 .prose code {
-  -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
+  -webkit-box-decoration-break: slice;
+  box-decoration-break: slice;
   overflow-wrap: anywhere;
 }
 

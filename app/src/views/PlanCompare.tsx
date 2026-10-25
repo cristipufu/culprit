@@ -312,8 +312,10 @@ export function PlanCompare() {
           </div>
         ) : (
           <div className="notice error">
-            <b>{diff.error.message}</b>
-            {diff.error.hint && <div>{diff.error.hint}</div>}
+            <div>
+              <b>{diff.error.message}</b>
+              {diff.error.hint && <div>{diff.error.hint}</div>}
+            </div>
           </div>
         ))}
 
