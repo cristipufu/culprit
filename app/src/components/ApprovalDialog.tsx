@@ -73,7 +73,7 @@ export default function ApprovalDialog() {
   });
 
   // While a request waits, Tab stays inside the dialog and focus returns where it was afterwards.
-  useFocusTrap(dialog, request !== null);
+  useFocusTrap(dialog, request !== null, () => { void decide(false); });
 
   if (!request) {
     return error ? (

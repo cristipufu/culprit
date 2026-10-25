@@ -73,7 +73,7 @@ export function CommandPalette() {
   const update = useUpdate();
   const autoCheck = useAutoCheck();
   const panel = useRef<HTMLDivElement>(null);
-  useFocusTrap(panel);
+  useFocusTrap(panel, true, () => setState({ palette: false }));
 
   const items = useMemo<Item[]>(() => {
     const close = () => setState({ palette: false });

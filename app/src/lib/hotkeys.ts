@@ -27,6 +27,7 @@ export function useHotkeys(bindings: Bindings, enabled = true): void {
   useEffect(() => {
     if (!enabled) return;
     const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
       const combo = comboOf(event);
       const handler = ref.current[combo];
       if (!handler) return;

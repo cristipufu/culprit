@@ -32,7 +32,7 @@ function SshDialog({ connection, onClose }: { connection: ConnectionInfo; onClos
   const action = useRef(new LatestRequest());
   const title = useId();
   const saving = status.kind === "saving";
-  useFocusTrap(root);
+  useFocusTrap(root, true, () => { if (!saving) onClose(); });
   useEffect(() => { close.current?.focus(); return () => action.current.invalidate(); }, []);
   const test = async () => {
     if (!root.current?.reportValidity()) return;
@@ -53,7 +53,7 @@ function SshDialog({ connection, onClose }: { connection: ConnectionInfo; onClos
     } catch (error) { if (current()) setStatus({ kind: "error", error: errorMessage(error) }); }
   };
   return createPortal(<div className="ssh-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
-    <form ref={root} className="ssh-dialog" role="dialog" aria-modal="true" aria-labelledby={title} onSubmit={(event) => { event.preventDefault(); if (!saving) void save(); }} onKeyDown={(event) => {
+    <form ref={root} className="ssh-dialog" tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby={title} onSubmit={(event) => { event.preventDefault(); if (!saving) void save(); }} onKeyDown={(event) => {
       event.stopPropagation();
       if (event.key === "Escape") { event.preventDefault(); if (!saving) onClose(); }
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") event.preventDefault();

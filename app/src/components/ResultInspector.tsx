@@ -22,7 +22,7 @@ export function ResultInspector({ result, cell, types, onSelect, onClose }: {
   const displayed = pretty && formatted !== null ? formatted : raw;
   const column = result.columns[cell.col] ?? "Value";
   const kind = value == null ? "NULL" : columnType(types, column) ?? (formatted !== null || typeof value === "object" ? "JSON" : typeof value === "string" ? "Text" : typeof value === "number" ? "Number" : "Boolean");
-  useFocusTrap(root);
+  useFocusTrap(root, true, onClose);
   useEffect(() => { window.getSelection()?.removeAllRanges(); close.current?.focus(); }, []);
   const copy = () => tab === "row"
     ? copyAndTell(result.columns.join("\t") + "\n" + rowTsv(result, cell.row), "Row copied as TSV")
@@ -30,7 +30,7 @@ export function ResultInspector({ result, cell, types, onSelect, onClose }: {
 
   return createPortal(
     <div className="rg-inspector-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div ref={root} className="rg-inspector" role="dialog" aria-modal="true" aria-labelledby={title} onKeyDown={(event) => {
+      <div ref={root} className="rg-inspector" tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby={title} onKeyDown={(event) => {
         event.stopPropagation();
         if (event.key === "Escape") { event.preventDefault(); onClose(); }
         if ((event.metaKey || event.ctrlKey) && event.key === "Enter") event.preventDefault();
