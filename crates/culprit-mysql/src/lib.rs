@@ -449,11 +449,11 @@ fn reads_only(statement: &str) -> bool {
 }
 
 async fn run_in_transaction(conn: &mut Conn, statement: &str, limit: usize) -> Result<ResultSet> {
-    read_result(conn, &tagged(statement), limit).await
+    read_result(conn, &tagged(statement), limit).await.map_err(map_error)
 }
 
-async fn read_result(conn: &mut Conn, tagged_statement: &str, limit: usize) -> Result<ResultSet> {
-    let mut result = conn.query_iter(tagged_statement).await.map_err(map_error)?;
+async fn read_result(conn: &mut Conn, tagged_statement: &str, limit: usize) -> mysql_async::Result<ResultSet> {
+    let mut result = conn.query_iter(tagged_statement).await?;
     let columns_meta = result.columns();
     let columns: Vec<String> = columns_meta
         .as_deref()
@@ -463,7 +463,7 @@ async fn read_result(conn: &mut Conn, tagged_statement: &str, limit: usize) -> R
         columns_meta.as_deref().map(|cols| cols.iter().map(|c| c.column_type()).collect()).unwrap_or_default();
     let mut rows: Vec<Vec<Json>> = Vec::new();
     let mut budget = culprit_core::limits::ResultBudget::new(limit);
-    while let Some(row) = result.next().await.map_err(map_error)? {
+    while let Some(row) = result.next().await? {
         if budget.truncated() {
             continue;
         }
@@ -480,7 +480,7 @@ async fn read_result(conn: &mut Conn, tagged_statement: &str, limit: usize) -> R
         rows.push(values.iter().enumerate().map(|(i, v)| json_value(v, types.get(i))).collect());
     }
     let affected = result.affected_rows();
-    result.drop_result().await.map_err(map_error)?;
+    result.drop_result().await?;
     let count = if columns.is_empty() { affected } else { rows.len() as u64 };
     let mut message = format!("{count} row{}", if count == 1 { "" } else { "s" });
     if let Some(notice) = budget.notice() {

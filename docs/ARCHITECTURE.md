@@ -73,7 +73,9 @@ five-second budget: PostgreSQL/YSQL statement timeouts, MySQL/MariaDB session ti
 and a SQL Server worker that retains its client to send Attention on timeout or caller cancellation. MySQL/MariaDB
 also retain a control session to send KILL QUERY for the owned request; a unique leading comment guards against
 server-local IDs behind proxies. Unsupported timeout settings remain optional, and worker slots include cancellation
-and bounded disconnects. An unconfirmed cancellation is reported explicitly. See [MySQL KILL](https://dev.mysql.com/doc/refman/8.0/en/kill.html).
+and bounded disconnects. The client query clock starts after setup and includes 250 ms for the native timeout
+reply. During cancellation, Culprit accepts either the original statement's protocol completion or an acknowledged
+KILL QUERY as confirmation; a broken socket alone does not qualify. An unconfirmed cancellation is reported explicitly. See [MySQL KILL](https://dev.mysql.com/doc/refman/8.0/en/kill.html).
 Limits protect
 returned data and query lifetime; a server-side sort or selective-looking predicate can still need a scan.
 
