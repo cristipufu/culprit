@@ -12,7 +12,8 @@ import { nextColumnSort, previewSql } from "../lib/schema-model";
 import { getState, setState } from "../lib/store";
 import "./schema-data.css";
 
-const ROWS = 100;
+const ROWS = 1000;
+const ROW_LABEL = ROWS.toLocaleString();
 type Preview = TablePreview & { options: TablePreviewOptions };
 
 /** A deliberate, bounded server read. Draft filters never change the displayed result until explicitly applied. */
@@ -62,11 +63,11 @@ export function SchemaData({ report, table }: { report: Report; table: TableStat
         }}><X size={13} /></button>}
       </div>
       <button className="btn primary" type="submit" disabled={busy}>{busy ? <span className="spinner" /> : <Play size={12} />}
-        {busy ? "Reading…" : !preview ? `Preview ${ROWS} rows` : dirty ? "Apply filter" : "Refresh"}</button>
+        {busy ? "Reading…" : !preview ? `Preview ${ROW_LABEL} rows` : dirty ? "Apply filter" : "Refresh"}</button>
       <button className="btn ghost" type="button" onClick={() => setState({ view: "editor", editorSql: sql })}><SquarePen size={12} /> Open in editor</button>
     </form>
     <div className="data-preview-meta">
-      <span id={help}>{preview ? `Up to ${ROWS} matching rows · read-only` : "Nothing is fetched until you ask."}</span>
+      <span id={help}>{preview ? `Up to ${ROW_LABEL} matching rows · read-only` : "Nothing is fetched until you ask."}</span>
       {order && <button type="button" className="data-sort-chip" disabled={busy} title="Clear sorting" onClick={() => void run(null, applied)}>
         <span>{order.column}</span>{order.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />}<X size={11} />
       </button>}
@@ -76,7 +77,7 @@ export function SchemaData({ report, table }: { report: Report; table: TableStat
     {!preview && !busy && <p className="muted data-note">Enter a WHERE expression to filter. Click a column header to sort ascending, descending, then clear sorting.</p>}
     {!preview && busy && <div className="empty" style={{ padding: 30 }}><span className="spinner" /> Reading rows…</div>}
     {preview && <ResultGrid result={preview.result} types={types} order={order} sortDisabled={busy}
-      summary={`${preview.result.rows.length.toLocaleString()} rows shown · limit ${ROWS}${preview.result.truncated ? " · partial result" : ""}`}
+      summary={`${preview.result.rows.length.toLocaleString()} rows loaded · limit ${ROW_LABEL}${preview.result.truncated ? " · partial result" : ""}`}
       onSort={(column) => void run(nextColumnSort(order, column), applied)} />}
     <details className="data-query"><summary>{preview ? "Preview SQL" : "SQL"}</summary><pre>{preview?.sql ?? sql}</pre></details>
   </div>;

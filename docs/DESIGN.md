@@ -249,7 +249,8 @@ A health view, not a browser: tables by size with health badges (no clustered in
 
 The table detail's Columns and Indexes grids keep stable column widths and one scroll area inside the tab, with sticky headers. Long identifiers truncate with their full value on hover; badges and counts stay on one line. A narrow pane scrolls the grid horizontally rather than squeezing text into vertical columns. Expanding an index keeps the columns in place and shows a bounded list of captured queries, each with its SQL, operations and a link to Queries. The header stays bounded in short windows, with expanded findings reachable by scrolling. Relations keep their source, target and constraint metadata aligned. Data previews scroll inside their result grid.
 
-The **Data** tab reads up to 100 rows only when requested. Its quick filter accepts a WHERE expression; Enter or
+The **Data** tab reads up to 1,000 rows only when requested, showing at most 100 per grid page. Its quick filter
+accepts a WHERE expression; Enter or
 **Apply filter** sends it through the backend's read-only policy. Column headers cycle server ordering through
 ascending, descending and unsorted. Sorting uses the applied filter, while unsubmitted edits remain marked as a
 draft. A failed read keeps the last successful preview visible. Only one read runs at a time; leaving the table or

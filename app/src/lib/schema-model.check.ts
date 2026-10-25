@@ -45,9 +45,9 @@ delete nativeReport.snapshot.indexes.find((index) => index.table === "orders")!.
 check(relations(nativeReport, orders).outgoing[0]?.indexed === null, "Unknown hash keys cannot establish that an FK index is missing");
 
 for (const engine of ENGINES) {
-  const query = previewSql(engine, { schema: 'odd"`]schema', name: 'order' }, 100, { filter: "id > 1 -- comment", order: { column: 'odd"`]column', direction: "desc" } });
+  const query = previewSql(engine, { schema: 'odd"`]schema', name: 'order' }, 1000, { filter: "id > 1 -- comment", order: { column: 'odd"`]column', direction: "desc" } });
   check(query.includes("WHERE (\nid > 1 -- comment\n)"), "A line comment must end before the predicate boundary");
-  check(query.endsWith("LIMIT 100") || query.includes("TOP (100)"), "Each provider must request bounded server rows");
+  check(query.endsWith("LIMIT 1000") || query.includes("TOP (1000)"), "Each provider must request bounded server rows");
   check(query.includes(" DESC"), "A clicked header must request server ordering");
 }
 const ascending = nextColumnSort(null, "id");
