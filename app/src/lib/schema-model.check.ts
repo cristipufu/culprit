@@ -50,6 +50,10 @@ for (const engine of ENGINES) {
   check(query.endsWith("LIMIT 1000") || query.includes("TOP (1000)"), "Each provider must request bounded server rows");
   check(query.includes(" DESC"), "A clicked header must request server ordering");
 }
+for (const engine of ENGINES) {
+  const query = previewSql(engine, { schema: " schema ", name: " table " }, 1000, { filter: null, order: { column: " key ", direction: "asc" } });
+  for (const identifier of [" schema ", " table ", " key "]) check(query.includes(identifier), "Preview SQL must preserve catalog identifiers verbatim");
+}
 const ascending = nextColumnSort(null, "id");
 const descending = nextColumnSort(ascending, "id");
 check(ascending?.direction === "asc" && descending?.direction === "desc" && nextColumnSort(descending, "id") === null, "Sorting cycles through ascending, descending, then unsorted");

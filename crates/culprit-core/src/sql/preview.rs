@@ -180,6 +180,21 @@ mod tests {
     }
 
     #[test]
+    fn catalog_identifiers_keep_their_leading_and_trailing_spaces() {
+        for engine in Engine::ALL {
+            let mut options = options("");
+            options.schema = " schema ".into();
+            options.table = " table ".into();
+            options.order = Some(ColumnSort { column: " key ".into(), direction: SortDirection::Asc });
+            let sql = table_preview_sql(engine, &options).unwrap();
+            for identifier in [" schema ", " table ", " key "] {
+                assert!(sql.contains(identifier), "{engine:?} changed the identifier: {sql}");
+            }
+            assert!(crate::sql::reads_only(&sql, engine), "{engine:?}: {sql}");
+        }
+    }
+
+    #[test]
     fn identifiers_are_quoted_and_limits_are_bounded() {
         for engine in Engine::ALL {
             let mut options = options("");
