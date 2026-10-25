@@ -4,6 +4,7 @@ import type { ResultSet } from "../gen/ResultSet";
 import { copyAndTell } from "../lib/clipboard";
 import { cellText, columnType, resultPageSize, rowTsv, valuePreview, type ResultCell } from "../lib/result-values";
 import { ResultInspector } from "./ResultInspector";
+import { ResultExportMenu } from "./ResultExportMenu";
 import "./result-grid.css";
 
 const NUMERIC = /^(tiny|small|medium|big)?int|^int|^integer|^numeric|^decimal|^real|^float|^double|^money|^smallmoney|^bit\b|^serial|^bigserial/i;
@@ -61,6 +62,7 @@ export function ResultGrid({ result, types, summary }: { result: ResultSet; type
           <button className="btn ghost" onClick={() => void copyAndTell(header + "\n" + rowTsv(result, selected.row), "Row copied as TSV")}><Copy size={12} /> Row</button>
         </>}
         <button className="btn ghost" onClick={() => void copyAndTell([header, ...result.rows.map((_, row) => rowTsv(result, row))].join("\n"), `${result.rows.length.toLocaleString()} rows copied as TSV`)}><Copy size={12} /> All as TSV</button>
+        <ResultExportMenu result={result} />
       </div>
     </div>
     <div ref={scroll} className="rg-scroll" onKeyDown={(event) => {

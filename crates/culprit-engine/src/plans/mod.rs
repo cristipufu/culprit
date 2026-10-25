@@ -3,9 +3,6 @@
 //! (EXPLAIN ANALYZE, FORMAT=TREE), SQLite's EXPLAIN QUERY PLAN as the sqlite3 shell prints it, plus Culprit's own plan
 //! JSON. psql and mysql client decorations are stripped first.
 
-use std::io::Write;
-use std::path::PathBuf;
-
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "yugabyte"))]
 use culprit_core::PlanKind;
 use culprit_core::{Error, Plan, PlanNode, Result};
@@ -400,51 +397,6 @@ fn clean(text: &str) -> String {
     lines.join("\n")
 }
 
-/// Save plan text to the Downloads folder under a cleaned-up name, never overwriting a file. Returns where it went.
-/// Only `.sqlplan`, `.json`, `.txt`, `.html` and `.md` names are written; anything else in the name becomes `-`.
-pub fn save_to_downloads(name: &str, contents: &str) -> Result<PathBuf> {
-    if contents.len() > MAX_PLAN_BYTES * 2 {
-        return Err(too_large(contents.len()));
-    }
-    let dir = dirs::download_dir()
-        .or_else(|| dirs::home_dir().map(|home| home.join("Downloads")))
-        .filter(|dir| dir.is_dir())
-        .ok_or_else(|| Error::not_found("There is no Downloads folder to save into"))?;
-    let (stem, extension) = file_name(name);
-    for n in 0..1000 {
-        let file = if n == 0 { format!("{stem}.{extension}") } else { format!("{stem} ({n}).{extension}") };
-        let path = dir.join(file);
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut f) => {
-                f.write_all(contents.as_bytes())
-                    .map_err(|e| Error::internal(format!("Could not save the plan: {e}")))?;
-                return Ok(path);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(Error::internal(format!("Could not save the plan: {e}"))),
-        }
-    }
-    Err(Error::internal("Too many saved plans with this name"))
-}
-
-/// A plain file name from whatever the UI suggested: no separators, no leading dots, a known extension.
-fn file_name(name: &str) -> (String, &'static str) {
-    let lower = name.to_ascii_lowercase();
-    let extension = ["sqlplan", "json", "txt", "html", "md"]
-        .into_iter()
-        .find(|e| lower.ends_with(&format!(".{e}")))
-        .unwrap_or("txt");
-    let stem = if lower.ends_with(&format!(".{extension}")) { &name[..name.len() - extension.len() - 1] } else { name };
-    let stem: String = stem
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, ' ' | '_' | '-' | '.') { c } else { '-' })
-        .take(80)
-        .collect();
-    let stem = stem.trim_matches(|c: char| c == '.' || c == ' ' || c == '-').to_string();
-    // `con`, `nul`, `com1`… are devices on Windows, whatever the extension.
-    (if stem.is_empty() { "plan".to_string() } else { crate::store::windows_safe(stem) }, extension)
-}
-
 fn showplan(text: &str) -> Result<Plan> {
     #[cfg(feature = "mssql")]
     {
@@ -646,23 +598,5 @@ mod mysql_v2 {
                 fill_objects(input, child);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::file_name;
-
-    #[test]
-    fn saved_file_names_stay_inside_the_folder() {
-        assert_eq!(file_name("Plan 815.sqlplan"), ("Plan 815".into(), "sqlplan"));
-        assert_eq!(file_name("../../etc/passwd"), ("etc-passwd".into(), "txt"));
-        assert_eq!(file_name("..\\..\\boot.ini.json"), ("boot.ini".into(), "json"));
-        assert_eq!(file_name(".hidden.txt"), ("hidden".into(), "txt"));
-        assert_eq!(file_name("/abs/path/x.exe"), ("abs-path-x.exe".into(), "txt"));
-        assert_eq!(file_name("..."), ("plan".into(), "txt"));
-        assert_eq!(file_name("con"), ("_con".into(), "txt"));
-        assert_eq!(file_name("COM1.sqlplan"), ("_COM1".into(), "sqlplan"));
-        assert_eq!(file_name("nul.json"), ("_nul".into(), "json"));
     }
 }

@@ -199,7 +199,7 @@ export async function savePlan(item: LoadedPlan, asJson: boolean): Promise<void>
     ? { name: `${item.name.replace(/[^\w .-]+/g, "-").slice(0, 70) || "plan"}.plan.json`, contents: JSON.stringify(item.plan, null, 2) }
     : exportable(item);
   try {
-    const where = await (await api()).savePlanFile(file.name, file.contents);
+    const where = await (await api()).saveFile(file.name, file.contents);
     toast(where.includes("/") || where.includes("\\") ? `Saved to ${where.split(/[\\/]/).slice(-2).join("/")}` : `Saved ${where}`);
   } catch (e) {
     toast(errorMessage(e).message);

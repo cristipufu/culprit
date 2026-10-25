@@ -49,6 +49,11 @@ factory applies to subsequent calls without maintaining a second copy of configu
 Services do not hold a `Workspace` or call the façade to perform their work. Existing modules continue to own storage,
 provider registration, cloud transport and pure analysis; services compose them without duplicating their rules.
 
+`files.rs` owns the desktop export writer shared by query results, plans and reports: document extensions only,
+a plain filename, a 64 MiB limit and exclusive creation in Downloads. Files inherit the folder's Windows access rules;
+macOS/Linux files use owner-only read/write permissions. Result serialization
+lives beside the grid in `app/src/lib/result-export.ts`; it exports the loaded result and yields between row batches.
+
 Interactive database work uses the shared policy in `culprit-core/src/limits.rs`: 30 seconds for queries and measured
 plans, 10 seconds for observations, and at most 10,000 retained result rows or 8 MiB of cell data. `execution.rs` bounds
 the provider future, including database connection setup and server validation, with one deadline per operation;

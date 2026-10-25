@@ -32,7 +32,7 @@ export async function deliver(file: Promise<ExportFile>, how: "copy" | "save", r
       await copyText(f.contents);
       toast(redact ? "Copied as Markdown, values redacted. Paste it into your PR" : "Copied as Markdown. Paste it into your PR");
     } else {
-      const where = await (await api()).savePlanFile(f.name, f.contents);
+      const where = await (await api()).saveFile(f.name, f.contents);
       const shown = where.includes("/") || where.includes("\\") ? where.split(/[\\/]/).slice(-2).join("/") : where;
       toast(`Saved ${shown}`);
     }

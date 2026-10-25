@@ -45,3 +45,15 @@
 .rg-field-name small { flex-shrink: 0; color: var(--text-3); font: 400 var(--fs-micro) var(--mono); }
 .rg-field-preview { display: block; max-height: 3.2em; overflow: hidden; color: var(--text-2); font: var(--fs-ui-sm)/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 700px) { .rg-inspector-backdrop { padding: 0; } .rg-inspector { width: 100%; border-radius: 0; border-width: 0; } .rg-hint { display: none; } }
+.rg-export-menu { position: fixed; z-index: 620; width: min(290px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto; padding: 5px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text); box-shadow: var(--shadow-pop); font: var(--fs-ui-sm)/1.5 var(--font); }
+.rg-export-head { display: grid; gap: 3px; padding: 8px 10px 10px; }
+.rg-export-head b { font-size: var(--fs-ui); font-weight: 600; }
+.rg-export-head > span { color: var(--text-3); }
+.rg-export-menu > button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: 0; border-radius: 5px; background: transparent; color: var(--text); text-align: left; cursor: pointer; font: inherit; }
+.rg-export-menu > button:hover { background: var(--hover); }
+.rg-export-menu > button:disabled { opacity: .5; cursor: wait; }
+.rg-export-menu > button b, .rg-export-menu > button small { display: block; }
+.rg-export-menu > button b { font-size: var(--fs-ui); font-weight: 550; }
+.rg-export-menu > button small { margin-top: 2px; font-size: var(--fs-ui-sm); color: var(--text-3); }
+.rg-export-symbol { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text-2); }
+.rg-export-foot { display: grid; gap: 5px; margin: 6px 4px 0; padding: 10px 6px 6px; border-top: 1px solid var(--border); color: var(--text-3); font-size: var(--fs-ui-sm); }

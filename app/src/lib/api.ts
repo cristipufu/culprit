@@ -100,7 +100,7 @@ export interface Api {
   /** Re-scan and compare with the latest scan, finding by finding. */
   verifyFindings(name: string, ids: string[]): Promise<Verification>;
   /** Writes into the Downloads folder and returns the path; the browser demo downloads instead. */
-  savePlanFile(name: string, contents: string): Promise<string>;
+  saveFile(name: string, contents: string): Promise<string>;
   /** Copies a PNG of `area`, exactly as the window shows it, to the clipboard. Desktop app on macOS only. */
   screenshot(area: ScreenArea): Promise<void>;
   live(name: string): Promise<LiveState>;
@@ -205,7 +205,7 @@ async function desktopApi(): Promise<Api> {
     exportQueryPlan: (name, queryId, planId, format, options) => invoke("export_query_plan", { name, queryId, planId, format, options }),
     exportFinding: (name, findingId, format, options) => invoke("export_finding", { name, findingId, format, options }),
     verifyFindings: (name, ids) => invoke("verify_findings", { name, ids }),
-    savePlanFile: (name, contents) => invoke("save_plan_file", { name, contents }),
+    saveFile: (name, contents) => invoke("save_file", { name, contents }),
     screenshot: (area) => invoke("screenshot", { area }),
     live: (name) => invoke("live", { name }),
     waits: (name, windowMinutes) => invoke("waits", { name, windowMinutes }),

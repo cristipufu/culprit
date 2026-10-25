@@ -14,6 +14,7 @@ pub mod entra;
 mod event_context;
 mod execution;
 pub mod export;
+pub mod files;
 pub mod history;
 mod http;
 pub mod import;

@@ -269,6 +269,13 @@ JSON can switch between formatted and raw text without changing number literals 
 large values start with a bounded preview and expand on request, while copy retains the full value. The inspector
 keeps focus until Escape or Close returns it to the grid, and a new query result retires the old selection.
 
+**Export** saves every loaded row, across all grid pages, as CSV or JSON. The menu states the loaded row count and
+whether the result is partial. CSV uses UTF-8, quoted text and a tab prefix for formula-like text, including column
+headers. JSON keeps column names and row arrays separately so duplicate names and native value types survive,
+and includes the result's truncation flag. Desktop exports go to Downloads without replacing existing files;
+the browser downloads the same contents. Query values are exported as loaded, without the redaction used for
+shared analysis reports.
+
 ### Command palette (⌘K)
 
 Fuzzy search over views, findings, queries, tables, connections and actions (re-scan, switch connection, toggle theme, copy fix, check for updates, turn the daily update check on or off).

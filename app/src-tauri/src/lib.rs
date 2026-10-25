@@ -339,9 +339,9 @@ async fn verify_findings(ws: Ws<'_>, name: String, ids: Vec<String>) -> Result<V
 }
 
 #[tauri::command]
-async fn save_plan_file(name: String, contents: String) -> Result<String> {
+async fn save_file(name: String, contents: String) -> Result<String> {
     culprit_engine::run_blocking(move || {
-        culprit_engine::plans::save_to_downloads(&name, &contents).map(|path| path.display().to_string())
+        culprit_engine::files::save_to_downloads(&name, &contents).map(|path| path.display().to_string())
     })
     .await
 }
@@ -796,7 +796,7 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
             export_query_plan,
             export_finding,
             verify_findings,
-            save_plan_file,
+            save_file,
             screenshot,
             live,
             waits,

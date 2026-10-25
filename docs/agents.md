@@ -138,7 +138,7 @@ culprit plan export shop-staging:10:7 shop-staging:10:9 --html -o compare.html  
 culprit plan export shop-staging:10:7 --native -o plan.sqlplan               # the stored plan, opens in SSMS
 ```
 
-Literal values in query text, predicates and parameter values are replaced with `'?'` and `?` unless `--no-redact`; names and parameter markers (`@P1`, `$1`, `?`) stay, each engine's quoting is followed, and SQL Server's four-part names drop their database. Exports never include connection names, hosts or credentials. HTML pages are self-contained: inline CSS and SVG, no scripts, fonts or network requests.
+Literal values in query text, predicates and parameter values are replaced with `'?'` and `?` unless `--no-redact`; names and parameter markers (`@P1`, `$1`, `?`) stay, each engine's quoting is followed, and SQL Server's four-part names drop their database. Shared analysis exports never include connection names, hosts or credentials. HTML pages are self-contained: inline CSS and SVG, no scripts, fonts or network requests. The editor's CSV/JSON result exports are separate: they keep the loaded query values and do not apply analysis redaction.
 
 MCP: `verify` (`connection`, optional `finding_ids`) and `export_finding` (`connection`, `finding_id`, `redact` default true) do the same for agents. `plan diff` results also carry `scenarios`: the conditions that differ (estimator version, parameter values, row estimates with stale statistics from the latest scan when the plans came from a connection, indexes, type conversions, parallelism, memory), each with a plain-language title and detail.
 

@@ -563,10 +563,12 @@ export async function demoApi(): Promise<Api> {
       return desktopOnly("The demo has HTML pages for the top findings only.");
     },
     verifyFindings: () => desktopOnly("Verifying re-scans the database to see whether the finding is gone."),
-    savePlanFile: async (name, contents) => {
-      const url = URL.createObjectURL(new Blob([contents], { type: "text/plain" }));
+    saveFile: async (name, contents) => {
+      const url = URL.createObjectURL(new Blob([contents], { type: name.endsWith(".csv") ? "text/csv;charset=utf-8" : name.endsWith(".json") ? "application/json" : "text/plain" }));
       const link = Object.assign(document.createElement("a"), { href: url, download: name });
+      document.body.append(link);
       link.click();
+      link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       return name;
     },
