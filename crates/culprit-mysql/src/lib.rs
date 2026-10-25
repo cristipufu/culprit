@@ -12,6 +12,7 @@ pub mod plan_json;
 pub mod plan_maria;
 pub mod plan_tree;
 mod pressure;
+mod preview;
 mod probe;
 mod progress;
 mod recorded;
@@ -23,6 +24,7 @@ pub mod sources;
 mod vars;
 mod workload;
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -48,7 +50,7 @@ pub fn component_version() -> culprit_core::ComponentVersion {
 }
 
 pub struct MysqlProvider {
-    connector: Connector,
+    connector: Arc<Connector>,
     spec: ConnectionSpec,
 }
 
@@ -59,17 +61,12 @@ impl MysqlProvider {
         {
             return Err(Error::invalid(format!("This connection is for {engine}, not MySQL")));
         }
-        Ok(MysqlProvider { connector: Connector::new(spec)?, spec: spec.clone() })
+        Ok(MysqlProvider { connector: Arc::new(Connector::new(spec)?), spec: spec.clone() })
     }
 
-    async fn read_with_timeout(&self, sql: &str, limit: usize, preview: bool) -> Result<ResultSet> {
+    async fn read(&self, sql: &str, limit: usize) -> Result<ResultSet> {
         let statement = single_statement(sql)?;
         let mut conn = self.connector.connect(Scope::Database).await?;
-        if preview {
-            conn.query_drop(tagged(&self.connector.flavor().timeout_for(culprit_core::limits::PREVIEW_TIMEOUT)))
-                .await
-                .map_err(map_error)?;
-        }
         let started = Instant::now();
         conn.query_drop(tagged("START TRANSACTION READ ONLY")).await.map_err(map_error)?;
         let result = run_in_transaction(&mut conn, statement, limit).await;
@@ -402,11 +399,11 @@ impl Provider for MysqlProvider {
     }
 
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet> {
-        self.read_with_timeout(sql, limit, false).await
+        self.read(sql, limit).await
     }
 
     async fn preview(&self, sql: &str, limit: usize) -> Result<ResultSet> {
-        self.read_with_timeout(sql, limit, true).await
+        preview::read(self.connector.clone(), single_statement(sql)?.to_owned(), limit).await
     }
 
     async fn execute(&self, sql: &str, limit: usize) -> Result<ResultSet> {
@@ -452,7 +449,11 @@ fn reads_only(statement: &str) -> bool {
 }
 
 async fn run_in_transaction(conn: &mut Conn, statement: &str, limit: usize) -> Result<ResultSet> {
-    let mut result = conn.query_iter(tagged(statement)).await.map_err(map_error)?;
+    read_result(conn, &tagged(statement), limit).await
+}
+
+async fn read_result(conn: &mut Conn, tagged_statement: &str, limit: usize) -> Result<ResultSet> {
+    let mut result = conn.query_iter(tagged_statement).await.map_err(map_error)?;
     let columns_meta = result.columns();
     let columns: Vec<String> = columns_meta
         .as_deref()

@@ -70,7 +70,11 @@ Table previews use `sql::table_preview_sql` to keep a filter inside its WHERE ex
 quoting mode, quote identifiers and bound server rows. `Execution::preview_table` holds a workspace-wide permit,
 uses the same read-only checks as the editor, and dispatches `Provider::preview`. Built-in preview execution has a
 five-second budget: PostgreSQL/YSQL statement timeouts, MySQL/MariaDB session timeouts, SQLite's VM progress guard,
-and a SQL Server worker that retains its client to send Attention on timeout or caller cancellation. Limits protect
+and a SQL Server worker that retains its client to send Attention on timeout or caller cancellation. MySQL/MariaDB
+also retain a control session to send KILL QUERY for the owned request; a unique leading comment guards against
+server-local IDs behind proxies. Unsupported timeout settings remain optional, and worker slots include cancellation
+and bounded disconnects. An unconfirmed cancellation is reported explicitly. See [MySQL KILL](https://dev.mysql.com/doc/refman/8.0/en/kill.html).
+Limits protect
 returned data and query lifetime; a server-side sort or selective-looking predicate can still need a scan.
 
 The editor keeps scratch SQL in device storage, scoped by the saved alias and logical database endpoint.
