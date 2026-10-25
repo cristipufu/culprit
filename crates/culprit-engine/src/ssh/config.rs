@@ -90,10 +90,6 @@ pub(crate) fn normalize(mut ssh: SshConfig, engine: Engine) -> Result<SshConfig>
         .identity_file
         .filter(|key| !key.trim().is_empty())
         .map(|key| {
-            if key.contains('%') {
-                return Err(Error::invalid("The SSH identity file path cannot contain '%' characters")
-                    .with_hint("Choose a file without OpenSSH expansion tokens, or configure IdentityFile in your SSH configuration"));
-            }
             if key.len() > 4096 || key.chars().any(char::is_control) {
                 return Err(Error::invalid("The SSH identity file path contains unsupported characters"));
             }
@@ -103,9 +99,16 @@ pub(crate) fn normalize(mut ssh: SshConfig, engine: Engine) -> Result<SshConfig>
                     .join(rest),
                 None => std::path::PathBuf::from(key.trim()),
             };
-            std::path::absolute(path)
-                .map(|p| p.to_string_lossy().into_owned())
-                .map_err(|_| Error::invalid("Cannot resolve the SSH identity file path"))
+            let path = std::path::absolute(path)
+                .map_err(|_| Error::invalid("Cannot resolve the SSH identity file path"))?
+                .to_string_lossy()
+                .into_owned();
+            // Home/cwd expansion can introduce tokens even when the entered path contains none.
+            if path.contains('%') {
+                return Err(Error::invalid("The SSH identity file path cannot contain '%' characters")
+                    .with_hint("Choose a file without OpenSSH expansion tokens, or configure IdentityFile in your SSH configuration"));
+            }
+            Ok(path)
         })
         .transpose()?;
     Ok(ssh)

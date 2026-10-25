@@ -58,6 +58,10 @@ fn child_fixture() {
     use std::io::{Read, Write};
     let Ok(mode) = std::env::var("CULPRIT_SSH_TEST_CHILD") else { return };
     match mode.as_str() {
+        "identity-path" => {
+            let config = SshConfig { identity_file: Some("id_ed25519".into()), ..ssh("bastion") };
+            assert!(normalize(config, Engine::Postgres).unwrap_err().message.contains("'%'"));
+        }
         "large" => {
             let _ = std::io::stderr().write_all(&vec![b'x'; MAX_STDERR + 1]);
         }
@@ -157,6 +161,20 @@ fn ipv6_destinations_use_openssh_host_syntax_and_database_hosts_are_normalized()
     assert_eq!(spec.host, "::1");
     let ssh = SshConfig { identity_file: Some("~/keys/%h.key".into()), ..ssh };
     assert!(normalize(ssh, Engine::Postgres).unwrap_err().message.contains("'%'"));
+}
+
+#[test]
+fn relative_identity_paths_validate_expansion_without_changing_the_tests_working_directory() {
+    let temp = Temp::new();
+    let cwd = temp.0.join("literal%h");
+    std::fs::create_dir(&cwd).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "ssh::tests::child_fixture", "--nocapture"])
+        .env("CULPRIT_SSH_TEST_CHILD", "identity-path")
+        .current_dir(cwd)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
 #[test]
