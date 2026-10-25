@@ -41,8 +41,16 @@ async fn connections(ws: Ws<'_>) -> Result<Vec<ConnectionInfo>> {
 }
 
 #[tauri::command]
-fn parse_connection(input: String, engine: Option<culprit_core::Engine>) -> Result<ParsedConnection> {
-    culprit_engine::parse_connection(&input, engine)
+fn parse_connection(
+    input: String,
+    engine: Option<culprit_core::Engine>,
+    ssh: Option<bool>,
+) -> Result<ParsedConnection> {
+    if ssh.unwrap_or(false) {
+        culprit_engine::parse_connection_with_ssh(&input, engine)
+    } else {
+        culprit_engine::parse_connection(&input, engine)
+    }
 }
 
 #[tauri::command]

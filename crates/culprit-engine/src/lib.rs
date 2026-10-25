@@ -183,6 +183,7 @@ pub struct ParsedConnection {
     pub has_password: bool,
     pub display: String,
     pub suggested_name: String,
+    pub environment: Environment,
 }
 
 /// Builds a provider for a connection; lets an embedding app supply its own engine implementation.
@@ -736,7 +737,12 @@ pub fn read_only_batch(engine: Engine, statement: &str) -> String {
 
 /// What `input` connects to, read as `engine` wherever the text leaves the engine open (see `connstr::parse_as`).
 pub fn parse_connection(input: &str, engine: Option<Engine>) -> Result<ParsedConnection> {
-    connection::parse_connection(input, engine)
+    connection::parse_connection(input, engine, false)
+}
+
+/// Read defaults for a database reached through SSH. A loopback hostname refers to the remote machine.
+pub fn parse_connection_with_ssh(input: &str, engine: Option<Engine>) -> Result<ParsedConnection> {
+    connection::parse_connection(input, engine, true)
 }
 
 #[cfg(test)]

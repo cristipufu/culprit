@@ -587,8 +587,20 @@ fn merge(new: &NewConnection) -> Result<ConnectionSpec> {
 }
 
 /// What `input` connects to, read as `engine` wherever the text leaves the engine open (see `connstr::parse_as`).
-pub(crate) fn parse_connection(input: &str, engine: Option<Engine>) -> Result<ParsedConnection> {
+pub(crate) fn parse_connection(input: &str, engine: Option<Engine>, via_ssh: bool) -> Result<ParsedConnection> {
     let spec = connstr::parse_as(input, engine)?;
+    let hint = discover::infer_environment(&format!("{} {}", spec.host, spec.database.as_deref().unwrap_or_default()));
+    let environment = match hint {
+        Environment::Production | Environment::Staging => hint,
+        _ if spec.engine.is_some_and(|engine| !engine.has_server())
+            || (!via_ssh && culprit_core::is_local_host(&spec.host)) =>
+        {
+            Environment::Local
+        }
+        // An unknown remote database should retain production confirmations until the person chooses otherwise.
+        _ if via_ssh => Environment::Production,
+        _ => Environment::Development,
+    };
     Ok(ParsedConnection {
         engine: spec.engine,
         host: spec.host.clone(),
@@ -598,19 +610,24 @@ pub(crate) fn parse_connection(input: &str, engine: Option<Engine>) -> Result<Pa
         auth: spec.auth,
         has_password: spec.password.is_some(),
         display: connstr::describe(&spec),
-        suggested_name: suggest_name(&spec),
+        suggested_name: suggest_name(&spec, via_ssh),
+        environment,
     })
 }
 
-fn suggest_name(spec: &ConnectionSpec) -> String {
+fn suggest_name(spec: &ConnectionSpec, via_ssh: bool) -> String {
     if spec.engine == Some(Engine::Sqlite) {
         return store::safe_file_name(
             &file_connection_name(spec.database.as_deref().unwrap_or_default()).to_ascii_lowercase(),
         );
     }
+    if culprit_core::is_local_host(&spec.host) {
+        let database = spec.database.as_deref().unwrap_or("database");
+        let base = if via_ssh { database.to_string() } else { format!("{database}-local") };
+        return store::safe_file_name(&base.to_ascii_lowercase());
+    }
     let host = spec.host.split('.').next().unwrap_or(&spec.host);
     let base = match (&spec.database, host) {
-        (Some(db), "localhost" | "127.0.0.1" | "::1") => format!("{db}-local"),
         (Some(db), host) if !host.to_ascii_lowercase().contains(&db.to_ascii_lowercase()) => {
             format!("{host}-{db}")
         }
@@ -659,6 +676,23 @@ fn file_connection_name(path: &str) -> String {
 mod tests {
     use super::*;
     use crate::Workspace;
+
+    #[test]
+    fn ssh_loopback_defaults_are_remote_and_never_inferred_from_passwords() {
+        for host in ["localhost", "127.0.0.1", "[::1]"] {
+            let input = format!("postgres://reader@{host}/shop");
+            let direct = parse_connection(&input, None, false).unwrap();
+            assert_eq!(direct.environment, Environment::Local);
+            assert_eq!(direct.suggested_name, "shop-local");
+            let tunneled = parse_connection(&input, None, true).unwrap();
+            assert_eq!(tunneled.environment, Environment::Production);
+            assert_eq!(tunneled.suggested_name, "shop");
+            let staging = parse_connection(&format!("{input}_staging"), None, true).unwrap();
+            assert_eq!(staging.environment, Environment::Staging);
+        }
+        let parsed = parse_connection("postgres://reader:production@db.example/shop", None, false).unwrap();
+        assert_eq!(parsed.environment, Environment::Development);
+    }
 
     fn rds_row(alias: &str, engine: Engine, auth: AuthKind) -> DiscoveredDatabase {
         DiscoveredDatabase {
@@ -715,7 +749,7 @@ mod tests {
 
     #[test]
     fn a_sqlite_file_is_named_after_itself_or_its_project() {
-        let name = |path: &str| parse_connection(path, Some(Engine::Sqlite)).unwrap().suggested_name;
+        let name = |path: &str| parse_connection(path, Some(Engine::Sqlite), false).unwrap().suggested_name;
         assert_eq!(name("/Users/me/code/shop/db/production.sqlite3"), "shop-production");
         assert_eq!(name("/Users/me/Downloads/Chinook.db"), "chinook");
         assert_eq!(name("~/code/blog/instance/app.db"), "blog-app");

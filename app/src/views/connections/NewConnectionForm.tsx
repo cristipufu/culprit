@@ -19,14 +19,6 @@ type TestState = { status: "idle" } | { status: "busy" } | { status: "ok"; label
 /** The engine picked last time, picked again on the next new connection. */
 const ENGINE_KEY = "culprit.new.engine";
 
-/** A guess from the text itself: a name that says production or staging, a local host, a file on this computer. */
-function guessEnvironment(text: string, engine: Engine): Environment {
-  if (/prod/i.test(text)) return "production";
-  if (/alpha|staging|stg/i.test(text)) return "staging";
-  if (/localhost|127\.0\.0\.1/i.test(text) || connectFacts(engine).file) return "local";
-  return "development";
-}
-
 /**
  * The engine first, then what it needs: a connection string for a server, the file for SQLite. The pick settles what
  * the text leaves open (a bare host, an ADO.NET string); a text that names another engine (a postgres:// URL, a .db
@@ -41,6 +33,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
   const [input, setInput] = useState("");
   const [parsed, setParsed] = useState<ParsedConnection | null>(null);
   const parsedInput = useRef("");
+  const parsedViaSsh = useRef(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
@@ -55,6 +48,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
   const focusInput = useRef(engine !== null);
   const ids = useId();
   const facts = engine ? connectFacts(engine) : null;
+  const viaSsh = ssh !== null && !!facts && !facts.file;
   const action = useRef(new LatestRequest());
 
   useEffect(() => {
@@ -72,7 +66,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
     let live = true;
     const handle = setTimeout(async () => {
       try {
-        const p = await (await api()).parseConnection(input, engine);
+        const p = await (await api()).parseConnection(input, engine, viaSsh);
         if (!live) return;
         // The text names another engine than the one picked (or none was): it's that engine's, read again as it.
         if (p.engine && p.engine !== engine) {
@@ -82,10 +76,11 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
           return;
         }
         parsedInput.current = input;
+        parsedViaSsh.current = viaSsh;
         setParsed(p);
         setParseError(null);
         if (!nameTouched) setName(p.suggested_name);
-        if (!environmentTouched && p.engine) setEnvironment(guessEnvironment(input, p.engine));
+        if (!environmentTouched) setEnvironment(p.environment);
       } catch (e) {
         if (!live) return;
         setParsed(null);
@@ -96,7 +91,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
       live = false;
       clearTimeout(handle);
     };
-  }, [input, engine, nameTouched, environmentTouched]);
+  }, [input, engine, viaSsh, nameTouched, environmentTouched]);
 
   // Restore the input on opening or after paste detection. Manual selection keeps focus in the picker for Tab.
   useEffect(() => {
@@ -136,6 +131,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
 
   // What was read is the picked engine's: the details and the buttons follow.
   const ready = !!parsed && !!engine && parsed.engine === engine && parsedInput.current === input;
+  const defaultsCurrent = ready && parsedViaSsh.current === viaSsh;
   const needsUser = ready && parsed.auth === "password" && !parsed.user;
   const needsPassword = ready && parsed.auth === "password" && !parsed.has_password;
 
@@ -153,6 +149,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
   });
 
   const onTest = async () => {
+    if (!defaultsCurrent) return;
     if (!form.current?.reportValidity()) return;
     const current = action.current.start();
     setTest({ status: "busy" });
@@ -165,6 +162,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
   };
 
   const onSave = async () => {
+    if (!defaultsCurrent) return;
     if (!form.current?.reportValidity()) return;
     const current = action.current.start();
     setTest({ status: "busy" });
@@ -193,7 +191,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
       onPaste={onPaste}
       onSubmit={(e) => {
         e.preventDefault();
-        if (ready && name && test.status !== "busy") onSave();
+        if (defaultsCurrent && name && test.status !== "busy") onSave();
       }}
       onKeyDown={(e) => {
         if (e.key === "Escape" && canCancel) onDone();
@@ -285,10 +283,10 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
           }} /></>}
           <span />
           <div className="new-conn-actions">
-            <button type="submit" className="btn primary" disabled={!name || test.status === "busy"}>
+            <button type="submit" className="btn primary" disabled={!name || !defaultsCurrent || test.status === "busy"}>
               Connect and scan
             </button>
-            <button type="button" className="btn" disabled={test.status === "busy"} onClick={onTest}>
+            <button type="button" className="btn" disabled={!defaultsCurrent || test.status === "busy"} onClick={onTest}>
               Test
             </button>
             {canCancel && (

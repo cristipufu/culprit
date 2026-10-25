@@ -58,7 +58,7 @@ export interface Api {
   readonly kind: "desktop" | "demo";
   connections(): Promise<ConnectionInfo[]>;
   /** What `input` connects to, read as `engine` wherever the text leaves the engine open. */
-  parseConnection(input: string, engine: Engine | null): Promise<ParsedConnection>;
+  parseConnection(input: string, engine: Engine | null, ssh?: boolean): Promise<ParsedConnection>;
   testConnection(input: NewConnection): Promise<ServerInfo>;
   addConnection(input: NewConnection): Promise<ConnectionInfo>;
   removeConnection(name: string): Promise<void>;
@@ -172,7 +172,7 @@ async function desktopApi(): Promise<Api> {
   return {
     kind: "desktop",
     connections: () => invoke("connections"),
-    parseConnection: (input, engine) => invoke("parse_connection", { input, engine }),
+    parseConnection: (input, engine, ssh = false) => invoke("parse_connection", { input, engine, ssh }),
     testConnection: (input) => invoke("test_connection", { input }),
     addConnection: (input) => invoke("add_connection", { input }),
     removeConnection: (name) => invoke("remove_connection", { name }),

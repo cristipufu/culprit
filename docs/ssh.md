@@ -12,6 +12,8 @@ In **New connection**, keep the real database address in the connection string a
 
 For an existing connection, choose **SSH** on its card. This also works for databases saved through Azure or AWS discovery. **Test connection** uses the draft route with the saved database credentials; **Save settings** changes only the route. Disable the checkbox and save to return to a direct connection.
 
+A loopback database address through SSH belongs to the remote machine. Culprit does not label it local; an unclassified new SSH connection defaults to production confirmations. Choose its environment explicitly when it is staging or development.
+
 The CLI uses the same settings:
 
 ```sh
