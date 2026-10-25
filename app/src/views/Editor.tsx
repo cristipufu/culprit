@@ -698,12 +698,12 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
   };
 
   const activate = useCallback(
-    (id: string) => {
+    (id: string, added?: Tab) => {
       const editor = view.current;
       const current = tabsRef.current.active;
-      if (!tabsRef.current.tabs.some((t) => t.id === id)) return;
+      if (!added && !tabsRef.current.tabs.some((t) => t.id === id)) return;
       if (editor && tabsRef.current.tabs.some((t) => t.id === current)) states.current.set(current, editor.state);
-      updateTabs((t) => ({ ...t, active: id }));
+      updateTabs((t) => ({ tabs: added ? [...t.tabs, added] : t.tabs, active: id }));
       const tab = tabsRef.current.tabs.find((t) => t.id === id);
       if (editor && tab) {
         editor.setState(states.current.get(id) ?? stateFor(tab, actionKeys.current));
@@ -721,11 +721,10 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
       }
       const tab = newEditorTab(sql, title ?? titleFor(sql, tabsRef.current.tabs.length + 1), savedName);
       const { id } = tab;
-      updateTabs((t) => ({ ...t, tabs: [...t.tabs, tab] }));
-      activate(id);
+      activate(id, tab);
       return id;
     },
-    [activate, updateTabs],
+    [activate],
   );
 
   const closeTab = useCallback(
