@@ -27,6 +27,8 @@ culprit conn set shop --no-ssh
 
 An SSH destination can include its port (`reader@bastion:2222`); use brackets for an IPv6 address with a port (`reader@[2001:db8::1]:2222`). The separate port field or `--ssh-port` must agree with an embedded port.
 
+Identity-file paths are literal paths. Paths containing `%` expansion tokens must be configured through OpenSSH's `IdentityFile` setting instead.
+
 ## Authentication and configuration
 
 Culprit delegates SSH authentication to [OpenSSH](https://man.openbsd.org/ssh_config). Your host aliases, `ProxyJump`, `ProxyCommand`, `IdentityAgent`, certificates and hardware-backed keys remain available through its configuration. Required proxy tools must be installed, configured and able to run without interactive terminal input.

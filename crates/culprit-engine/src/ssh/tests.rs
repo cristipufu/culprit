@@ -105,7 +105,9 @@ fn destination_parsing_preserves_aliases_users_ipv6_and_explicit_ports() {
         ("prod-bastion", "prod-bastion", None),
         ("ec2-user@bastion.example:2222", "ec2-user@bastion.example", Some(2222)),
         ("ssh://reader@bastion:22", "reader@bastion", Some(22)),
-        ("reader@[::1]:2222", "reader@[::1]", Some(2222)),
+        ("reader@[::1]:2222", "reader@::1", Some(2222)),
+        ("[::1]", "::1", None),
+        ("reader@[2001:db8::1]:2222", "reader@2001:db8::1", Some(2222)),
         ("user@example.com@bastion", "user@example.com@bastion", None),
         ("::1", "::1", None),
     ] {
@@ -133,13 +135,29 @@ fn commands_and_proxy_expansion_metacharacters_are_rejected_before_persistence()
         "host:65536",
         "u`bad`@host",
         "host%h",
+        "[bastion.example.com]",
+        "[127.0.0.1]",
+        "bástion.example.com",
     ] {
         assert!(normalize(ssh(input), Engine::Postgres).is_err(), "accepted {input:?}");
     }
-    for host in ["host;bad", "host bad", "-host", "host\n", "%h"] {
+    for host in ["host;bad", "host bad", "-host", "host\n", "%h", "[bastion]", "[127.0.0.1]", "bástion"] {
         assert!(Target::new(host, 5432).is_err());
     }
     assert_eq!(Target::new("::1", 5432).unwrap().forwarding(), "[::1]:5432");
+}
+
+#[test]
+fn ipv6_destinations_use_openssh_host_syntax_and_database_hosts_are_normalized() {
+    let ssh = normalize(ssh("reader@[2001:db8::1]:2222"), Engine::Postgres).unwrap();
+    let command = command::configure(Command::new("ssh"), &ssh, &Target::new("[::1]", 5432).unwrap());
+    let args: Vec<_> = command.as_std().get_args().map(|arg| arg.to_str().unwrap()).collect();
+    assert!(args.ends_with(&["-W", "[::1]:5432", "--", "reader@2001:db8::1"]));
+    let mut spec = ConnectionSpec { host: " [::1] ".into(), ..spec() };
+    validate_spec(&mut spec).unwrap();
+    assert_eq!(spec.host, "::1");
+    let ssh = SshConfig { identity_file: Some("~/keys/%h.key".into()), ..ssh };
+    assert!(normalize(ssh, Engine::Postgres).unwrap_err().message.contains("'%'"));
 }
 
 #[test]

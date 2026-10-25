@@ -6,23 +6,27 @@ pub(super) struct Target {
     pub port: u16,
 }
 
-fn host_name(host: &str) -> bool {
-    let raw = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
-    raw.parse::<std::net::IpAddr>().is_ok()
-        || (!raw.is_empty()
-            && raw.len() <= 253
-            && !raw.starts_with('-')
-            && raw.chars().all(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_')))
+fn host_name(host: &str) -> Option<&str> {
+    if let Some(raw) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        return raw.parse::<std::net::Ipv6Addr>().is_ok().then_some(raw);
+    }
+    (host.parse::<std::net::IpAddr>().is_ok()
+        || (!host.is_empty()
+            && host.len() <= 253
+            && !host.starts_with('-')
+            && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))))
+    .then_some(host)
 }
 
 impl Target {
     pub fn new(host: &str, port: u16) -> Result<Self> {
-        if port == 0 || !host_name(host) {
+        let host = host_name(host.trim()).filter(|_| port != 0 && !host.chars().any(char::is_control));
+        let Some(host) = host else {
             return Err(Error::invalid(
                 "SSH forwarding needs a database hostname or IP address and a nonzero TCP port",
             ));
-        }
-        Ok(Self { host: host.trim_start_matches('[').trim_end_matches(']').into(), port })
+        };
+        Ok(Self { host: host.into(), port })
     }
 
     pub fn forwarding(&self) -> String {
@@ -55,15 +59,15 @@ pub(crate) fn normalize(mut ssh: SshConfig, engine: Engine) -> Result<SshConfig>
         let rest = &host[end + 1..];
         (&host[..=end], (!rest.is_empty()).then_some(rest))
     } else if host.matches(':').count() == 1 {
-        let (host, port) = host.rsplit_once(':').unwrap();
-        (host, Some(&input[input.len() - port.len() - 1..]))
+        let separator = host.find(':').unwrap();
+        (&host[..separator], Some(&host[separator..]))
     } else {
         (host, None)
     };
-    if !host_name(host) {
-        return Err(Error::invalid("Enter an SSH host alias or [user@]hostname")
-            .with_hint("SSH options, commands and passwords do not belong in the jump host field"));
-    }
+    let host = host_name(host).ok_or_else(|| {
+        Error::invalid("Enter an SSH host alias or [user@]hostname")
+            .with_hint("Brackets require an IPv6 address. SSH options, commands and passwords do not belong here.")
+    })?;
     if let Some(port) = embedded_port {
         let port: u16 = port
             .strip_prefix(':')
@@ -86,6 +90,10 @@ pub(crate) fn normalize(mut ssh: SshConfig, engine: Engine) -> Result<SshConfig>
         .identity_file
         .filter(|key| !key.trim().is_empty())
         .map(|key| {
+            if key.contains('%') {
+                return Err(Error::invalid("The SSH identity file path cannot contain '%' characters")
+                    .with_hint("Choose a file without OpenSSH expansion tokens, or configure IdentityFile in your SSH configuration"));
+            }
             if key.len() > 4096 || key.chars().any(char::is_control) {
                 return Err(Error::invalid("The SSH identity file path contains unsupported characters"));
             }

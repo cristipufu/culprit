@@ -42,7 +42,7 @@ pub(crate) fn validate_spec(spec: &mut ConnectionSpec) -> Result<()> {
     if let Some(ssh) = spec.ssh.take() {
         let engine = spec.engine.ok_or_else(|| Error::invalid("Choose a database engine before configuring SSH"))?;
         let ssh = normalize(ssh, engine)?;
-        Target::new(spec.host.trim(), spec.port.unwrap_or(1))?;
+        spec.host = Target::new(&spec.host, spec.port.unwrap_or(1))?.host;
         spec.ssh = Some(ssh);
     }
     Ok(())
