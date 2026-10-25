@@ -2,7 +2,7 @@ import { Cable, Check, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ConnectionInfo } from "../../gen/ConnectionInfo";
-import { sshConfig, sshDraft, type SshDraft } from "../../lib/ssh";
+import { sameSsh, sshConfig, sshDraft, type SshDraft } from "../../lib/ssh";
 import { api, errorMessage, type ApiError } from "../../lib/api";
 import { useFocusTrap } from "../../lib/focus";
 import { LatestRequest } from "../../lib/requests";
@@ -12,7 +12,12 @@ import { SshFields } from "./SshFields";
 export function SshSetting({ connection }: { connection: ConnectionInfo }) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
-  const close = () => { setOpen(false); trigger.current?.focus(); };
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (open) wasOpen.current = true;
+    else if (wasOpen.current) { wasOpen.current = false; trigger.current?.focus(); }
+  }, [open]);
+  const close = () => setOpen(false);
   return <>
     <button ref={trigger} type="button" className={`btn ghost conn-ssh ${connection.ssh ? "on" : ""}`} onClick={() => setOpen(true)}
       aria-label={`SSH settings for ${connection.name}`} title={connection.ssh ? `SSH via ${connection.ssh.destination}` : "Configure an SSH jump host"}>
@@ -44,12 +49,15 @@ function SshDialog({ connection, onClose }: { connection: ConnectionInfo; onClos
   };
   const save = async () => {
     if (!root.current?.reportValidity()) return;
-    const current = action.current.start(); setStatus({ kind: "saving" });
+    const current = action.current.start();
     try {
-      const saved = await (await api()).setSsh(connection.name, sshConfig(draft));
+      const candidate = sshConfig(draft);
+      if (sameSsh(candidate, connection.ssh)) { onClose(); return; }
+      setStatus({ kind: "saving" });
+      const saved = await (await api()).setSsh(connection.name, candidate);
       if (!current()) return;
       setState({ connections: getState().connections.map((c) => c.name === connection.name ? { ...c, ssh: saved.ssh } : c) });
-      if (current()) { toast(draft ? `SSH settings saved for ${connection.name}` : `SSH disabled for ${connection.name}`); onClose(); }
+      if (current()) { toast(saved.ssh ? `SSH settings saved for ${connection.name}` : `SSH disabled for ${connection.name}`); onClose(); }
     } catch (error) { if (current()) setStatus({ kind: "error", error: errorMessage(error) }); }
   };
   return createPortal(<div className="ssh-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>

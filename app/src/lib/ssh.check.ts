@@ -1,8 +1,12 @@
-import { sshConfig, sshDraft } from "./ssh";
+import { sameSsh, sshConfig, sshDraft } from "./ssh";
 
 function check(ok: boolean, message: string) { if (!ok) throw new Error(message); }
 
 check(sshConfig(null) === null && sshDraft(undefined) === null, "Disabled SSH must stay absent");
+check(sameSsh(null, undefined), "Unchanged disabled settings must not become a saved change");
+const saved = { destination: "bastion", port: null, identity_file: null };
+check(sameSsh(saved, sshConfig(sshDraft(saved))), "An unchanged saved route must not trigger a write or toast");
+check(!sameSsh(saved, null) && !sameSsh(saved, { ...saved, port: 2222 }), "Route removal and port edits are changes");
 for (const port of ["0", "65536", "NaN", "Infinity", "-1", "1.5", "1e3", "22x", "999999999999999999999"]) {
   let rejected = false;
   try { sshConfig({ destination: "bastion", port, identityFile: "" }); } catch { rejected = true; }

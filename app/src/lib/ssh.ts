@@ -7,6 +7,11 @@ export function sshDraft(config: SshConfig | null | undefined): SshDraft | null 
   return config ? { destination: config.destination, port: config.port?.toString() ?? "", identityFile: config.identity_file ?? "" } : null;
 }
 
+export function sameSsh(a: SshConfig | null | undefined, b: SshConfig | null | undefined): boolean {
+  return (!a && !b) || (!!a && !!b && a.destination === b.destination
+    && (a.port ?? null) === (b.port ?? null) && (a.identity_file ?? null) === (b.identity_file ?? null));
+}
+
 export function sshConfig(draft: SshDraft | null): SshConfig | null {
   if (!draft) return null;
   if (!draft.destination.trim()) throw new Error("Enter an SSH host or configuration alias");

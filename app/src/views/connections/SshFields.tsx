@@ -12,6 +12,7 @@ export function SshFields({ value, onChange, disabled = false }: {
   const id = useId();
   const latest = useRef(value); latest.current = value;
   const request = useRef(new LatestRequest());
+  const options = useRef<HTMLDetailsElement>(null);
   const [advanced, setAdvanced] = useState(!!value?.port || !!value?.identityFile);
   const [picking, setPicking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -39,12 +40,17 @@ export function SshFields({ value, onChange, disabled = false }: {
           placeholder="reader@bastion or prod-bastion" onChange={(event) => onChange({ ...value, destination: event.target.value })} />
         <p className="ssh-help">Uses your OpenSSH configuration and agent. Your database address and sign-in method stay the same.</p>
       </div>
-      <details className="ssh-options" open={advanced} onToggle={(event) => setAdvanced(event.currentTarget.open)}>
+      <details ref={options} className="ssh-options" open={advanced} onToggle={(event) => setAdvanced(event.currentTarget.open)}>
         <summary>Identity file &amp; port</summary>
         <div className="ssh-options-grid">
           <div className="ssh-field">
             <label htmlFor={`${id}-port`}>SSH port</label>
-            <input id={`${id}-port`} type="text" inputMode="numeric" pattern="[0-9]+" value={value.port}
+            <input id={`${id}-port`} type="text" inputMode="numeric" pattern={"\\s*(?:[0-9]+\\s*)?"} value={value.port}
+              onInvalid={() => {
+                // Native validation focuses the field immediately after this event, before React's next render.
+                if (options.current) options.current.open = true;
+                setAdvanced(true);
+              }}
               placeholder="From SSH config" onChange={(event) => onChange({ ...value, port: event.target.value })} />
           </div>
           <div className="ssh-field">
