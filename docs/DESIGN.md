@@ -249,6 +249,15 @@ A health view, not a browser: tables by size with health badges (no clustered in
 
 The table detail's Columns and Indexes grids keep stable column widths and one scroll area inside the tab, with sticky headers. Long identifiers truncate with their full value on hover; badges and counts stay on one line. A narrow pane scrolls the grid horizontally rather than squeezing text into vertical columns. Expanding an index keeps the columns in place and shows a bounded list of captured queries, each with its SQL, operations and a link to Queries. The header stays bounded in short windows, with expanded findings reachable by scrolling. Relations keep their source, target and constraint metadata aligned. Data previews scroll inside their result grid.
 
+The **Data** tab reads up to 100 rows only when requested. Its quick filter accepts a WHERE expression; Enter or
+**Apply filter** sends it through the backend's read-only policy. Column headers cycle server ordering through
+ascending, descending and unsorted. Sorting uses the applied filter, while unsubmitted edits remain marked as a
+draft. A failed read keeps the last successful preview visible. Only one read runs at a time; leaving the table or
+connection retires its response. **Open in editor** carries the current expression and ordering into a query tab.
+The workspace also permits only one table preview across views and windows. Built-in providers give preview queries
+a five-second execution budget, enforce server limits where available and cancel SQL Server requests explicitly.
+The row limit bounds returned data; an unindexed filter or sort may still require a scan, so it is also time bounded.
+
 SQLite virtual tables stay visible and are labelled as virtual; their module-owned shadow tables are left out of table tuning and editor completion. Unknown virtual-table rows and sizes stay unknown. DDL preserves the original module and options, and the Indexes tab explains that the module manages its indexes. An empty index list alone never establishes that every lookup scans the table.
 
 **Compare with…** shows environment drift against another connection of the same engine, from both latest scans: indexes missing on one side (with the `CREATE INDEX` to add it, labelled with the connection it is for; *Open in editor* only when that is the current connection), the same index under different names, tables and columns present on one side or typed differently, and settings and versions that differ. Indexes match by table, key columns, included columns, uniqueness and filter, never by name.

@@ -52,6 +52,39 @@ fn add_file(ws: &Workspace, name: &str, path: &Path) -> culprit_core::Result<cul
 }
 
 #[tokio::test]
+async fn table_previews_filter_and_order_a_million_rows_without_loading_the_table() {
+    let dir = app_folder("million-preview");
+    {
+        let db = rusqlite::Connection::open(dir.join("app.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE large (id INTEGER PRIMARY KEY, bucket INTEGER, note TEXT);
+             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 1000000)
+             INSERT INTO large SELECT i, i % 10, 'note-' || i FROM n;
+             CREATE INDEX large_bucket ON large(bucket, id);",
+        )
+        .unwrap();
+    }
+    let ws = Workspace::open_in(dir.join("home"));
+    add_file(&ws, "large", &dir.join("app.db")).unwrap();
+    let options = culprit_core::TablePreviewOptions {
+        schema: "main".into(),
+        table: "large".into(),
+        filter: Some("bucket = 7".into()),
+        order: Some(culprit_core::ColumnSort { column: "id".into(), direction: culprit_core::SortDirection::Desc }),
+        limit: 100,
+    };
+    for _ in 0..3 {
+        let preview = ws.preview_table("large", &options).await.unwrap();
+        assert_eq!(preview.result.rows.len(), 100);
+        assert_eq!(preview.result.rows[0][0], serde_json::json!(999_997));
+        assert!(serde_json::to_vec(&preview.result).unwrap().len() < 64 * 1024);
+        assert!(preview.sql.ends_with("LIMIT 100"));
+        assert!(!preview.sql.contains("OFFSET") && !preview.sql.contains("COUNT("));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn a_virtual_tables_logged_statements_belong_to_the_database() {
     let dir = app_folder("virtual-log");
     let db = rusqlite::Connection::open(dir.join("app.db")).unwrap();

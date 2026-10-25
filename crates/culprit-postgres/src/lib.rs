@@ -63,6 +63,19 @@ impl PostgresProvider {
         Ok(PostgresProvider { connector: Connector::new(spec)?, spec: spec.clone() })
     }
 
+    async fn read_with_limits(&self, sql: &str, limit: usize, limits: connect::SessionLimits) -> Result<ResultSet> {
+        let statement = single_statement(sql)?;
+        let client = self.connector.connect(limits).await?;
+        let started = Instant::now();
+        client.batch_execute(&tagged("BEGIN READ ONLY")).await.map_err(map_error)?;
+        let result = run_in_transaction(&client, statement, limit, true).await;
+        let rollback = client.batch_execute(&tagged("ROLLBACK")).await;
+        let mut result = result?;
+        rollback.map_err(map_error)?;
+        result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        Ok(result)
+    }
+
     async fn hypothetical_wire(&self, sql: &str, indexes: &[String], fill_table_sizes: bool) -> Result<Plan> {
         let statement = single_statement(sql)?;
         let client = self.connector.connect(INTERACTIVE).await?;
@@ -407,16 +420,16 @@ impl Provider for PostgresProvider {
     }
 
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet> {
-        let statement = single_statement(sql)?;
-        let client = self.connector.connect(EXECUTION).await?;
-        let started = Instant::now();
-        client.batch_execute(&tagged("BEGIN READ ONLY")).await.map_err(map_error)?;
-        let result = run_in_transaction(&client, statement, limit, true).await;
-        let rollback = client.batch_execute(&tagged("ROLLBACK")).await;
-        let mut result = result?;
-        rollback.map_err(map_error)?;
-        result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-        Ok(result)
+        self.read_with_limits(sql, limit, EXECUTION).await
+    }
+
+    async fn preview(&self, sql: &str, limit: usize) -> Result<ResultSet> {
+        self.read_with_limits(
+            sql,
+            limit,
+            connect::SessionLimits { statement_timeout: culprit_core::limits::PREVIEW_TIMEOUT, catalog_path: false },
+        )
+        .await
     }
 
     async fn execute(&self, sql: &str, limit: usize) -> Result<ResultSet> {

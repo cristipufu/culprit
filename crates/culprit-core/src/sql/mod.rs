@@ -8,6 +8,7 @@ use ts_rs::TS;
 
 mod inspect;
 mod lexer;
+mod preview;
 mod safety;
 #[cfg(test)]
 mod tests;
@@ -21,6 +22,7 @@ pub(crate) use lexer::{
     balanced_parens, clean_identifier, identifier_parts, quoted_end, skip_quoted_bytes, split_top_level_and,
     strip_outer_parens,
 };
+pub use preview::{ColumnSort, SortDirection, TablePreview, TablePreviewOptions, table_preview_sql};
 pub use safety::{
     check, is_session_statement, mark_mssql_statements, reads_only, single_statement, without_parameter_list,
 };

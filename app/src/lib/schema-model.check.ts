@@ -1,7 +1,8 @@
 import type { IndexStat } from "../gen/IndexStat";
 import type { TableStat } from "../gen/TableStat";
 import type { Report } from "../gen/Report";
-import { coveredBy, ddl, relations } from "./schema-model";
+import { coveredBy, ddl, nextColumnSort, previewSql, relations } from "./schema-model";
+import { ENGINES } from "./engines";
 import nativeSnapshot from "../../../fixtures/yugabyte-demo.json";
 
 const check = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -42,3 +43,15 @@ delete nativeReport.snapshot.indexes[0]!.docdb;
 check(relations(nativeReport, orders).outgoing[0]?.indexed === false, "FK coverage is scoped to its own table");
 delete nativeReport.snapshot.indexes.find((index) => index.table === "orders")!.docdb;
 check(relations(nativeReport, orders).outgoing[0]?.indexed === null, "Unknown hash keys cannot establish that an FK index is missing");
+
+for (const engine of ENGINES) {
+  const query = previewSql(engine, { schema: 'odd"`]schema', name: 'order' }, 100, { filter: "id > 1 -- comment", order: { column: 'odd"`]column', direction: "desc" } });
+  check(query.includes("WHERE (\nid > 1 -- comment\n)"), "A line comment must end before the predicate boundary");
+  check(query.endsWith("LIMIT 100") || query.includes("TOP (100)"), "Each provider must request bounded server rows");
+  check(query.includes(" DESC"), "A clicked header must request server ordering");
+}
+const ascending = nextColumnSort(null, "id");
+const descending = nextColumnSort(ascending, "id");
+check(ascending?.direction === "asc" && descending?.direction === "desc" && nextColumnSort(descending, "id") === null, "Sorting cycles through ascending, descending, then unsorted");
+check(nextColumnSort(descending, "other")?.direction === "asc", "A new column starts ascending");
+console.log("Table previews: every provider, quoted names, bounded rows and sort transitions passed");

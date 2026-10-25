@@ -10,6 +10,7 @@ use crate::{Error, ErrorCode, Result};
 
 pub const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 pub const OBSERVE_TIMEOUT: Duration = Duration::from_secs(10);
+pub const PREVIEW_TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAX_RESULT_ROWS: usize = 10_000;
 pub const MAX_RESULT_BYTES: usize = 8 * 1024 * 1024;
 

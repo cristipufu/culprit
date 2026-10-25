@@ -29,6 +29,7 @@ import type { WaitsReport } from "../gen/WaitsReport";
 import type { Api, UpdateProgress } from "./api";
 import { demoCloud } from "./demo-cloud";
 import { demoRows } from "./demo-rows";
+import { previewSql } from "./schema-model";
 import { signalsSample, withSignals } from "./demo-signals";
 import { can, connectFacts, refusal, sessionActions, waitingState } from "./engines";
 import { sameSamplePlan } from "./plan-samples";
@@ -664,6 +665,23 @@ export async function demoApi(): Promise<Api> {
         message: "Explaining a pasted deadlock runs in the desktop app and the CLI (`culprit deadlocks --file`).",
         hint: null,
       }),
+    previewTable: async (name, options) => {
+      if (options.filter?.trim()) return desktopOnly("Quick filters run against a connected database in the desktop app.");
+      const report = byConnection(name);
+      if (!report) return unsupported();
+      const sql = previewSql(report.snapshot.server.engine, { schema: options.schema, name: options.table }, options.limit, options);
+      const result = demoRows(report, previewSql(report.snapshot.server.engine, { schema: options.schema, name: options.table }, options.limit));
+      if (!result) return unsupported();
+      if (options.order) {
+        const column = result.columns.indexOf(options.order.column);
+        if (column >= 0) result.rows.sort((a, b) => {
+          const [av, bv] = [a[column], b[column]];
+          const compare = av == null ? bv == null ? 0 : -1 : bv == null ? 1 : typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
+          return options.order?.direction === "desc" ? -compare : compare;
+        });
+      }
+      return { sql, result };
+    },
     run: async (name, sql) => demoRows(byConnection(name), sql) ?? unsupported(),
     // The demo can't parse SQL like the desktop app; a leading SELECT/WITH is the only read it recognizes.
     checkStatement: async (_engine, sql) => {

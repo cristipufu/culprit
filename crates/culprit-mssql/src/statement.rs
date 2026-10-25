@@ -236,6 +236,54 @@ mod changes_tests {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    #[ignore = "requires a disposable SQL Server and CULPRIT_PREVIEW_MSSQL_PORT / PASSWORD"]
+    async fn live_table_preview_cancels_timed_out_and_dropped_requests() {
+        use culprit_core::Provider;
+        let mut spec = culprit_core::ConnectionSpec {
+            host: "127.0.0.1".into(),
+            port: Some(std::env::var("CULPRIT_PREVIEW_MSSQL_PORT").unwrap().parse().unwrap()),
+            database: Some("master".into()),
+            user: Some("sa".into()),
+            password: Some(std::env::var("CULPRIT_PREVIEW_MSSQL_PASSWORD").unwrap()),
+            ..Default::default()
+        };
+        spec.options.insert("encrypt".into(), "false".into());
+        // The isolated loopback fixture uses SQL Server's generated development certificate.
+        spec.options.insert("trustServerCertificate".into(), "true".into());
+        let provider = std::sync::Arc::new(crate::MssqlProvider::new(&spec).unwrap());
+        let mut observer = provider.user_session().await.unwrap();
+        let waiting = "WAITFOR DELAY '00:00:30'; SELECT 42 AS culprit_preview_cancel_test";
+        let started = std::time::Instant::now();
+        let error = provider.preview(waiting, 100).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::Timeout);
+        assert!(started.elapsed() < culprit_core::limits::OBSERVE_TIMEOUT);
+        async fn active(client: &mut crate::conn::MsClient) -> f64 {
+            crate::conn::query_one(client, "SELECT COUNT(*) AS active FROM sys.dm_exec_requests r CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE r.session_id <> @@SPID AND t.text LIKE '%culprit_preview_cancel_test%'").await.unwrap().f64("active").unwrap_or(0.0)
+        }
+        assert_eq!(active(&mut observer).await, 0.0, "The timed-out server request kept running");
+        let worker = provider.clone();
+        let caller = tokio::spawn(async move { worker.preview(waiting, 100).await });
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while active(&mut observer).await == 0.0 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("The cancellation test must reach an active server request");
+        caller.abort();
+        let _ = caller.await;
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while active(&mut observer).await > 0.0 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("A dropped caller left its server request running");
+        let result = provider.preview("SELECT 42 AS answer", 100).await.unwrap();
+        assert_eq!(result.rows[0][0], serde_json::json!(42));
+    }
+
     #[test]
     fn the_persons_sql_is_marked_as_sent_and_its_plan_reads_as_written() {
         assert_eq!(marked("SELECT id FROM shop.orders"), "SELECT /* culprit */ id FROM shop.orders");

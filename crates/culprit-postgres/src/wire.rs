@@ -46,6 +46,10 @@ impl SqlExecutor {
         self.inner.run(sql, limit).await
     }
 
+    pub async fn preview(&self, sql: &str, limit: usize) -> Result<ResultSet> {
+        self.inner.preview(sql, limit).await
+    }
+
     pub async fn execute(&self, sql: &str, limit: usize) -> Result<ResultSet> {
         self.inner.execute(sql, limit).await
     }
@@ -54,6 +58,27 @@ impl SqlExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL database and CULPRIT_PREVIEW_PG_PORT / DATABASE / PASSWORD"]
+    async fn live_table_preview_enforces_a_server_execution_budget() {
+        let mut spec = ConnectionSpec {
+            host: "127.0.0.1".into(),
+            port: Some(std::env::var("CULPRIT_PREVIEW_PG_PORT").unwrap().parse().unwrap()),
+            database: Some(std::env::var("CULPRIT_PREVIEW_PG_DATABASE").unwrap()),
+            user: Some("postgres".into()),
+            password: std::env::var("CULPRIT_PREVIEW_PG_PASSWORD").ok(),
+            ..Default::default()
+        };
+        spec.options.insert("sslmode".into(), "disable".into());
+        let provider = crate::PostgresProvider::new(&spec).unwrap();
+        let started = std::time::Instant::now();
+        let error = provider.preview("SELECT pg_sleep(30)", 100).await.unwrap_err();
+        assert_eq!(error.code, culprit_core::ErrorCode::Timeout);
+        assert!(started.elapsed() < culprit_core::limits::OBSERVE_TIMEOUT);
+        let result = provider.preview("SELECT 42 AS answer", 100).await.unwrap();
+        assert_eq!(result.rows[0][0], serde_json::json!(42));
+    }
 
     #[tokio::test]
     #[ignore = "requires a disposable PostgreSQL database with HypoPG available and CULPRIT_HYPOPG_PG_TEST_PORT"]

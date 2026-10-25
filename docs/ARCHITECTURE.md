@@ -63,6 +63,13 @@ caller and observe its handle before starting work and in SQLite's VM progress h
 Providers use `ResultBudget` before allocating display values and drain network results through completion even after
 retention stops, so a late failure cannot become a successful write. Runtime providers follow the same cancellation
 and retention contract; the workspace also clamps the row request before handing it to them.
+Table previews use `sql::table_preview_sql` to keep a filter inside its WHERE expression under every supported
+quoting mode, quote identifiers and bound server rows. `Execution::preview_table` holds a workspace-wide permit,
+uses the same read-only checks as the editor, and dispatches `Provider::preview`. Built-in preview execution has a
+five-second budget: PostgreSQL/YSQL statement timeouts, MySQL/MariaDB session timeouts, SQLite's VM progress guard,
+and a SQL Server worker that retains its client to send Attention on timeout or caller cancellation. Limits protect
+returned data and query lifetime; a server-side sort or selective-looking predicate can still need a scan.
+
 
 Cloud discovery uses `discover/paging.rs` and returns `DiscoveryResult` to the CLI and desktop: up to 20 matches,
 a `has_more` indicator and bounded warnings. It retains one source page plus matching rows, stopping after the 21st

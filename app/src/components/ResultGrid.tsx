@@ -1,6 +1,7 @@
-import { ChevronLeft, ChevronRight, Copy, PanelRightOpen } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Copy, PanelRightOpen } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ResultSet } from "../gen/ResultSet";
+import type { ColumnSort } from "../gen/ColumnSort";
 import { copyAndTell } from "../lib/clipboard";
 import { cellText, columnType, resultPageSize, rowTsv, valuePreview, type ResultCell } from "../lib/result-values";
 import { ResultInspector } from "./ResultInspector";
@@ -11,7 +12,10 @@ const NUMERIC = /^(tiny|small|medium|big)?int|^int|^integer|^numeric|^decimal|^r
 type Selection = { result: ResultSet; cell: ResultCell | null; page: number; inspecting: boolean };
 
 /** A bounded result page. Selection and the inspector belong to this result, never to a later query's rows. */
-export function ResultGrid({ result, types, summary }: { result: ResultSet; types?: Record<string, string>; summary?: string }) {
+export function ResultGrid({ result, types, summary, order, onSort, sortDisabled = false }: {
+  result: ResultSet; types?: Record<string, string>; summary?: string;
+  order?: ColumnSort | null; onSort?: (column: string) => void; sortDisabled?: boolean;
+}) {
   const [selection, setSelection] = useState<Selection>({ result, cell: null, page: 0, inspecting: false });
   let current = selection;
   if (current.result !== result) {
@@ -66,6 +70,7 @@ export function ResultGrid({ result, types, summary }: { result: ResultSet; type
       </div>
     </div>
     <div ref={scroll} className="rg-scroll" onKeyDown={(event) => {
+      if (event.target instanceof HTMLElement && event.target.closest("button, input, select, textarea, a")) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c" && selected && !window.getSelection()?.toString()) {
         event.preventDefault(); event.stopPropagation(); void copyValue(); return;
       }
@@ -77,10 +82,21 @@ export function ResultGrid({ result, types, summary }: { result: ResultSet; type
       const cell = selected ?? { row: start, col: 0 };
       select({ row: Math.min(result.rows.length - 1, Math.max(0, cell.row + move[0])), col: Math.min(result.columns.length - 1, Math.max(0, cell.col + move[1])) });
     }}>
-      <table ref={grid} className="rg" role="grid" tabIndex={0} aria-label="Query results" aria-rowcount={result.rows.length + 1} aria-colcount={result.columns.length + 1} aria-activedescendant={selected ? `${id}-${selected.row}-${selected.col}` : undefined} onFocus={() => {
+      <table ref={grid} className="rg" role="grid" tabIndex={0} aria-label="Query results" aria-rowcount={result.rows.length + 1} aria-colcount={result.columns.length + 1} aria-activedescendant={selected ? `${id}-${selected.row}-${selected.col}` : undefined} onFocus={(event) => {
+        if (event.target !== event.currentTarget) return;
         if (result.rows.length && result.columns.length) setSelection((previous) => previous.result === result && previous.cell ? previous : { result, page: current.page, inspecting: false, cell: { row: start, col: 0 } });
       }}>
-        <thead><tr aria-rowindex={1}><th className="rg-n">#</th>{result.columns.map((column, col) => <th key={col} className={numeric[col] ? "r" : ""} title={columnType(types, column) ? `${column} · ${columnType(types, column)}` : column}><span className="rg-name">{column}</span>{columnType(types, column) && <span className="rg-type">{columnType(types, column)}</span>}</th>)}</tr></thead>
+        <thead><tr aria-rowindex={1}><th className="rg-n">#</th>{result.columns.map((column, col) => {
+          const direction = order?.column === column ? order.direction : null;
+          const label = <><span className="rg-name">{column}</span>{columnType(types, column) && <span className="rg-type">{columnType(types, column)}</span>}</>;
+          return <th key={col} className={numeric[col] ? "r" : ""} title={columnType(types, column) ? `${column} · ${columnType(types, column)}` : column}
+            aria-sort={onSort ? direction === "asc" ? "ascending" : direction === "desc" ? "descending" : "none" : undefined}>
+            {onSort ? <button type="button" className={`rg-sort ${direction ? "on" : ""}`} aria-disabled={sortDisabled} onClick={() => { if (!sortDisabled) onSort(column); }}
+              title={direction === "desc" ? "Clear sorting" : `Sort ${direction === "asc" ? "descending" : "ascending"}`} aria-label={`Sort by ${column}`}>
+              <span className="rg-sort-label">{label}</span>{direction === "asc" ? <ArrowUp size={13} /> : direction === "desc" ? <ArrowDown size={13} /> : <ArrowUpDown size={13} />}
+            </button> : label}
+          </th>;
+        })}</tr></thead>
         <tbody>{rows.map((row, index) => {
           const r = start + index;
           return <tr key={r} aria-rowindex={r + 2} className={selected?.row === r ? "on" : ""}><td className="rg-n" role="rowheader">{r + 1}</td>{row.map((value, col) => <td key={col} id={`${id}-${r}-${col}`} role="gridcell" aria-selected={selected?.row === r && selected.col === col} className={`${numeric[col] ? "r" : ""} ${value.isNull ? "null" : ""} ${selected?.row === r && selected.col === col ? "sel" : ""}`} title={value.title} onClick={() => { select({ row: r, col }); grid.current?.focus({ preventScroll: true }); }} onDoubleClick={() => select({ row: r, col }, true)}>{value.text}</td>)}</tr>;

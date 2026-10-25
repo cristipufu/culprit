@@ -142,6 +142,12 @@ impl Provider for YugabyteProvider {
         })
         .await
     }
+    async fn preview(&self, sql: &str, limit: usize) -> Result<ResultSet> {
+        if !culprit_core::sql::reads_only(sql, Engine::Yugabyte) {
+            return Err(Error::invalid("This YSQL preview is not proven read-only"));
+        }
+        deadline(OBSERVE_TIMEOUT, self.execution.preview(sql, limit)).await
+    }
     async fn execute(&self, sql: &str, limit: usize) -> Result<ResultSet> {
         deadline(QUERY_TIMEOUT, async { self.execution.execute(sql, limit).await }).await
     }

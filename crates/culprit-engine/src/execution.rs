@@ -9,9 +9,28 @@ use culprit_core::{
 pub(crate) struct Execution<'a> {
     pub connections: Connections<'a>,
     pub reports: Reports<'a>,
+    pub previews: &'a tokio::sync::Semaphore,
 }
 
 impl Execution<'_> {
+    pub(crate) async fn preview_table(
+        &self,
+        name: &str,
+        options: &culprit_core::TablePreviewOptions,
+    ) -> Result<culprit_core::TablePreview> {
+        let _permit = self.previews.try_acquire().map_err(|_| {
+            Error::new(ErrorCode::QueryFailed, "A table preview is already running")
+                .with_hint("Wait for the current preview to finish, then retry")
+        })?;
+        let info = self.connections.connection(name)?;
+        let sql = culprit_core::sql::table_preview_sql(info.engine, options)?;
+        let result = self.read(name, &sql, options.limit.clamp(1, culprit_core::limits::MAX_RESULT_ROWS), true).await
+            .map_err(|error| if error.code == ErrorCode::Timeout {
+                error.with_hint("Try a more selective filter or an indexed sort column. Open the query in the editor to investigate further.")
+            } else { error })?;
+        Ok(culprit_core::TablePreview { sql, result })
+    }
+
     /// The dashboard for a connection's latest report (the one scanned with a window of `window_minutes`, when given).
     /// With `live`, sessions are read once too; if that fails, the "right now" tile says why and the rest still comes
     /// back.
@@ -430,6 +449,10 @@ impl Execution<'_> {
     /// proves it reads; Postgres and MySQL run it in a read-only transaction, and SQL Server, which has none, inside a
     /// transaction that is always rolled back.
     pub(crate) async fn run_read(&self, name: &str, sql: &str, limit: usize) -> Result<ResultSet> {
+        self.read(name, sql, limit, false).await
+    }
+
+    async fn read(&self, name: &str, sql: &str, limit: usize, preview: bool) -> Result<ResultSet> {
         let limit = limit.min(culprit_core::limits::MAX_RESULT_ROWS);
         let info = self.connections.connection(name)?;
         let statement = culprit_core::sql::single_statement(sql, info.engine)?;
@@ -438,7 +461,7 @@ impl Execution<'_> {
                 .with_hint("Send a single SELECT: no writes, DDL, procedure calls or locking reads."));
         }
         let provider = self.connections.provider(name).await?;
-        crate::operation::run(async {
+        crate::operation::within(if preview { culprit_core::limits::OBSERVE_TIMEOUT } else { culprit_core::limits::QUERY_TIMEOUT }, async {
             // The server's own parser has the last word where it can give one (SQL Server compiles the text under SHOWPLAN):
             // exactly one statement, and a read.
             let server_checked = match self.connections.forget_rejected(name, provider.statement_types(statement).await)? {
@@ -450,7 +473,8 @@ impl Execution<'_> {
                 None => false,
             };
             let batch = read_only_batch(info.engine, statement);
-            let mut result = self.connections.forget_rejected(name, provider.run(&batch, limit).await)?;
+            let read = if preview { provider.preview(&batch, limit).await } else { provider.run(&batch, limit).await };
+            let mut result = self.connections.forget_rejected(name, read)?;
             // Say so when the second opinion couldn't be asked for: the person (or the agent's approver) should know.
             if !server_checked && info.engine == Engine::Mssql {
                 result.messages.push(
@@ -521,6 +545,25 @@ fn guard_execution(info: &ConnectionInfo, sql: &str, executes: bool, _confirmed:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn one_preview_per_workspace_is_enforced_before_opening_another_connection() {
+        let home = std::env::temp_dir().join(format!("culprit-preview-gate-{}", std::process::id()));
+        let ws = crate::Workspace::open_in(&home);
+        let options = culprit_core::TablePreviewOptions {
+            schema: "public".into(),
+            table: "orders".into(),
+            filter: None,
+            order: None,
+            limit: 100,
+        };
+        let permit = ws.previews.try_acquire().unwrap();
+        let error = ws.preview_table("missing", &options).await.unwrap_err();
+        assert_eq!(error.message, "A table preview is already running");
+        drop(permit);
+        assert_eq!(ws.preview_table("missing", &options).await.unwrap_err().code, ErrorCode::NotFound);
+        let _ = std::fs::remove_dir_all(home);
+    }
     use culprit_core::{AuthKind, Environment};
 
     fn info(engine: Engine, environment: Environment) -> ConnectionInfo {

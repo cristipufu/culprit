@@ -198,6 +198,7 @@ pub struct Workspace {
     extra_checks: Vec<Arc<dyn Check>>,
     providers: Vec<(Engine, ProviderFactory)>,
     ssh: ssh::Manager,
+    previews: tokio::sync::Semaphore,
 }
 
 impl Workspace {
@@ -236,6 +237,7 @@ impl Workspace {
             extra_checks: Vec::new(),
             providers: Vec::new(),
             ssh: ssh::Manager::default(),
+            previews: tokio::sync::Semaphore::new(1),
         }
     }
 
@@ -255,7 +257,11 @@ impl Workspace {
     }
 
     fn execution_service(&self) -> execution::Execution<'_> {
-        execution::Execution { connections: self.connection_service(), reports: self.report_service() }
+        execution::Execution {
+            connections: self.connection_service(),
+            reports: self.report_service(),
+            previews: &self.previews,
+        }
     }
 
     fn event_service(&self) -> event_context::Events<'_> {
@@ -657,6 +663,15 @@ impl Workspace {
     /// transaction that is always rolled back.
     pub async fn run_read(&self, name: &str, sql: &str, limit: usize) -> Result<ResultSet> {
         self.execution_service().run_read(name, sql, limit).await
+    }
+
+    /// An explicitly requested table read, with a predicate and column ordering, always under the read-only policy.
+    pub async fn preview_table(
+        &self,
+        name: &str,
+        options: &culprit_core::TablePreviewOptions,
+    ) -> Result<culprit_core::TablePreview> {
+        self.execution_service().preview_table(name, options).await
     }
 
     /// Databases, tables, views and columns for editor completion, read live through the read-only run path.

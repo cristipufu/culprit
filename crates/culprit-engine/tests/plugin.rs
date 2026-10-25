@@ -127,6 +127,10 @@ impl Provider for Replay {
         })
     }
 
+    async fn preview(&self, sql: &str, limit: usize) -> Result<ResultSet> {
+        self.run(sql, limit).await
+    }
+
     async fn execute(&self, _: &str, limit: usize) -> Result<ResultSet> {
         assert!(limit <= culprit_core::limits::MAX_RESULT_ROWS);
         Ok(ResultSet {
@@ -309,6 +313,11 @@ async fn advice_and_fetched_plans_follow_the_selected_report_not_the_latest_poin
 
 #[tokio::test]
 async fn reads_run_freely_and_production_writes_need_confirmation() {
+    assert_eq!(
+        Explains.preview("SELECT 1", 1).await.unwrap_err().code,
+        ErrorCode::Unsupported,
+        "An external provider must opt into short-budget previews, never fall back to long-running execution"
+    );
     let home = temp_home("run");
     let ws = Workspace::open_in(&home)
         .with_provider(Engine::Postgres, Arc::new(|_| Ok(Box::new(Replay) as Box<dyn Provider>)));
@@ -323,6 +332,22 @@ async fn reads_run_freely_and_production_writes_need_confirmation() {
         .expect("save connection");
     }
     let path = |r: ResultSet| r.messages[0].clone();
+    let mut preview = culprit_core::TablePreviewOptions {
+        schema: "public".into(),
+        table: "orders".into(),
+        filter: Some("id > 1".into()),
+        order: Some(culprit_core::ColumnSort { column: "id".into(), direction: culprit_core::SortDirection::Desc }),
+        limit: 100,
+    };
+    for name in ["prod", "dev"] {
+        let result = ws.preview_table(name, &preview).await.unwrap();
+        assert_eq!(path(result.result), "read", "Table previews always use the read-only provider path");
+        assert!(result.sql.ends_with("ORDER BY \"id\" DESC LIMIT 100"));
+    }
+    preview.filter = Some("1=1); DELETE FROM orders; --".into());
+    assert!(ws.preview_table("dev", &preview).await.is_err());
+    preview.filter = Some("pg_advisory_lock(1) IS NULL".into());
+    assert_eq!(ws.preview_table("dev", &preview).await.unwrap_err().code, ErrorCode::PermissionDenied);
     assert_eq!(path(ws.run("prod", "SELECT * FROM orders", 10, false).await.unwrap()), "read");
     assert_eq!(path(ws.run("prod", "SELECT * FROM orders", usize::MAX, false).await.unwrap()), "read");
     assert_eq!(path(ws.run("dev", "DELETE FROM orders WHERE id = 1", usize::MAX, false).await.unwrap()), "wrote");

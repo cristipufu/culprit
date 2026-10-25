@@ -5,6 +5,9 @@ import type { ForeignKey } from "../gen/ForeignKey";
 import type { IndexStat } from "../gen/IndexStat";
 import type { Report } from "../gen/Report";
 import type { TableStat } from "../gen/TableStat";
+import type { TablePreviewOptions } from "../gen/TablePreviewOptions";
+import type { ColumnSort } from "../gen/ColumnSort";
+import { sqlSyntax } from "./engines";
 
 export const tableKey = (t: { schema: string; name: string }) => `${t.schema}.${t.name}`;
 
@@ -130,20 +133,29 @@ export function referenceOf(outgoing: Relation[], column: string): ForeignKey | 
 }
 
 export function quoteIdent(engine: Engine, name: string): string {
-  switch (engine) {
+  switch (sqlSyntax(engine)) {
     case "mssql":
       return `[${name.replaceAll("]", "]]")}]`;
     case "mysql":
       return `\`${name.replaceAll("`", "``")}\``;
-    default:
+    case "postgres":
+    case "sqlite":
       return `"${name.replaceAll('"', '""')}"`;
   }
 }
 
 /** A read-only statement for the first `limit` rows of a table, with every name quoted for the engine. */
-export function previewSql(engine: Engine, table: TableStat, limit: number): string {
+export function previewSql(engine: Engine, table: Pick<TableStat, "schema" | "name">, limit: number, options?: Pick<TablePreviewOptions, "filter" | "order">): string {
   const name = `${quoteIdent(engine, table.schema)}.${quoteIdent(engine, table.name)}`;
-  return engine === "mssql" ? `SELECT TOP (${limit}) * FROM ${name}` : `SELECT * FROM ${name} LIMIT ${limit}`;
+  let sql = sqlSyntax(engine) === "mssql" ? `SELECT TOP (${limit}) * FROM ${name}` : `SELECT * FROM ${name}`;
+  if (options?.filter?.trim()) sql += ` WHERE (\n${options.filter.trim()}\n)`;
+  if (options?.order) sql += ` ORDER BY ${quoteIdent(engine, options.order.column)} ${options.order.direction.toUpperCase()}`;
+  if (sqlSyntax(engine) !== "mssql") sql += ` LIMIT ${limit}`;
+  return sql;
+}
+
+export function nextColumnSort(order: ColumnSort | null, column: string): ColumnSort | null {
+  return order?.column !== column ? { column, direction: "asc" } : order.direction === "asc" ? { column, direction: "desc" } : null;
 }
 
 /** Approximate DDL rebuilt from catalog metadata (columns, primary key, indexes, foreign keys). */

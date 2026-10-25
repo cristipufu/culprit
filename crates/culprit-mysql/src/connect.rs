@@ -53,6 +53,13 @@ impl Flavor {
         }
     }
 
+    pub fn timeout_for(self, timeout: Duration) -> String {
+        match self {
+            Flavor::Mysql => format!("SET SESSION max_execution_time = {}", timeout.as_millis().max(1)),
+            Flavor::Mariadb => format!("SET SESSION max_statement_time = {}", timeout.as_secs_f64().max(0.001)),
+        }
+    }
+
     /// Lifts the timeout for a statement the person chose to run as a change: MySQL never limited it.
     pub fn no_timeout(self) -> Option<&'static str> {
         match self {

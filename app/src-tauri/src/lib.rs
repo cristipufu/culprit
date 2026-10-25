@@ -497,6 +497,15 @@ async fn run_sql(ws: Ws<'_>, name: String, sql: String, limit: usize, confirmed:
     ws.run(&name, &sql, limit.min(10_000), confirmed).await
 }
 
+#[tauri::command]
+async fn preview_table(
+    ws: Ws<'_>,
+    name: String,
+    options: culprit_core::TablePreviewOptions,
+) -> Result<culprit_core::TablePreview> {
+    ws.preview_table(&name, &options).await
+}
+
 /// Every check Culprit can run, so the app can say what it looked at and found fine.
 #[tauri::command]
 fn checks(ws: Ws<'_>) -> Vec<culprit_core::CheckInfo> {
@@ -835,6 +844,7 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
             waits,
             wait_sample,
             run_sql,
+            preview_table,
             deadlocks,
             parse_deadlock,
             check_statement,

@@ -100,6 +100,13 @@ pub trait Provider: Send + Sync {
     /// Callers enforce environment rules before calling.
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet>;
 
+    /// A table preview: the same read-only guarantees, with a short server-side execution budget. Built-in drivers
+    /// apply PREVIEW_TIMEOUT and cancel native work. External providers opt in by implementing a bounded path.
+    async fn preview(&self, _sql: &str, _limit: usize) -> Result<ResultSet> {
+        Err(Error::new(ErrorCode::Unsupported, "Quick table previews aren't available with this provider")
+            .with_hint("Open the query in the SQL editor for this connection"))
+    }
+
     /// Run a statement that changes data (or that Culprit can't prove only reads) in a read-write session and commit it.
     /// Callers have already asked for confirmation where the environment requires it.
     async fn execute(&self, _sql: &str, _limit: usize) -> Result<ResultSet> {

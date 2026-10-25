@@ -216,6 +216,10 @@ impl Pool {
         connect(&self.config, self.transport.as_deref(), kind).await
     }
 
+    pub(crate) fn transport_owner(&self) -> Option<Arc<dyn ConnectionTransport>> {
+        self.transport.clone()
+    }
+
     fn take_idle(&self) -> Option<MsClient> {
         self.idle.lock().ok()?.pop()
     }

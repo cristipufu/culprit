@@ -544,6 +544,33 @@ impl Provider for MssqlProvider {
         statement::run(&mut client, sql, limit).await.map_err(statement::parameter_error)
     }
 
+    async fn preview(&self, sql: &str, limit: usize) -> Result<ResultSet> {
+        let mut client = self.user_session().await?;
+        let sql = sql.to_string();
+        let transport = self.pool.transport_owner();
+        // The task retains the client so dropping its caller still sends Attention and closes the session.
+        let (owner, canceled) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            // Keep an SSH route alive long enough to deliver cancellation after its provider has been dropped.
+            let _transport = transport;
+            let result = tokio::select! {
+                biased;
+                _ = canceled => None,
+                result = tokio::time::timeout(culprit_core::limits::PREVIEW_TIMEOUT, statement::run(&mut client, &sql, limit)) => Some(result),
+            };
+            match result {
+                Some(Ok(result)) => result.map_err(statement::parameter_error),
+                _ => {
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), client.cancel_query()).await;
+                    Err(culprit_core::limits::timeout_error())
+                }
+            }
+        });
+        let result = task.await.map_err(|_| culprit_core::Error::internal("The table preview worker stopped"))?;
+        drop(owner);
+        result
+    }
+
     async fn statement_types(&self, sql: &str) -> Result<Option<Vec<String>>> {
         let mut client = self.user_session().await?;
         match statement::statement_types(&mut client, sql).await {

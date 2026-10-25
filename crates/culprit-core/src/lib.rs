@@ -98,6 +98,7 @@ pub use signals::{
     FileKind, FileScope, FileWriteOperation, IndexContention, IndexLockCounts, QueryCosts, Replica, ReplicaRole,
     SizeBaseline, TableStorage, escalations_by_table,
 };
+pub use sql::{ColumnSort, SortDirection, TablePreview, TablePreviewOptions};
 pub use verification::{Verification, VerifiedFinding, VerifyStatus, compare_reports};
 pub use waits::{
     ActivityCategory, ActivityEvent, ActivityHistory, ActivityPeriod, ActivityQuery, ActivityReport, CleanupHolder,

@@ -34,6 +34,8 @@ import type { QueryProgress } from "../gen/QueryProgress";
 import type { PlanDiff } from "../gen/PlanDiff";
 import type { Report } from "../gen/Report";
 import type { ResultSet } from "../gen/ResultSet";
+import type { TablePreview } from "../gen/TablePreview";
+import type { TablePreviewOptions } from "../gen/TablePreviewOptions";
 import type { SavedQuery } from "../gen/SavedQuery";
 import type { SaveQuery } from "../gen/SaveQuery";
 import type { SshConfig } from "../gen/SshConfig";
@@ -112,6 +114,7 @@ export interface Api {
   /** What the server waits on right now, sampled for `seconds`. */
   waitSample(name: string, seconds: number): Promise<WaitSample>;
   interruptSession(name: string, session: string, action: SessionAction): Promise<void>;
+  previewTable(name: string, options: TablePreviewOptions): Promise<TablePreview>;
   run(name: string, sql: string, limit: number, confirmed: boolean): Promise<ResultSet>;
   /** What changed between two periods: Query Store intervals, or Culprit's own scans. */
   changes(name: string, request: ChangeRequest): Promise<Changes>;
@@ -217,6 +220,7 @@ async function desktopApi(): Promise<Api> {
     waits: (name, windowMinutes) => invoke("waits", { name, windowMinutes }),
     waitSample: (name, seconds) => invoke("wait_sample", { name, seconds }),
     interruptSession: (name, session, action) => invoke("interrupt_session", { name, session, action }),
+    previewTable: (name, options) => invoke("preview_table", { name, options }),
     run: (name, sql, limit, confirmed) => invoke("run_sql", { name, sql, limit, confirmed }),
     changes: (name, request) => invoke("changes", { name, request }),
     events: (name, request) => invoke("events", { name, request }),

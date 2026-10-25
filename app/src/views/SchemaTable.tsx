@@ -1,24 +1,21 @@
-import { ArrowRight, ChevronRight, Copy, KeyRound, Link2, Play, SquarePen } from "lucide-react";
+import { ArrowRight, ChevronRight, Copy, KeyRound, Link2 } from "lucide-react";
 import { Fragment, useId, useMemo, useState, type ReactNode } from "react";
 import { TableSignalFacts } from "../components/BeyondTime";
-import { ResultGrid } from "../components/ResultGrid";
+import { SchemaData } from "./SchemaData";
 import { Sql } from "../components/Sql";
 import type { IndexStat } from "../gen/IndexStat";
 import type { Report } from "../gen/Report";
-import type { ResultSet } from "../gen/ResultSet";
 import type { TableStat } from "../gen/TableStat";
-import { api, errorMessage, type ApiError } from "../lib/api";
 import { ago, bytes, count, oneLine, percent, when } from "../lib/format";
 import { tableSignalWarning } from "../lib/health";
 import { useHotkeys } from "../lib/hotkeys";
 import { indexKey, indexUsage, plannedQueryCount } from "../lib/index-usage";
-import { canSeek, columnMembership, coveredBy, ddl, previewSql, referenceOf, relations, tableFindings, tableKey } from "../lib/schema-model";
+import { canSeek, columnMembership, coveredBy, ddl, referenceOf, relations, tableFindings, tableKey } from "../lib/schema-model";
 import { setState, toast } from "../lib/store";
 
 type Tab = "columns" | "indexes" | "relations" | "data" | "ddl";
 
 const TAB_KEY = "culprit.schema.tab";
-const PREVIEW_ROWS = 100;
 
 function rememberedTab(): Tab {
   try {
@@ -119,7 +116,7 @@ export function SchemaTable({ report, table, onOpenTable }: { report: Report; ta
         {tab === "columns" && <Columns report={report} table={table} indexes={indexes} links={links} onOpenTable={onOpenTable} />}
         {tab === "indexes" && <Indexes report={report} table={table} indexes={indexes} links={links} />}
         {tab === "relations" && <Relations links={links} onOpenTable={onOpenTable} />}
-        {tab === "data" && <Data report={report} table={table} />}
+        {tab === "data" && <SchemaData key={JSON.stringify([snapshot.connection, engine, table.schema, table.name])} report={report} table={table} />}
         {tab === "ddl" && <Ddl text={ddl(engine, table, columns, indexes, links.outgoing)} original={table.definition != null} />}
       </div>
     </div>
@@ -709,67 +706,6 @@ function Relations({ links, onOpenTable }: { links: Links; onOpenTable: (key: st
           </div>
         ))}
       </section>
-    </div>
-  );
-}
-
-type Preview = { status: "idle" } | { status: "loading" } | { status: "ready"; result: ResultSet } | { status: "error"; error: ApiError };
-
-function Data({ report, table }: { report: Report; table: TableStat }) {
-  const { snapshot } = report;
-  const sql = previewSql(snapshot.server.engine, table, PREVIEW_ROWS);
-  const [preview, setPreview] = useState<Preview>({ status: "idle" });
-  const production = snapshot.environment === "production";
-  const types = useMemo(
-    () =>
-      Object.fromEntries(snapshot.columns.filter((c) => c.schema === table.schema && c.table === table.name).map((c) => [c.name.toLowerCase(), c.data_type])),
-    [snapshot.columns, table],
-  );
-  const run = async () => {
-    setPreview({ status: "loading" });
-    try {
-      // Culprit builds this single read itself, with every name quoted; the click is the confirmation.
-      const result = await (await api()).run(snapshot.connection, sql, PREVIEW_ROWS, true);
-      setPreview({ status: "ready", result });
-    } catch (e) {
-      setPreview({ status: "error", error: errorMessage(e) });
-    }
-  };
-  return (
-    <div className="data-tab">
-      <div className="data-bar">
-        <button className="btn primary" onClick={run} disabled={preview.status === "loading"}>
-          <Play size={12} /> {preview.status === "ready" ? "Refresh" : `Preview ${PREVIEW_ROWS} rows`}
-        </button>
-        <button className="btn ghost" onClick={() => setState({ view: "editor", editorSql: sql })}>
-          <SquarePen size={12} /> Open in editor
-        </button>
-        <span className="spacer" />
-        <code className="data-sql" title={sql}>
-          {sql}
-        </code>
-      </div>
-      {preview.status === "idle" && (
-        <p className="muted data-note">
-          Reads the first {PREVIEW_ROWS} rows with one read-only statement
-          {production ? " — this is a production database, nothing else runs" : ""}. Nothing is fetched until you ask.
-        </p>
-      )}
-      {preview.status === "loading" && (
-        <div className="empty" style={{ padding: 30 }}>
-          <div className="spinner" />
-          Reading rows…
-        </div>
-      )}
-      {preview.status === "error" && (
-        <div className="notice error">
-          <div>
-            <b>Couldn't read rows.</b> {preview.error.message}
-            {preview.error.hint && <div>{preview.error.hint}</div>}
-          </div>
-        </div>
-      )}
-      {preview.status === "ready" && <ResultGrid result={preview.result} types={types} />}
     </div>
   );
 }

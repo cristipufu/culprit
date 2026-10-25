@@ -62,6 +62,25 @@ impl MysqlProvider {
         Ok(MysqlProvider { connector: Connector::new(spec)?, spec: spec.clone() })
     }
 
+    async fn read_with_timeout(&self, sql: &str, limit: usize, preview: bool) -> Result<ResultSet> {
+        let statement = single_statement(sql)?;
+        let mut conn = self.connector.connect(Scope::Database).await?;
+        if preview {
+            conn.query_drop(tagged(&self.connector.flavor().timeout_for(culprit_core::limits::PREVIEW_TIMEOUT)))
+                .await
+                .map_err(map_error)?;
+        }
+        let started = Instant::now();
+        conn.query_drop(tagged("START TRANSACTION READ ONLY")).await.map_err(map_error)?;
+        let result = run_in_transaction(&mut conn, statement, limit).await;
+        let rollback = conn.query_drop(tagged("ROLLBACK")).await;
+        let mut result = result?;
+        rollback.map_err(map_error)?;
+        let _ = conn.disconnect().await;
+        result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        Ok(result)
+    }
+
     /// The plan, tagged with the server's version so its notes can say what this version can and can't measure.
     fn versioned(&self, mut plan: Plan) -> Plan {
         if let Some(version) = self.connector.version() {
@@ -383,17 +402,11 @@ impl Provider for MysqlProvider {
     }
 
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet> {
-        let statement = single_statement(sql)?;
-        let mut conn = self.connector.connect(Scope::Database).await?;
-        let started = Instant::now();
-        conn.query_drop(tagged("START TRANSACTION READ ONLY")).await.map_err(map_error)?;
-        let result = run_in_transaction(&mut conn, statement, limit).await;
-        let rollback = conn.query_drop(tagged("ROLLBACK")).await;
-        let mut result = result?;
-        rollback.map_err(map_error)?;
-        let _ = conn.disconnect().await;
-        result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-        Ok(result)
+        self.read_with_timeout(sql, limit, false).await
+    }
+
+    async fn preview(&self, sql: &str, limit: usize) -> Result<ResultSet> {
+        self.read_with_timeout(sql, limit, true).await
     }
 
     async fn execute(&self, sql: &str, limit: usize) -> Result<ResultSet> {
