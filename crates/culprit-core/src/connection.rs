@@ -24,17 +24,34 @@ pub struct SshConfig {
 /// gateway may request another endpoint after a validated redirect; that connection must follow the same route.
 #[async_trait::async_trait]
 pub trait ConnectionTransport: Send + Sync {
-    async fn endpoint(&self, host: &str, port: u16) -> Result<SocketAddr>;
+    async fn endpoint(&self, host: &str, port: u16) -> Result<ConnectionEndpoint>;
+}
 
-    /// A curated transport failure, without subprocess output or secrets. Database authentication errors take priority.
-    fn failure(&self, _host: &str, _port: u16) -> Option<Error> {
-        None
+/// Diagnostics and cancellation for one physical connection attempt, never shared by hostname or another dial.
+/// Dropping the last handle may cancel a listener that has not accepted its database socket yet.
+pub trait ConnectionAttempt: Send + Sync {
+    fn failure(&self) -> Option<Error>;
+}
+
+/// A dial address and its attempt owner. Retain this until the driver finishes connecting, including TLS and login.
+pub struct ConnectionEndpoint {
+    pub address: SocketAddr,
+    pub attempt: Option<Arc<dyn ConnectionAttempt>>,
+}
+
+impl ConnectionEndpoint {
+    pub fn new(address: SocketAddr) -> Self {
+        Self { address, attempt: None }
+    }
+
+    pub fn failure(&self) -> Option<Error> {
+        self.attempt.as_ref().and_then(|attempt| attempt.failure())
     }
 }
 
-pub fn transport_error(transport: Option<&dyn ConnectionTransport>, host: &str, port: u16, error: Error) -> Error {
+pub fn transport_error(endpoint: Option<&ConnectionEndpoint>, error: Error) -> Error {
     if matches!(error.code, ErrorCode::ConnectionFailed | ErrorCode::Timeout)
-        && let Some(failure) = transport.and_then(|transport| transport.failure(host, port))
+        && let Some(failure) = endpoint.and_then(ConnectionEndpoint::failure)
     {
         return failure;
     }
@@ -180,10 +197,12 @@ mod tests {
     struct Route;
     #[async_trait::async_trait]
     impl ConnectionTransport for Route {
-        async fn endpoint(&self, _: &str, _: u16) -> Result<SocketAddr> {
-            Ok("127.0.0.1:15432".parse().unwrap())
+        async fn endpoint(&self, _: &str, _: u16) -> Result<ConnectionEndpoint> {
+            Ok(ConnectionEndpoint::new("127.0.0.1:15432".parse().unwrap()))
         }
-        fn failure(&self, _: &str, _: u16) -> Option<Error> {
+    }
+    impl ConnectionAttempt for Route {
+        fn failure(&self) -> Option<Error> {
             Some(Error::new(ErrorCode::ConnectionFailed, "SSH host key is not trusted"))
         }
     }
@@ -217,11 +236,12 @@ mod tests {
 
     #[test]
     fn ssh_error_does_not_replace_a_database_authentication_rejection() {
-        let route = Route;
+        let endpoint =
+            ConnectionEndpoint { address: "127.0.0.1:15432".parse().unwrap(), attempt: Some(Arc::new(Route)) };
         let auth = Error::new(ErrorCode::AuthFailed, "Database password rejected");
-        assert_eq!(transport_error(Some(&route), "db", 5432, auth).code, ErrorCode::AuthFailed);
+        assert_eq!(transport_error(Some(&endpoint), auth).code, ErrorCode::AuthFailed);
         let closed = Error::new(ErrorCode::ConnectionFailed, "Connection closed");
-        assert_eq!(transport_error(Some(&route), "db", 5432, closed).message, "SSH host key is not trusted");
+        assert_eq!(transport_error(Some(&endpoint), closed).message, "SSH host key is not trusted");
     }
 
     #[test]

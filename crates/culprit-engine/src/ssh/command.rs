@@ -89,26 +89,3 @@ pub(super) fn failure(stderr: &[u8]) -> Error {
     };
     Error::new(ErrorCode::ConnectionFailed, message).with_hint(hint)
 }
-
-pub(super) fn fatal(stderr: &[u8]) -> bool {
-    let text = String::from_utf8_lossy(stderr).to_ascii_lowercase();
-    [
-        "host key",
-        "host identification",
-        "permission denied",
-        "signing failed",
-        "administratively prohibited",
-        "forwarding disabled",
-        "connect failed",
-        "connection refused",
-        "could not resolve",
-        "timed out",
-        "broken pipe",
-        "connection reset",
-        "connection closed",
-        "disconnected",
-        "client_loop",
-    ]
-    .iter()
-    .any(|message| text.contains(message))
-}

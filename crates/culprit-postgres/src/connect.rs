@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use culprit_core::{
-    AuthKind, ConnectionSpec, ConnectionTransport, Engine, Error, ErrorCode, Result, aws_iam_host_allowed,
-    entra_host_allowed, is_local_host, transport_error,
+    AuthKind, ConnectionEndpoint, ConnectionSpec, ConnectionTransport, Engine, Error, ErrorCode, Result,
+    aws_iam_host_allowed, entra_host_allowed, is_local_host, transport_error,
 };
 use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -111,18 +111,18 @@ impl Connector {
         Ok(Connector { config, tls, transport: spec.transport.clone(), host: spec.host.trim().to_string(), port })
     }
 
-    async fn dial_config(&self) -> Result<tokio_postgres::Config> {
+    async fn dial_config(&self) -> Result<(tokio_postgres::Config, Option<ConnectionEndpoint>)> {
         let mut config = self.config.clone();
-        let port = match &self.transport {
+        let endpoint = match &self.transport {
             Some(transport) => {
                 let address = transport.endpoint(&self.host, self.port).await?;
-                config.hostaddr(address.ip());
-                address.port()
+                config.hostaddr(address.address.ip());
+                Some(address)
             }
-            None => self.port,
+            None => None,
         };
-        config.port(port);
-        Ok(config)
+        config.port(endpoint.as_ref().map_or(self.port, |endpoint| endpoint.address.port()));
+        Ok((config, endpoint))
     }
 
     /// Open a session with Culprit's safety settings applied: read-only by default, bounded statement and lock waits.
@@ -131,20 +131,13 @@ impl Connector {
     }
 
     pub async fn connect_observed(&self, limits: SessionLimits) -> Result<ObservedSession> {
-        let config = self.dial_config().await?;
+        let (config, endpoint) = self.dial_config().await?;
         let (client, mut connection) = tokio::time::timeout(CONNECT_TIMEOUT, config.connect(self.tls.clone()))
             .await
             .map_err(|_| {
                 Error::new(ErrorCode::Timeout, format!("Timed out connecting to {}:{}", self.host, self.port))
             })?
-            .map_err(|error| {
-                transport_error(
-                    self.transport.as_deref(),
-                    &self.host,
-                    self.port,
-                    map_connect_error(error, &self.host, self.port),
-                )
-            })?;
+            .map_err(|error| transport_error(endpoint.as_ref(), map_connect_error(error, &self.host, self.port)))?;
         let notices = Arc::new(AtomicU64::new(0));
         let observed = notices.clone();
         tokio::spawn(async move {
@@ -452,9 +445,9 @@ mod tests {
     struct Route;
     #[async_trait::async_trait]
     impl ConnectionTransport for Route {
-        async fn endpoint(&self, host: &str, port: u16) -> Result<std::net::SocketAddr> {
+        async fn endpoint(&self, host: &str, port: u16) -> Result<ConnectionEndpoint> {
             assert_eq!((host, port), ("shop.abc.us-east-1.rds.amazonaws.com", 5432));
-            Ok("127.0.0.1:15432".parse().unwrap())
+            Ok(ConnectionEndpoint::new("127.0.0.1:15432".parse().unwrap()))
         }
     }
 
@@ -468,7 +461,7 @@ mod tests {
             ..Default::default()
         };
         let connector = Connector::new(&spec).unwrap();
-        let config = connector.dial_config().await.unwrap();
+        let (config, _) = connector.dial_config().await.unwrap();
         assert_eq!(config.get_hosts(), &[tokio_postgres::config::Host::Tcp(spec.host)]);
         assert_eq!(config.get_hostaddrs(), &["127.0.0.1".parse::<std::net::IpAddr>().unwrap()]);
         assert_eq!(config.get_ports(), &[15432]);

@@ -39,8 +39,8 @@ The database's authentication remains separate: its password stays in the keycha
 
 ## Lifetime and limits
 
-Culprit owns a loopback listener and opens an [`ssh -W`](https://man.openbsd.org/ssh#W) channel for each database TCP session. It creates no persistent background SSH master. An existing control connection configured by you can be reused; Culprit does not close that user-owned master.
+Each connection attempt owns a loopback listener and opens an [`ssh -W`](https://man.openbsd.org/ssh#W) channel for each database TCP session. It creates no persistent background SSH master. An existing control connection configured by you can be reused; Culprit does not close that user-owned master.
 
-Dropping a database session closes its SSH process tree, including proxy children. The last provider releases the listener and remaining sessions. Cancellation and normal operation deadlines still apply. SSH work is bounded to 16 active routes, 8 sessions per route and 32 sessions per workspace; each route can forward at most 16 distinct endpoints. Streams use fixed-size buffers and bounded diagnostic capture. Errors describe the failure without exposing raw proxy output.
+Dropping a pending connection cancels its listener. Closing a database session closes its SSH process tree, including proxy children; a half-close drains final response bytes with a one-second idle grace period. The last provider releases the listener and remaining sessions. Cancellation and normal operation deadlines still apply. SSH work is bounded to 16 active routes, 8 sessions per route and 32 sessions per workspace; pending connection attempts count toward those limits. Streams use fixed-size buffers and bounded diagnostic capture. Errors describe the failure without exposing raw proxy output.
 
 SQLite reads a local file and does not offer SSH settings.

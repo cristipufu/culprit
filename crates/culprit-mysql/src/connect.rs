@@ -3,8 +3,8 @@ use std::sync::{Arc, Once, OnceLock};
 use std::time::Duration;
 
 use culprit_core::{
-    AuthKind, ConnectionSpec, ConnectionTransport, Engine, Error, ErrorCode, Result, aws_iam_host_allowed,
-    entra_host_allowed, is_local_host,
+    AuthKind, ConnectionEndpoint, ConnectionSpec, ConnectionTransport, Engine, Error, ErrorCode, Result,
+    aws_iam_host_allowed, entra_host_allowed, is_local_host,
 };
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, DriverError, IoError, OptsBuilder, SslOpts};
@@ -208,16 +208,17 @@ impl Connector {
     /// Open a session in `scope`, prepared with the read-only settings. The session is set up before it enters the
     /// application's database, so the setup statements are never counted as the application's workload.
     pub async fn connect(&self, scope: Scope) -> Result<Conn> {
-        let base = self.dial_options().await?;
+        let (base, endpoint) = self.dial_options().await?;
         let attempt = self.open(self.tls, &base).await;
         let mut conn = match attempt {
             // PREFERRED: the server doesn't do TLS at all, or no encrypted session can be agreed (MySQL 5.7 builds on
             // OpenSSL 1.0 only negotiate DHE suites, which rustls doesn't offer). Continue in plaintext like the mysql
             // client does; PREFERRED never verified the certificate, so nothing that was protected is given up.
             Err(e) if self.tls == Tls::Preferred && (no_server_tls(&e) || is_tls_handshake_error(&e)) => {
-                self.open(Tls::Disabled, &base).await.map_err(|e| self.connect_error(e))?
+                let (base, endpoint) = self.dial_options().await?;
+                self.open(Tls::Disabled, &base).await.map_err(|e| self.connect_error(endpoint.as_ref(), e))?
             }
-            other => other.map_err(|e| self.connect_error(e))?,
+            other => other.map_err(|e| self.connect_error(endpoint.as_ref(), e))?,
         };
         let flavor = match self.flavor.get() {
             Some(flavor) => *flavor,
@@ -257,14 +258,17 @@ impl Connector {
         self.flavor() == Flavor::Mariadb || self.version().is_none_or(|v| culprit_core::version_at_least(v, [8, 0, 18]))
     }
 
-    async fn dial_options(&self) -> Result<OptsBuilder> {
+    async fn dial_options(&self) -> Result<(OptsBuilder, Option<ConnectionEndpoint>)> {
         let mut base = self.base.clone();
-        if let Some(transport) = &self.transport {
+        let endpoint = if let Some(transport) = &self.transport {
             let address = transport.endpoint(&self.host, self.port).await?;
             // Retain ip_or_hostname for TLS SNI and certificate verification; resolved_ips changes TCP dialing only.
-            base = base.resolved_ips(Some(vec![address.ip()])).tcp_port(address.port());
-        }
-        Ok(base)
+            base = base.resolved_ips(Some(vec![address.address.ip()])).tcp_port(address.address.port());
+            Some(address)
+        } else {
+            None
+        };
+        Ok((base, endpoint))
     }
 
     async fn open(&self, tls: Tls, base: &OptsBuilder) -> std::result::Result<Conn, mysql_async::Error> {
@@ -279,13 +283,8 @@ impl Connector {
         }
     }
 
-    fn connect_error(&self, error: mysql_async::Error) -> Error {
-        culprit_core::transport_error(
-            self.transport.as_deref(),
-            &self.host,
-            self.port,
-            self.database_connect_error(error),
-        )
+    fn connect_error(&self, endpoint: Option<&ConnectionEndpoint>, error: mysql_async::Error) -> Error {
+        culprit_core::transport_error(endpoint, self.database_connect_error(error))
     }
 
     fn database_connect_error(&self, error: mysql_async::Error) -> Error {
@@ -399,9 +398,9 @@ mod tests {
     struct Route;
     #[async_trait::async_trait]
     impl ConnectionTransport for Route {
-        async fn endpoint(&self, host: &str, port: u16) -> Result<std::net::SocketAddr> {
+        async fn endpoint(&self, host: &str, port: u16) -> Result<ConnectionEndpoint> {
             assert_eq!((host, port), ("shop.abc.us-east-1.rds.amazonaws.com", 3306));
-            Ok("127.0.0.1:13306".parse().unwrap())
+            Ok(ConnectionEndpoint::new("127.0.0.1:13306".parse().unwrap()))
         }
     }
 
@@ -415,7 +414,7 @@ mod tests {
             ..spec()
         };
         let connector = Connector::new(&spec).unwrap();
-        let opts: mysql_async::Opts = connector.dial_options().await.unwrap().into();
+        let opts: mysql_async::Opts = connector.dial_options().await.unwrap().0.into();
         assert_eq!(opts.ip_or_hostname(), spec.host);
         assert_eq!(opts.resolved_ips().as_deref(), Some(&["127.0.0.1".parse::<std::net::IpAddr>().unwrap()][..]));
         assert_eq!(opts.tcp_port(), 13306);

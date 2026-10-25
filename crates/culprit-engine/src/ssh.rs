@@ -7,35 +7,47 @@ mod config;
 mod tests;
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
-use culprit_core::{ConnectionSpec, ConnectionTransport, Engine, Error, ErrorCode, Result, SshConfig};
+use culprit_core::{
+    ConnectionAttempt, ConnectionEndpoint, ConnectionSpec, ConnectionTransport, Engine, Error, ErrorCode, Result,
+    SshConfig,
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
-use tokio::sync::Semaphore;
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::sync::{Notify, Semaphore};
+use tokio::task::JoinHandle;
 
 use crate::process::OwnedChild;
 use config::Target;
 pub(crate) use config::normalize;
 
 const MAX_ROUTES: usize = 16;
-const MAX_TARGETS: usize = 16;
 const MAX_ROUTE_SESSIONS: usize = 8;
 const MAX_SESSIONS: usize = 32;
 const MAX_STDERR: usize = 16 * 1024;
 const STOP_TIMEOUT: Duration = Duration::from_secs(1);
+const DRAIN_IDLE_TIMEOUT: Duration = Duration::from_secs(1);
 
 type Factory = Arc<dyn Fn(&SshConfig, &Target) -> Result<Command> + Send + Sync>;
-type Failures = Arc<Mutex<HashMap<Target, Failure>>>;
+struct Attempt {
+    error: Arc<OnceLock<Error>>,
+    canceled: Arc<Notify>,
+}
 
-struct Failure {
-    owner: Arc<()>,
-    error: Option<Error>,
+impl ConnectionAttempt for Attempt {
+    fn failure(&self) -> Option<Error> {
+        self.error.get().cloned()
+    }
+}
+
+impl Drop for Attempt {
+    fn drop(&mut self) {
+        self.canceled.notify_one();
+    }
 }
 
 pub(crate) fn validate_spec(spec: &mut ConnectionSpec) -> Result<()> {
@@ -90,8 +102,7 @@ impl Manager {
             }
             let route = Arc::new(Route {
                 ssh: ssh.clone(),
-                listeners: tokio::sync::Mutex::new(HashMap::new()),
-                failures: Arc::new(Mutex::new(HashMap::new())),
+                state: tokio::sync::Mutex::new(Vec::new()),
                 sessions: self.sessions.clone(),
                 local_sessions: Arc::new(Semaphore::new(MAX_ROUTE_SESSIONS)),
                 factory: self.factory.clone(),
@@ -107,15 +118,13 @@ impl Manager {
 
 struct Route {
     ssh: SshConfig,
-    listeners: tokio::sync::Mutex<HashMap<Target, Forwarder>>,
-    failures: Failures,
+    state: tokio::sync::Mutex<Vec<Forwarder>>,
     sessions: Arc<Semaphore>,
     local_sessions: Arc<Semaphore>,
     factory: Factory,
 }
 
 struct Forwarder {
-    address: SocketAddr,
     task: JoinHandle<()>,
 }
 
@@ -127,38 +136,49 @@ impl Drop for Forwarder {
 
 #[async_trait::async_trait]
 impl ConnectionTransport for Route {
-    async fn endpoint(&self, host: &str, port: u16) -> Result<SocketAddr> {
+    async fn endpoint(&self, host: &str, port: u16) -> Result<ConnectionEndpoint> {
         let target = Target::new(host, port)?;
-        let mut listeners = self.listeners.lock().await;
-        if let Some(forwarder) = listeners.get(&target)
-            && !forwarder.task.is_finished()
-        {
-            return Ok(forwarder.address);
-        }
-        listeners.remove(&target);
-        if listeners.len() >= MAX_TARGETS {
-            return Err(busy("Too many SSH redirect endpoints are active for this connection"));
-        }
+        let mut state = self.state.lock().await;
+        state.retain(|forwarder| !forwarder.task.is_finished());
+        // Reserve capacity before binding or creating a waiting task. Every endpoint accepts exactly one socket.
+        let local = self
+            .local_sessions
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| busy("Too many SSH database sessions are active"))?;
+        let global =
+            self.sessions.clone().try_acquire_owned().map_err(|_| busy("Too many SSH database sessions are active"))?;
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
             .map_err(|_| Error::new(ErrorCode::ConnectionFailed, "Could not bind the local SSH forwarding socket"))?;
         let address =
             listener.local_addr().map_err(|_| Error::internal("Could not read the SSH forwarding address"))?;
-        let task = tokio::spawn(serve(
-            listener,
-            self.ssh.clone(),
-            target.clone(),
-            self.failures.clone(),
-            self.sessions.clone(),
-            self.local_sessions.clone(),
-            self.factory.clone(),
-        ));
-        listeners.insert(target, Forwarder { address, task });
-        Ok(address)
-    }
-
-    fn failure(&self, host: &str, port: u16) -> Option<Error> {
-        self.failures.lock().ok()?.get(&Target::new(host, port).ok()?)?.error.clone()
+        let attempt = Arc::new(Attempt { error: Arc::new(OnceLock::new()), canceled: Arc::new(Notify::new()) });
+        let (error, canceled) = (attempt.error.clone(), attempt.canceled.clone());
+        let (ssh, factory) = (self.ssh.clone(), self.factory.clone());
+        let task = tokio::spawn(async move {
+            let _permits = (local, global);
+            let accepted = tokio::select! {
+                biased;
+                _ = canceled.notified() => return,
+                accepted = accept(&listener) => accepted,
+            };
+            drop(listener);
+            let result = match accepted {
+                Ok(mut stream) => {
+                    let result = forward(&mut stream, &ssh, &target, &factory).await;
+                    // Publish this attempt's diagnosis before the driver sees TCP EOF.
+                    if let Err(failure) = result {
+                        let _ = error.set(failure);
+                    }
+                    return;
+                }
+                Err(_) => Error::new(ErrorCode::ConnectionFailed, "The local SSH forwarding listener stopped"),
+            };
+            let _ = error.set(result);
+        });
+        state.push(Forwarder { task });
+        Ok(ConnectionEndpoint { address, attempt: Some(attempt) })
     }
 }
 
@@ -166,68 +186,16 @@ fn busy(message: &str) -> Error {
     Error::new(ErrorCode::ConnectionFailed, message).with_hint("Finish or cancel another SSH operation, then retry")
 }
 
-fn begin(failures: &Failures, target: &Target) -> Arc<()> {
-    let owner = Arc::new(());
-    if let Ok(mut failures) = failures.lock() {
-        failures.insert(target.clone(), Failure { owner: owner.clone(), error: None });
+async fn accept(listener: &TcpListener) -> std::io::Result<TcpStream> {
+    for retry in 0..5 {
+        match listener.accept().await {
+            Ok((stream, _)) => return Ok(stream),
+            Err(error) if retry == 4 => return Err(error),
+            // A transient accept/resource error belongs to this pending dial, never to already running sessions.
+            Err(_) => tokio::time::sleep(Duration::from_millis(20 << retry)).await,
+        }
     }
-    owner
-}
-
-fn record(failures: &Failures, target: &Target, owner: &Arc<()>, error: Error) {
-    if let Ok(mut failures) = failures.lock()
-        && let Some(current) = failures.get_mut(target)
-        && Arc::ptr_eq(&current.owner, owner)
-    {
-        current.error = Some(error);
-    }
-}
-
-async fn serve(
-    listener: TcpListener,
-    ssh: SshConfig,
-    target: Target,
-    failures: Failures,
-    sessions: Arc<Semaphore>,
-    local_sessions: Arc<Semaphore>,
-    factory: Factory,
-) {
-    let mut jobs = JoinSet::new();
-    loop {
-        let accepted = tokio::select! {
-            biased;
-            _ = jobs.join_next(), if !jobs.is_empty() => continue,
-            accepted = listener.accept() => accepted,
-        };
-        let Ok((mut stream, _)) = accepted else {
-            let owner = begin(&failures, &target);
-            record(
-                &failures,
-                &target,
-                &owner,
-                Error::new(ErrorCode::ConnectionFailed, "The local SSH forwarding listener stopped"),
-            );
-            break;
-        };
-        // No unbounded waiting tasks or late SSH launches after a queued caller has retired.
-        let owner = begin(&failures, &target);
-        let permits = local_sessions
-            .clone()
-            .try_acquire_owned()
-            .and_then(|local| sessions.clone().try_acquire_owned().map(|global| (local, global)));
-        let Ok(permits) = permits else {
-            record(&failures, &target, &owner, busy("Too many SSH database sessions are active"));
-            continue;
-        };
-        let (ssh, target, failures, factory) = (ssh.clone(), target.clone(), failures.clone(), factory.clone());
-        jobs.spawn(async move {
-            let _permits = permits;
-            if let Err(error) = forward(&mut stream, &ssh, &target, &factory).await {
-                // Record before dropping the TCP socket, so a driver's EOF can retain the SSH diagnosis.
-                record(&failures, &target, &owner, error);
-            }
-        });
-    }
+    unreachable!()
 }
 
 async fn diagnostics(reader: impl AsyncRead + Unpin) -> Result<Vec<u8>> {
@@ -244,6 +212,7 @@ async fn relay(
     mut input: impl AsyncRead + Unpin,
     mut output: impl AsyncWrite + Unpin,
     bytes: &mut u64,
+    progress: Option<&Notify>,
 ) -> std::io::Result<()> {
     let mut buffer = [0; 8192];
     loop {
@@ -251,8 +220,11 @@ async fn relay(
         if read == 0 {
             return Ok(());
         }
-        output.write_all(&buffer[..read]).await?;
         *bytes += read as u64;
+        output.write_all(&buffer[..read]).await?;
+        if let Some(progress) = progress {
+            progress.notify_one();
+        }
     }
 }
 
@@ -281,8 +253,12 @@ async fn forward(stream: &mut TcpStream, ssh: &SshConfig, target: &Target, facto
     let mut stderr = None;
     let mut remote_closed = false;
     {
-        let outgoing = relay(read, stdin, &mut sent);
-        let incoming = relay(stdout, write, &mut received);
+        let progress = Notify::new();
+        let outgoing = relay(read, stdin, &mut sent, None);
+        let incoming = relay(stdout, write, &mut received, Some(&progress));
+        let drain = tokio::time::sleep(DRAIN_IDLE_TIMEOUT);
+        tokio::pin!(drain);
+        let mut half_closed = false;
         tokio::pin!(outgoing, incoming);
         loop {
             tokio::select! {
@@ -293,8 +269,16 @@ async fn forward(stream: &mut TcpStream, ssh: &SshConfig, target: &Target, facto
                     if failed { break }
                     // Closing stderr does not close stdout: retain every pending database byte.
                 },
-                _ = &mut outgoing => break,
+                result = &mut outgoing, if !half_closed => {
+                    if result.is_err() { break }
+                    half_closed = true;
+                    drain.as_mut().reset(tokio::time::Instant::now() + DRAIN_IDLE_TIMEOUT);
+                },
+                _ = progress.notified(), if half_closed => {
+                    drain.as_mut().reset(tokio::time::Instant::now() + DRAIN_IDLE_TIMEOUT);
+                },
                 _ = &mut incoming => { remote_closed = true; break },
+                _ = &mut drain, if half_closed => break,
             }
         }
     };
@@ -305,14 +289,18 @@ async fn forward(stream: &mut TcpStream, ssh: &SshConfig, target: &Target, facto
         child.finished = true;
     }
     let stderr = match stderr {
-        Some(bytes) => bytes?,
-        None => tokio::time::timeout(STOP_TIMEOUT, &mut diagnostics).await.map_err(|_| command::failure(&[]))??,
+        Some(bytes) => bytes,
+        None => tokio::time::timeout(STOP_TIMEOUT, &mut diagnostics)
+            .await
+            .map_err(|_| command::failure(&[]))
+            .and_then(|bytes| bytes),
     };
-    if !stderr.is_empty() && (received == 0 || command::fatal(&stderr)) {
-        return Err(command::failure(&stderr));
-    }
-    if remote_closed && received == 0 {
-        return Err(command::failure(&[]));
+    // Once any database byte arrives, handshake/protocol diagnostics belong to the driver, even if ssh logs EOF.
+    if received == 0 {
+        let stderr = stderr?;
+        if !stderr.is_empty() || remote_closed {
+            return Err(command::failure(&stderr));
+        }
     }
     Ok(())
 }

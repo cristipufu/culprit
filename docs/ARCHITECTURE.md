@@ -93,14 +93,16 @@ SSH routing lives in `ssh.rs`. `ConnectionSpec.host` and `port` keep the databas
 MySQL/MariaDB use resolved IPs, and SQL Server dials the forwarding address separately from its TLS configuration.
 Azure gateway redirects request another endpoint through the same route after the existing redirect checks.
 
-Culprit holds each loopback listener from allocation through teardown, avoiding a bind/rebind race. Each accepted
-database socket owns an OpenSSH `-W` child; an existing user-owned SSH master may be reused, but Culprit creates no
+Each dial owns a loopback listener from allocation through acceptance, avoiding a bind/rebind race. It accepts
+exactly one database socket, which owns an OpenSSH `-W` child; an existing user-owned SSH master may be reused, but Culprit creates no
 background master. `process.rs` owns process groups on Unix and Job Objects on Windows, shared with cloud subprocesses.
 Closing a database socket or dropping the last provider kills its owned SSH children, including proxy descendants.
 Forwarding uses fixed buffers; stderr is limited to 16 KiB and mapped to curated errors before a driver receives EOF.
-Closing stderr cannot discard pending database bytes. Session tokens prevent retired SSH failures from replacing a
-new attempt's diagnosis. There are at most 16 live routes per workspace, 16 redirect targets per route, 8 sessions per
-route and 32 SSH sessions per workspace; excess sessions fail without accumulating waiting tasks.
+Closing stderr cannot discard pending database bytes. A client half-close drains the final response, with a one-second
+idle grace period so a closed client cannot retain an SSH process indefinitely. Each `ConnectionEndpoint` owns its
+attempt's diagnosis and cancels an unaccepted listener on drop; parallel dials cannot clear or inherit another error.
+After the first database byte, protocol errors belong to the driver. There are at most 16 live routes per workspace,
+8 pending or connected sessions per route and 32 per workspace; excess dials fail before creating listeners or tasks.
 
 Only SSH destination, optional port and identity-file path are persisted. Known hosts must already be trusted;
 OpenSSH runs in batch mode, with agent/X11 forwarding and local commands disabled. Passwords and key passphrases are

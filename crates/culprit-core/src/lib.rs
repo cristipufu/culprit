@@ -49,8 +49,8 @@ pub use changes::{ChangeStatus, Changes, Period, PeriodStats, PlanSwitch, QueryC
 pub use check::{Check, CheckAssessment, CheckEvidence, CheckStatus};
 pub use cloud::{CloudPoint, CloudProvider, CloudSeries, CloudSignals, CloudUnit, ThrottleEpisode, ThrottleKind};
 pub use connection::{
-    AuthKind, ConnectionSpec, ConnectionTransport, SshConfig, aws_iam_host_allowed, entra_host_allowed, expand_home,
-    is_local_host, transport_error,
+    AuthKind, ConnectionAttempt, ConnectionEndpoint, ConnectionSpec, ConnectionTransport, SshConfig,
+    aws_iam_host_allowed, entra_host_allowed, expand_home, is_local_host, transport_error,
 };
 pub use coverage::{Coverage, Source, SourceOutcome, SourceState, same_source, source_id};
 pub use dashboard::{Dashboard, DashboardLive, ItemKind, Tile, TileItem, TileKey, TileMetric, TileStatus};

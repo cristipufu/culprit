@@ -1,9 +1,9 @@
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use culprit_core::{
-    AuthKind, ConnectionSpec, ConnectionTransport, Engine, Error, ErrorCode, Result, entra_host_allowed,
+    AuthKind, ConnectionEndpoint, ConnectionSpec, ConnectionTransport, Engine, Error, ErrorCode, Result,
+    entra_host_allowed,
 };
 use futures_util::future::BoxFuture;
 use tiberius::{AuthMethod, Client, Config, EncryptionLevel};
@@ -122,7 +122,10 @@ fn redirect_allowed(original_addr: &str, target_host: &str) -> bool {
     entra_host_allowed(Engine::Mssql, target_host)
 }
 
-async fn endpoint_for(config: &Config, transport: Option<&dyn ConnectionTransport>) -> Result<Option<SocketAddr>> {
+async fn endpoint_for(
+    config: &Config,
+    transport: Option<&dyn ConnectionTransport>,
+) -> Result<Option<ConnectionEndpoint>> {
     let Some(transport) = transport else { return Ok(None) };
     let addr = config.get_addr();
     let (host, port) = addr.rsplit_once(':').ok_or_else(|| Error::invalid("Invalid SQL Server endpoint"))?;
@@ -130,9 +133,9 @@ async fn endpoint_for(config: &Config, transport: Option<&dyn ConnectionTranspor
     transport.endpoint(host, port).await.map(Some)
 }
 
-async fn open_tcp(config: Config, endpoint: Option<SocketAddr>) -> tiberius::Result<MsClient> {
+async fn open_tcp(config: Config, endpoint: Option<&ConnectionEndpoint>) -> tiberius::Result<MsClient> {
     let addr = config.get_addr();
-    let dial = endpoint.map_or_else(|| addr.clone(), |address| address.to_string());
+    let dial = endpoint.map_or_else(|| addr.clone(), |endpoint| endpoint.address.to_string());
     let tcp = tokio::time::timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(&dial)).await.map_err(|_| {
         tiberius::error::Error::Io {
             kind: std::io::ErrorKind::TimedOut,
@@ -149,9 +152,8 @@ pub(crate) async fn connect(
     transport: Option<&dyn ConnectionTransport>,
     kind: SessionKind,
 ) -> Result<MsClient> {
-    let endpoint = endpoint_for(config, transport).await?;
-    let mut target = config.get_addr();
-    let attempt = match open_tcp(config.clone(), endpoint).await {
+    let mut endpoint = endpoint_for(config, transport).await?;
+    let attempt = match open_tcp(config.clone(), endpoint.as_ref()).await {
         Err(tiberius::error::Error::Routing { host, port }) => {
             if !redirect_allowed(&config.get_addr(), &host) {
                 return Err(Error::new(
@@ -162,16 +164,12 @@ pub(crate) async fn connect(
             let mut routed = config.clone();
             routed.host(&host);
             routed.port(port);
-            let endpoint = endpoint_for(&routed, transport).await?;
-            target = routed.get_addr();
-            open_tcp(routed, endpoint).await
+            endpoint = endpoint_for(&routed, transport).await?;
+            open_tcp(routed, endpoint.as_ref()).await
         }
         other => other,
     };
-    let mut client = attempt.map_err(|error| {
-        let (host, port) = target.rsplit_once(':').unwrap_or((&target, "1433"));
-        culprit_core::transport_error(transport, host, port.parse().unwrap_or(DEFAULT_PORT), map_error(error))
-    })?;
+    let mut client = attempt.map_err(|error| culprit_core::transport_error(endpoint.as_ref(), map_error(error)))?;
     let setup = match kind {
         SessionKind::Stats => STATS_SESSION_SETUP,
         SessionKind::User => USER_SESSION_SETUP,
@@ -327,9 +325,9 @@ mod tests {
     struct Route(Mutex<Vec<(String, u16)>>);
     #[async_trait::async_trait]
     impl ConnectionTransport for Route {
-        async fn endpoint(&self, host: &str, port: u16) -> Result<SocketAddr> {
+        async fn endpoint(&self, host: &str, port: u16) -> Result<ConnectionEndpoint> {
             self.0.lock().unwrap().push((host.into(), port));
-            Ok("127.0.0.1:11433".parse().unwrap())
+            Ok(ConnectionEndpoint::new("127.0.0.1:11433".parse().unwrap()))
         }
     }
 
@@ -338,14 +336,14 @@ mod tests {
         let spec = ConnectionSpec { host: "shop.database.windows.net".into(), ..spec() };
         let config = build_config(&spec).unwrap();
         let route = Route(Mutex::new(Vec::new()));
-        assert_eq!(endpoint_for(&config, Some(&route)).await.unwrap().unwrap().port(), 11433);
+        assert_eq!(endpoint_for(&config, Some(&route)).await.unwrap().unwrap().address.port(), 11433);
         assert_eq!(config.get_addr(), "shop.database.windows.net:1433");
         let mut routed = config.clone();
         routed.host("worker.database.windows.net");
         routed.port(11001);
         assert!(redirect_allowed(&config.get_addr(), "worker.database.windows.net"));
         assert!(!redirect_allowed(&config.get_addr(), "attacker.example"));
-        assert_eq!(endpoint_for(&routed, Some(&route)).await.unwrap().unwrap().port(), 11433);
+        assert_eq!(endpoint_for(&routed, Some(&route)).await.unwrap().unwrap().address.port(), 11433);
         assert_eq!(routed.get_addr(), "worker.database.windows.net:11001");
         assert_eq!(
             *route.0.lock().unwrap(),

@@ -34,20 +34,13 @@ fn spec() -> ConnectionSpec {
     }
 }
 
-#[test]
-fn a_retired_ssh_session_cannot_replace_the_latest_attempts_diagnosis() {
-    let failures = Arc::new(Mutex::new(HashMap::new()));
-    let target = Target::new("db.example", 5432).unwrap();
-    let old = begin(&failures, &target);
-    let current = begin(&failures, &target);
-    record(&failures, &target, &old, command::failure(b"Host key verification failed"));
-    assert!(failures.lock().unwrap()[&target].error.is_none());
-    record(&failures, &target, &current, command::failure(b"Permission denied"));
-    assert_eq!(failures.lock().unwrap()[&target].error.as_ref().unwrap().message, "SSH authentication failed");
-}
-
 fn fixture(mode: &'static str, marker: Option<PathBuf>) -> Factory {
+    let calls = AtomicUsize::new(0);
     Arc::new(move |_, _| {
+        // A libtest child prints a banner on stdout; simulate setup rejection before protocol bytes instead.
+        if mode == "hostkey" && calls.fetch_add(1, Ordering::SeqCst) > 0 {
+            return Err(command::failure(b"Host key verification failed. private-proxy-diagnostic"));
+        }
         let mut command = Command::new(std::env::current_exe().unwrap());
         command.args(["--exact", "ssh::tests::child_fixture", "--nocapture"]).env("CULPRIT_SSH_TEST_CHILD", mode);
         if let Some(marker) = &marker {
@@ -65,9 +58,6 @@ fn child_fixture() {
     use std::io::{Read, Write};
     let Ok(mode) = std::env::var("CULPRIT_SSH_TEST_CHILD") else { return };
     match mode.as_str() {
-        "hostkey" => {
-            eprintln!("Host key verification failed. private-proxy-diagnostic");
-        }
         "large" => {
             let _ = std::io::stderr().write_all(&vec![b'x'; MAX_STDERR + 1]);
         }
@@ -91,6 +81,13 @@ fn child_fixture() {
             let mut bytes = [0; 4];
             std::io::stdin().read_exact(&mut bytes).unwrap();
             std::io::stdout().write_all(&bytes).unwrap();
+        }
+        "finish_on_eof" => {
+            let mut bytes = Vec::new();
+            std::io::stdin().read_to_end(&mut bytes).unwrap();
+            std::thread::sleep(Duration::from_millis(80));
+            std::io::stdout().write_all(b"FINAL_DATABASE_RESPONSE").unwrap();
+            eprintln!("Connection closed. private-proxy-diagnostic");
         }
         "wait" => {
             std::io::stdout().write_all(b"SSH_READY").unwrap();
@@ -198,8 +195,8 @@ async fn routes_are_shared_only_while_a_provider_owns_them_and_keep_logical_endp
     assert!(first.port.is_none());
     assert!(Arc::ptr_eq(first.transport.as_ref().unwrap(), second.transport.as_ref().unwrap()));
     let endpoint = first.transport.as_ref().unwrap().endpoint(&first.host, 5432).await.unwrap();
-    assert!(endpoint.ip().is_loopback());
-    let mut socket = TcpStream::connect(endpoint).await.unwrap();
+    assert!(endpoint.address.ip().is_loopback());
+    let mut socket = TcpStream::connect(endpoint.address).await.unwrap();
     socket.write_all(b"ping").await.unwrap();
     let mut response = Vec::new();
     tokio::time::timeout(Duration::from_secs(10), socket.read_to_end(&mut response)).await.unwrap().unwrap();
@@ -207,7 +204,7 @@ async fn routes_are_shared_only_while_a_provider_owns_them_and_keep_logical_endp
     drop(first);
     drop(second);
     tokio::task::yield_now().await;
-    assert!(TcpStream::connect(endpoint).await.is_err(), "The forwarding port survived its last owner");
+    assert!(TcpStream::connect(endpoint.address).await.is_err(), "The forwarding port survived its last owner");
 }
 
 #[tokio::test]
@@ -217,10 +214,10 @@ async fn ssh_errors_are_available_before_tcp_eof_and_never_contain_raw_diagnosti
     manager.attach(&mut spec).unwrap();
     let route = spec.transport.as_ref().unwrap();
     let endpoint = route.endpoint(&spec.host, 5432).await.unwrap();
-    let mut socket = TcpStream::connect(endpoint).await.unwrap();
+    let mut socket = TcpStream::connect(endpoint.address).await.unwrap();
     let mut ignored = Vec::new();
     tokio::time::timeout(Duration::from_secs(10), socket.read_to_end(&mut ignored)).await.unwrap().unwrap();
-    let error = route.failure(&spec.host, 5432).expect("SSH diagnosis was lost before driver EOF");
+    let error = endpoint.failure().expect("SSH diagnosis was lost before driver EOF");
     assert_eq!(error.message, "SSH host key verification failed");
     assert!(!serde_json::to_string(&error).unwrap().contains("private-proxy-diagnostic"));
 }
@@ -241,11 +238,8 @@ async fn output_and_session_counts_are_bounded_without_waiting_tasks() {
     let mut spec = spec();
     manager.attach(&mut spec).unwrap();
     let route = spec.transport.as_ref().unwrap();
-    let endpoint = route.endpoint(&spec.host, 5432).await.unwrap();
-    let mut socket = TcpStream::connect(endpoint).await.unwrap();
-    let mut response = Vec::new();
-    tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut response)).await.unwrap().unwrap();
-    assert!(route.failure(&spec.host, 5432).unwrap().message.contains("Too many SSH"));
+    let error = route.endpoint(&spec.host, 5432).await.err().unwrap();
+    assert!(error.message.contains("Too many SSH"));
     assert_eq!(calls.load(Ordering::SeqCst), 1, "A rejected session launched SSH work");
 }
 
@@ -257,7 +251,7 @@ async fn check_cancellation(drop_provider: bool) {
     manager.attach(&mut spec).unwrap();
     let endpoint = spec.transport.as_ref().unwrap().endpoint(&spec.host, 5432).await.unwrap();
     let owner = Arc::downgrade(spec.transport.as_ref().unwrap());
-    let mut socket = TcpStream::connect(endpoint).await.unwrap();
+    let mut socket = TcpStream::connect(endpoint.address).await.unwrap();
     for _ in 0..500 {
         if marker.with_extension("ready").exists() {
             break;
@@ -275,7 +269,7 @@ async fn check_cancellation(drop_provider: bool) {
     tokio::time::sleep(Duration::from_millis(1700)).await;
     assert!(!marker.exists(), "An SSH ProxyCommand descendant survived its owner");
     if drop_provider {
-        assert!(TcpStream::connect(endpoint).await.is_err());
+        assert!(TcpStream::connect(endpoint.address).await.is_err());
     } else {
         assert!(owner.upgrade().is_some(), "The provider should retain its reusable forwarding listener");
     }
@@ -298,8 +292,9 @@ async fn redirect_targets_are_capped_and_the_database_identity_remains_unchanged
     let mut spec = spec();
     manager.attach(&mut spec).unwrap();
     let route = spec.transport.as_ref().unwrap();
-    for n in 0..MAX_TARGETS {
-        route.endpoint(&format!("worker-{n}.database.windows.net"), 11001).await.unwrap();
+    let mut endpoints = Vec::new();
+    for n in 0..MAX_ROUTE_SESSIONS {
+        endpoints.push(route.endpoint(&format!("worker-{n}.database.windows.net"), 11001).await.unwrap());
     }
     assert!(route.endpoint("another.database.windows.net", 11001).await.is_err());
     assert_eq!(spec.host, "shop.internal.example");
@@ -393,4 +388,60 @@ async fn real_openssh_preserves_strict_tls_identity_and_rejects_a_mismatched_hos
     let error = ws.probe("mismatch").await.expect_err("The certificate only covers localhost, never its IP");
     assert!(error.message.to_ascii_lowercase().contains("certificate"), "{error:?}");
     assert_eq!(ws.connection("valid").unwrap().host, "localhost");
+}
+
+#[tokio::test]
+async fn parallel_dials_keep_their_diagnoses_and_capacity_rejection_cannot_clobber_them() {
+    let calls = AtomicUsize::new(0);
+    let manager = Manager {
+        factory: Arc::new(move |_, _| {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok(Command::new("unused-preflight"))
+            } else {
+                Err(command::failure(if n == 1 { b"Host key verification failed" } else { b"Permission denied" }))
+            }
+        }),
+        ..Manager::default()
+    };
+    let mut spec = spec();
+    manager.attach(&mut spec).unwrap();
+    let route = spec.transport.as_ref().unwrap();
+    let a = route.endpoint(&spec.host, 5432).await.unwrap();
+    let b = route.endpoint(&spec.host, 5432).await.unwrap();
+    let read = async |endpoint: &ConnectionEndpoint| {
+        let mut stream = TcpStream::connect(endpoint.address).await.unwrap();
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut bytes)).await.unwrap().unwrap();
+        endpoint.failure().expect("A parallel dial erased this attempt's SSH diagnosis")
+    };
+    let (a_error, b_error) = tokio::join!(read(&a), read(&b));
+    assert_ne!(a_error.message, b_error.message);
+    let mut pending = Vec::new();
+    for _ in 0..MAX_ROUTE_SESSIONS {
+        pending.push(route.endpoint(&spec.host, 5432).await.unwrap());
+    }
+    assert!(route.endpoint(&spec.host, 5432).await.is_err());
+    assert_eq!(a.failure().unwrap().message, a_error.message);
+    assert!(pending.iter().all(|endpoint| endpoint.failure().is_none()));
+    let database_error = Error::new(ErrorCode::ConnectionFailed, "too many database connections");
+    assert_eq!(culprit_core::transport_error(pending.first(), database_error.clone()).message, database_error.message);
+    drop(pending);
+    tokio::task::yield_now().await;
+    assert_eq!(manager.sessions.available_permits(), MAX_SESSIONS);
+}
+
+#[tokio::test]
+async fn half_close_drains_the_final_response_and_database_bytes_take_priority_over_ssh_stderr() {
+    let manager = manager("finish_on_eof", None);
+    let mut spec = spec();
+    manager.attach(&mut spec).unwrap();
+    let endpoint = spec.transport.as_ref().unwrap().endpoint(&spec.host, 5432).await.unwrap();
+    let mut stream = TcpStream::connect(endpoint.address).await.unwrap();
+    stream.write_all(b"query").await.unwrap();
+    stream.shutdown().await.unwrap();
+    let mut bytes = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut bytes)).await.unwrap().unwrap();
+    assert!(bytes.windows(b"FINAL_DATABASE_RESPONSE".len()).any(|w| w == b"FINAL_DATABASE_RESPONSE"));
+    assert!(endpoint.failure().is_none(), "SSH stderr overrode the database protocol response");
 }
