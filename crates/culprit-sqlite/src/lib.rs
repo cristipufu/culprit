@@ -34,6 +34,9 @@ pub struct SqliteProvider {
 
 impl SqliteProvider {
     pub fn new(spec: &ConnectionSpec) -> Result<Self> {
+        if spec.ssh.is_some() || spec.transport.is_some() {
+            return Err(Error::new(ErrorCode::Unsupported, "SQLite opens a local file and cannot use SSH forwarding"));
+        }
         let path = spec
             .database
             .as_deref()

@@ -2,6 +2,7 @@
 import type { AuthKind } from "./AuthKind";
 import type { Engine } from "./Engine";
 import type { Environment } from "./Environment";
+import type { SshConfig } from "./SshConfig";
 
 /**
  * Everything a provider needs to open connections. Secrets are resolved by the engine at connect time and never persisted here.
@@ -10,4 +11,4 @@ export type ConnectionSpec = { engine: Engine | null, host: string, port: number
 /**
  * Driver options such as `encrypt`, `trustServerCertificate`, `sslmode`.
  */
-options: { [key in string]: string }, };
+options: { [key in string]: string }, ssh?: SshConfig, };

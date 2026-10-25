@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use culprit_core::{
-    AuthKind, ConnectionSpec, Engine, Error, ErrorCode, Result, aws_iam_host_allowed, entra_host_allowed, is_local_host,
+    AuthKind, ConnectionSpec, ConnectionTransport, Engine, Error, ErrorCode, Result, aws_iam_host_allowed,
+    entra_host_allowed, is_local_host, transport_error,
 };
 use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -38,6 +39,7 @@ pub const EXECUTION: SessionLimits =
 pub struct Connector {
     config: tokio_postgres::Config,
     tls: MakeRustlsConnect,
+    transport: Option<Arc<dyn ConnectionTransport>>,
     pub host: String,
     pub port: u16,
 }
@@ -57,17 +59,13 @@ impl ObservedSession {
 
 impl Connector {
     pub fn new(spec: &ConnectionSpec) -> Result<Self> {
+        spec.check_transport()?;
         if spec.host.trim().is_empty() {
             return Err(Error::invalid("A database connection needs a host"));
         }
         let port = spec.port.unwrap_or(DEFAULT_PORT);
         let mut config = tokio_postgres::Config::new();
-        config
-            .host(spec.host.trim())
-            .port(port)
-            .application_name("culprit")
-            .connect_timeout(CONNECT_TIMEOUT)
-            .keepalives(true);
+        config.host(spec.host.trim()).application_name("culprit").connect_timeout(CONNECT_TIMEOUT).keepalives(true);
         if let Some(database) = spec.database.as_deref().filter(|d| !d.is_empty()) {
             config.dbname(database);
         }
@@ -110,7 +108,21 @@ impl Connector {
         }
         let (ssl_mode, tls) = tls_for(spec)?;
         config.ssl_mode(ssl_mode);
-        Ok(Connector { config, tls, host: spec.host.trim().to_string(), port })
+        Ok(Connector { config, tls, transport: spec.transport.clone(), host: spec.host.trim().to_string(), port })
+    }
+
+    async fn dial_config(&self) -> Result<tokio_postgres::Config> {
+        let mut config = self.config.clone();
+        let port = match &self.transport {
+            Some(transport) => {
+                let address = transport.endpoint(&self.host, self.port).await?;
+                config.hostaddr(address.ip());
+                address.port()
+            }
+            None => self.port,
+        };
+        config.port(port);
+        Ok(config)
     }
 
     /// Open a session with Culprit's safety settings applied: read-only by default, bounded statement and lock waits.
@@ -119,8 +131,20 @@ impl Connector {
     }
 
     pub async fn connect_observed(&self, limits: SessionLimits) -> Result<ObservedSession> {
-        let (client, mut connection) =
-            self.config.connect(self.tls.clone()).await.map_err(|e| map_connect_error(e, &self.host, self.port))?;
+        let config = self.dial_config().await?;
+        let (client, mut connection) = tokio::time::timeout(CONNECT_TIMEOUT, config.connect(self.tls.clone()))
+            .await
+            .map_err(|_| {
+                Error::new(ErrorCode::Timeout, format!("Timed out connecting to {}:{}", self.host, self.port))
+            })?
+            .map_err(|error| {
+                transport_error(
+                    self.transport.as_deref(),
+                    &self.host,
+                    self.port,
+                    map_connect_error(error, &self.host, self.port),
+                )
+            })?;
         let notices = Arc::new(AtomicU64::new(0));
         let observed = notices.clone();
         tokio::spawn(async move {
@@ -424,6 +448,33 @@ pub fn sql_state(error: &tokio_postgres::Error) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Route;
+    #[async_trait::async_trait]
+    impl ConnectionTransport for Route {
+        async fn endpoint(&self, host: &str, port: u16) -> Result<std::net::SocketAddr> {
+            assert_eq!((host, port), ("shop.abc.us-east-1.rds.amazonaws.com", 5432));
+            Ok("127.0.0.1:15432".parse().unwrap())
+        }
+    }
+
+    #[tokio::test]
+    async fn routed_tcp_keeps_the_remote_tls_and_iam_identity() {
+        let spec = ConnectionSpec {
+            host: "shop.abc.us-east-1.rds.amazonaws.com".into(),
+            auth: AuthKind::AwsIam,
+            token: Some("short-lived-token".into()),
+            transport: Some(Arc::new(Route)),
+            ..Default::default()
+        };
+        let connector = Connector::new(&spec).unwrap();
+        let config = connector.dial_config().await.unwrap();
+        assert_eq!(config.get_hosts(), &[tokio_postgres::config::Host::Tcp(spec.host)]);
+        assert_eq!(config.get_hostaddrs(), &["127.0.0.1".parse::<std::net::IpAddr>().unwrap()]);
+        assert_eq!(config.get_ports(), &[15432]);
+        assert!(matches!(config.get_ssl_mode(), SslMode::Require));
+        assert_eq!(connector.port, 5432);
+    }
 
     fn spec(sslmode: Option<&str>) -> ConnectionSpec {
         let mut spec = ConnectionSpec { host: "db.example.com".into(), ..Default::default() };

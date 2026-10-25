@@ -46,6 +46,21 @@ pub fn provider(spec: &ConnectionSpec) -> Result<Box<dyn Provider>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn unresolved_forwarding_never_falls_back_to_a_direct_builtin_provider() {
+        for engine in Engine::ALL {
+            let spec = ConnectionSpec {
+                engine: Some(engine),
+                host: "db.example.com".into(),
+                database: Some("shop".into()),
+                user: Some("reader".into()),
+                ssh: Some(culprit_core::SshConfig { destination: "bastion".into(), port: None, identity_file: None }),
+                ..Default::default()
+            };
+            assert!(provider(&spec).is_err(), "{engine:?} ignored an unresolved SSH route");
+        }
+    }
+
     // Each engine's sources are one list anyone can read (`culprit sources`): every engine this build serves has one,
     // and a source's name, which its notes carry, says which one it was.
     #[test]

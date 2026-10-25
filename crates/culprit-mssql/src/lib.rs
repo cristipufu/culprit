@@ -34,7 +34,7 @@ use culprit_core::{
 };
 
 pub use ado::parse_ado;
-use conn::{MsClient, Pool, SessionKind, connect};
+use conn::{MsClient, Pool, SessionKind};
 use probe::Probe;
 
 /// Identity of this crate's collector and native-plan parser, including a build revision when supplied.
@@ -57,14 +57,14 @@ impl MssqlProvider {
     pub fn new(spec: &ConnectionSpec) -> Result<Self> {
         Ok(MssqlProvider {
             environment: spec.environment,
-            pool: Pool::new(conn::build_config(spec)?),
+            pool: Pool::new(conn::build_config(spec)?, spec.transport.clone()),
             endpoint_host: spec.host.trim().into(),
             endpoint_port: spec.port.unwrap_or(conn::DEFAULT_PORT),
         })
     }
 
     async fn user_session(&self) -> Result<MsClient> {
-        connect(self.pool.config(), SessionKind::User).await
+        self.pool.connect(SessionKind::User).await
     }
 }
 

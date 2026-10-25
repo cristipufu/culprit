@@ -1,9 +1,45 @@
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::model::{Engine, Environment};
+use crate::{Error, ErrorCode, Result};
+
+/// System OpenSSH routing. The destination is `[user@]host` or an alias in the user's SSH configuration.
+/// An omitted port uses that configuration (normally 22); an omitted identity file uses its keys and agent.
+/// Passphrases are handled by the SSH agent, never stored here.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq, Eq, Hash)]
+#[ts(export)]
+pub struct SshConfig {
+    pub destination: String,
+    pub port: Option<u16>,
+    pub identity_file: Option<String>,
+}
+
+/// A runtime route to a database. The logical hostname remains the identity for TLS, tokens and cloud metadata.
+/// Implementations own their forwarding resources until the last provider releases this handle. A SQL Server
+/// gateway may request another endpoint after a validated redirect; that connection must follow the same route.
+#[async_trait::async_trait]
+pub trait ConnectionTransport: Send + Sync {
+    async fn endpoint(&self, host: &str, port: u16) -> Result<SocketAddr>;
+
+    /// A curated transport failure, without subprocess output or secrets. Database authentication errors take priority.
+    fn failure(&self, _host: &str, _port: u16) -> Option<Error> {
+        None
+    }
+}
+
+pub fn transport_error(transport: Option<&dyn ConnectionTransport>, host: &str, port: u16, error: Error) -> Error {
+    if matches!(error.code, ErrorCode::ConnectionFailed | ErrorCode::Timeout)
+        && let Some(failure) = transport.and_then(|transport| transport.failure(host, port))
+    {
+        return failure;
+    }
+    error
+}
 
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -32,6 +68,13 @@ pub struct ConnectionSpec {
     pub environment: Environment,
     /// Driver options such as `encrypt`, `trustServerCertificate`, `sslmode`.
     pub options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ssh: Option<SshConfig>,
+    /// Runtime-only; serialized input cannot redirect a connection or supply a forwarding owner.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub transport: Option<Arc<dyn ConnectionTransport>>,
     #[serde(skip)]
     #[ts(skip)]
     pub password: Option<String>,
@@ -93,6 +136,14 @@ pub fn is_local_host(host: &str) -> bool {
 }
 
 impl ConnectionSpec {
+    pub fn check_transport(&self) -> Result<()> {
+        if self.ssh.is_some() && self.transport.is_none() {
+            return Err(Error::invalid("SSH forwarding has not been initialized")
+                .with_hint("Open this connection through Culprit's Workspace so its SSH route is managed"));
+        }
+        Ok(())
+    }
+
     pub fn option(&self, key: &str) -> Option<&str> {
         self.options.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str())
     }
@@ -114,6 +165,8 @@ impl std::fmt::Debug for ConnectionSpec {
             .field("auth", &self.auth)
             .field("environment", &self.environment)
             .field("options", &self.options)
+            .field("ssh", &self.ssh)
+            .field("transport", &self.transport.as_ref().map(|_| "<managed>"))
             .field("password", &self.password.as_ref().map(|_| "<redacted>"))
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .finish()
@@ -123,6 +176,53 @@ impl std::fmt::Debug for ConnectionSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Route;
+    #[async_trait::async_trait]
+    impl ConnectionTransport for Route {
+        async fn endpoint(&self, _: &str, _: u16) -> Result<SocketAddr> {
+            Ok("127.0.0.1:15432".parse().unwrap())
+        }
+        fn failure(&self, _: &str, _: u16) -> Option<Error> {
+            Some(Error::new(ErrorCode::ConnectionFailed, "SSH host key is not trusted"))
+        }
+    }
+
+    #[test]
+    fn forwarding_owners_and_secrets_cannot_cross_serialization() {
+        let spec = ConnectionSpec {
+            host: "db.example.com".into(),
+            transport: Some(Arc::new(Route)),
+            password: Some("private-password".into()),
+            token: Some("private-token".into()),
+            ..Default::default()
+        };
+        let mut serialized = serde_json::to_value(&spec).unwrap();
+        assert!(!serialized.to_string().contains("private-"));
+        assert!(serialized.get("transport").is_none());
+        serialized["transport"] = serde_json::json!({"address": "attacker.example:1234"});
+        let loaded: ConnectionSpec = serde_json::from_value(serialized).unwrap();
+        assert!(loaded.transport.is_none() && loaded.password.is_none() && loaded.token.is_none());
+    }
+
+    #[test]
+    fn an_unresolved_ssh_route_cannot_fall_back_to_a_direct_connection() {
+        let spec = ConnectionSpec {
+            ssh: Some(SshConfig { destination: "bastion".into(), port: None, identity_file: None }),
+            ..Default::default()
+        };
+        assert!(spec.check_transport().is_err());
+        assert!(ConnectionSpec { transport: Some(Arc::new(Route)), ..spec }.check_transport().is_ok());
+    }
+
+    #[test]
+    fn ssh_error_does_not_replace_a_database_authentication_rejection() {
+        let route = Route;
+        let auth = Error::new(ErrorCode::AuthFailed, "Database password rejected");
+        assert_eq!(transport_error(Some(&route), "db", 5432, auth).code, ErrorCode::AuthFailed);
+        let closed = Error::new(ErrorCode::ConnectionFailed, "Connection closed");
+        assert_eq!(transport_error(Some(&route), "db", 5432, closed).message, "SSH host key is not trusted");
+    }
 
     #[test]
     fn entra_tokens_only_go_to_azure_database_hosts() {

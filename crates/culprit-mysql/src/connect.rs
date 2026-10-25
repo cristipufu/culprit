@@ -1,9 +1,10 @@
 use std::path::PathBuf;
-use std::sync::{Once, OnceLock};
+use std::sync::{Arc, Once, OnceLock};
 use std::time::Duration;
 
 use culprit_core::{
-    AuthKind, ConnectionSpec, Engine, Error, ErrorCode, Result, aws_iam_host_allowed, entra_host_allowed, is_local_host,
+    AuthKind, ConnectionSpec, ConnectionTransport, Engine, Error, ErrorCode, Result, aws_iam_host_allowed,
+    entra_host_allowed, is_local_host,
 };
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, DriverError, IoError, OptsBuilder, SslOpts};
@@ -98,6 +99,7 @@ pub enum Scope {
 
 pub struct Connector {
     base: OptsBuilder,
+    transport: Option<Arc<dyn ConnectionTransport>>,
     flavor: OnceLock<Flavor>,
     /// `VERSION()` as the server reports it, read with the flavor on the first session.
     version: OnceLock<String>,
@@ -110,6 +112,7 @@ pub struct Connector {
 
 impl Connector {
     pub fn new(spec: &ConnectionSpec) -> Result<Connector> {
+        spec.check_transport()?;
         install_crypto_provider();
         let host = spec.host.trim().to_string();
         if host.is_empty() {
@@ -176,6 +179,7 @@ impl Connector {
             .map(PathBuf::from);
         Ok(Connector {
             base,
+            transport: spec.transport.clone(),
             flavor: OnceLock::new(),
             version: OnceLock::new(),
             tls,
@@ -204,13 +208,14 @@ impl Connector {
     /// Open a session in `scope`, prepared with the read-only settings. The session is set up before it enters the
     /// application's database, so the setup statements are never counted as the application's workload.
     pub async fn connect(&self, scope: Scope) -> Result<Conn> {
-        let attempt = self.open(self.tls).await;
+        let base = self.dial_options().await?;
+        let attempt = self.open(self.tls, &base).await;
         let mut conn = match attempt {
             // PREFERRED: the server doesn't do TLS at all, or no encrypted session can be agreed (MySQL 5.7 builds on
             // OpenSSL 1.0 only negotiate DHE suites, which rustls doesn't offer). Continue in plaintext like the mysql
             // client does; PREFERRED never verified the certificate, so nothing that was protected is given up.
             Err(e) if self.tls == Tls::Preferred && (no_server_tls(&e) || is_tls_handshake_error(&e)) => {
-                self.open(Tls::Disabled).await.map_err(|e| self.connect_error(e))?
+                self.open(Tls::Disabled, &base).await.map_err(|e| self.connect_error(e))?
             }
             other => other.map_err(|e| self.connect_error(e))?,
         };
@@ -252,9 +257,19 @@ impl Connector {
         self.flavor() == Flavor::Mariadb || self.version().is_none_or(|v| culprit_core::version_at_least(v, [8, 0, 18]))
     }
 
-    async fn open(&self, tls: Tls) -> std::result::Result<Conn, mysql_async::Error> {
+    async fn dial_options(&self) -> Result<OptsBuilder> {
+        let mut base = self.base.clone();
+        if let Some(transport) = &self.transport {
+            let address = transport.endpoint(&self.host, self.port).await?;
+            // Retain ip_or_hostname for TLS SNI and certificate verification; resolved_ips changes TCP dialing only.
+            base = base.resolved_ips(Some(vec![address.ip()])).tcp_port(address.port());
+        }
+        Ok(base)
+    }
+
+    async fn open(&self, tls: Tls, base: &OptsBuilder) -> std::result::Result<Conn, mysql_async::Error> {
         // Sessions always open without a database; `connect` enters it once the session is set up.
-        let opts = self.base.clone().db_name(None::<String>).ssl_opts(self.ssl_opts(tls));
+        let opts = base.clone().db_name(None::<String>).ssl_opts(self.ssl_opts(tls));
         match tokio::time::timeout(CONNECT_TIMEOUT, Conn::new(opts)).await {
             Ok(result) => result,
             Err(_) => Err(mysql_async::Error::Io(IoError::Io(std::io::Error::new(
@@ -265,6 +280,15 @@ impl Connector {
     }
 
     fn connect_error(&self, error: mysql_async::Error) -> Error {
+        culprit_core::transport_error(
+            self.transport.as_deref(),
+            &self.host,
+            self.port,
+            self.database_connect_error(error),
+        )
+    }
+
+    fn database_connect_error(&self, error: mysql_async::Error) -> Error {
         let (host, port) = (&self.host, self.port);
         let mapped = map_error(error);
         if mapped.code != ErrorCode::ConnectionFailed && mapped.code != ErrorCode::Timeout {
@@ -371,6 +395,33 @@ pub fn map_error(error: mysql_async::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Route;
+    #[async_trait::async_trait]
+    impl ConnectionTransport for Route {
+        async fn endpoint(&self, host: &str, port: u16) -> Result<std::net::SocketAddr> {
+            assert_eq!((host, port), ("shop.abc.us-east-1.rds.amazonaws.com", 3306));
+            Ok("127.0.0.1:13306".parse().unwrap())
+        }
+    }
+
+    #[tokio::test]
+    async fn routed_tcp_keeps_the_remote_tls_and_iam_identity() {
+        let spec = ConnectionSpec {
+            host: "shop.abc.us-east-1.rds.amazonaws.com".into(),
+            auth: AuthKind::AwsIam,
+            token: Some("short-lived-token".into()),
+            transport: Some(Arc::new(Route)),
+            ..spec()
+        };
+        let connector = Connector::new(&spec).unwrap();
+        let opts: mysql_async::Opts = connector.dial_options().await.unwrap().into();
+        assert_eq!(opts.ip_or_hostname(), spec.host);
+        assert_eq!(opts.resolved_ips().as_deref(), Some(&["127.0.0.1".parse::<std::net::IpAddr>().unwrap()][..]));
+        assert_eq!(opts.tcp_port(), 13306);
+        assert_eq!(connector.tls, Tls::VerifyIdentity);
+        assert_eq!(connector.port, 3306);
+    }
 
     fn spec() -> ConnectionSpec {
         ConnectionSpec {

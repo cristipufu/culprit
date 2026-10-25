@@ -53,6 +53,8 @@ impl StoredConnection {
             auth: self.auth,
             environment: self.environment,
             options: self.options.clone(),
+            ssh: None,
+            transport: None,
             password: None,
             token: None,
         }
