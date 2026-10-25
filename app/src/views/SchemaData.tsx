@@ -25,9 +25,10 @@ export function SchemaData({ report, table }: { report: Report; table: TableStat
   const [error, setError] = useState<ApiError | null>(null);
   const request = useRef(new LatestRequest());
   const running = useRef(false);
+  const pending = useRef<AbortController | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const help = useId();
-  useEffect(() => () => request.current.invalidate(), []);
+  useEffect(() => () => { request.current.invalidate(); pending.current?.abort(); }, []);
   const order = preview?.options.order ?? null;
   const applied = preview?.options.filter ?? "";
   const dirty = filter.trim() !== applied;
@@ -40,15 +41,18 @@ export function SchemaData({ report, table }: { report: Report; table: TableStat
     if (running.current) return;
     running.current = true;
     const owns = request.current.start();
+    const controller = new AbortController();
+    pending.current = controller;
     const options: TablePreviewOptions = { schema: table.schema, table: table.name, filter: nextFilter.trim() || null, order: nextOrder, limit: ROWS };
     setBusy(true); setError(null);
     try {
-      const result = await (await api()).previewTable(snapshot.connection, options);
+      const result = await (await api()).previewTable(snapshot.connection, options, controller.signal);
       if (owns() && getState().active === snapshot.connection) setPreview({ ...result, options });
     } catch (error) {
       if (owns() && getState().active === snapshot.connection) setError(errorMessage(error));
     } finally {
       running.current = false;
+      if (pending.current === controller) pending.current = null;
       if (owns()) setBusy(false);
     }
   };

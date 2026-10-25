@@ -18,8 +18,19 @@ use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
-mod discovery;
+mod requests;
 mod screenshot;
+
+#[derive(Default)]
+struct DiscoveryRequests(requests::WindowRequests);
+
+struct PreviewRequests(requests::WindowRequests);
+
+impl Default for PreviewRequests {
+    fn default() -> Self {
+        Self(requests::WindowRequests::serialized())
+    }
+}
 
 type Ws<'a> = State<'a, Arc<Workspace>>;
 
@@ -86,42 +97,38 @@ async fn rename_connection(ws: Ws<'_>, old: String, new: String) -> Result<Conne
 #[tauri::command]
 fn begin_discovery(
     window: tauri::WebviewWindow,
-    requests: State<'_, discovery::DiscoveryRequests>,
+    requests: State<'_, DiscoveryRequests>,
     request_id: String,
 ) -> Result<()> {
-    requests.begin(window.label(), request_id)
+    requests.0.begin(window.label(), request_id)
 }
 
 #[tauri::command]
-fn cancel_discovery(
-    window: tauri::WebviewWindow,
-    requests: State<'_, discovery::DiscoveryRequests>,
-    request_id: String,
-) {
-    requests.cancel(window.label(), &request_id);
+fn cancel_discovery(window: tauri::WebviewWindow, requests: State<'_, DiscoveryRequests>, request_id: String) {
+    requests.0.cancel(window.label(), &request_id);
 }
 
 #[tauri::command]
 async fn discover_azure(
     ws: Ws<'_>,
     window: tauri::WebviewWindow,
-    requests: State<'_, discovery::DiscoveryRequests>,
+    requests: State<'_, DiscoveryRequests>,
     terms: Vec<String>,
     request_id: String,
 ) -> Result<culprit_engine::DiscoveryResult> {
-    requests.run(window.label(), &request_id, ws.discover_azure(&terms)).await
+    requests.0.run(window.label(), &request_id, ws.discover_azure(&terms)).await
 }
 
 #[tauri::command]
 async fn discover_aws(
     ws: Ws<'_>,
     window: tauri::WebviewWindow,
-    requests: State<'_, discovery::DiscoveryRequests>,
+    requests: State<'_, DiscoveryRequests>,
     terms: Vec<String>,
     regions: Vec<String>,
     request_id: String,
 ) -> Result<culprit_engine::DiscoveryResult> {
-    requests.run(window.label(), &request_id, ws.discover_aws(&regions, &terms)).await
+    requests.0.run(window.label(), &request_id, ws.discover_aws(&regions, &terms)).await
 }
 
 #[tauri::command]
@@ -498,12 +505,25 @@ async fn run_sql(ws: Ws<'_>, name: String, sql: String, limit: usize, confirmed:
 }
 
 #[tauri::command]
+fn begin_preview(window: tauri::WebviewWindow, requests: State<'_, PreviewRequests>, request_id: String) -> Result<()> {
+    requests.0.begin(window.label(), request_id)
+}
+
+#[tauri::command]
+fn cancel_preview(window: tauri::WebviewWindow, requests: State<'_, PreviewRequests>, request_id: String) {
+    requests.0.cancel(window.label(), &request_id);
+}
+
+#[tauri::command]
 async fn preview_table(
     ws: Ws<'_>,
+    window: tauri::WebviewWindow,
+    requests: State<'_, PreviewRequests>,
+    request_id: String,
     name: String,
     options: culprit_core::TablePreviewOptions,
 ) -> Result<culprit_core::TablePreview> {
-    ws.preview_table(&name, &options).await
+    requests.0.run(window.label(), &request_id, ws.preview_table(&name, &options)).await
 }
 
 /// Every check Culprit can run, so the app can say what it looked at and found fine.
@@ -762,10 +782,12 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .manage(Announced::default())
         .manage(SignIn::default())
         .manage(PendingUpdate::default())
-        .manage(discovery::DiscoveryRequests::default())
+        .manage(DiscoveryRequests::default())
+        .manage(PreviewRequests::default())
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
-                window.state::<discovery::DiscoveryRequests>().close(window.label());
+                window.state::<DiscoveryRequests>().0.close(window.label());
+                window.state::<PreviewRequests>().0.close(window.label());
             }
         })
         .setup(move |app| {
@@ -786,6 +808,8 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
         })
         .on_page_load(move |webview, payload| {
             if payload.event() != PageLoadEvent::Finished {
+                webview.state::<DiscoveryRequests>().0.close(webview.label());
+                webview.state::<PreviewRequests>().0.close(webview.label());
                 return;
             }
             // The window starts hidden so it never flashes white; show it once the page (and its CSS) is in.
@@ -844,6 +868,8 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
             waits,
             wait_sample,
             run_sql,
+            begin_preview,
+            cancel_preview,
             preview_table,
             deadlocks,
             parse_deadlock,

@@ -254,7 +254,7 @@ accepts a WHERE expression; Enter or
 **Apply filter** sends it through the backend's read-only policy. Column headers cycle server ordering through
 ascending, descending and unsorted. Sorting uses the applied filter, while unsubmitted edits remain marked as a
 draft. A failed read keeps the last successful preview visible. Only one read runs at a time; leaving the table or
-connection retires its response. **Open in editor** carries the current expression and ordering into a query tab.
+connection cancels the in-flight preview and retires its response. **Open in editor** carries the current expression and ordering into a query tab.
 The workspace also permits only one table preview across views and windows. Built-in providers give preview queries
 a five-second execution budget, enforce server limits where available and cancel SQL Server requests explicitly.
 The row limit bounds returned data; an unindexed filter or sort may still require a scan, so it is also time bounded.

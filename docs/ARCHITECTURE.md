@@ -63,6 +63,9 @@ caller and observe its handle before starting work and in SQLite's VM progress h
 Providers use `ResultBudget` before allocating display values and drain network results through completion even after
 retention stops, so a late failure cannot become a successful write. Runtime providers follow the same cancellation
 and retention contract; the workspace also clamps the row request before handing it to them.
+Desktop discovery and table previews share ordered request ownership per window. Leaving a Data tab, replacing a
+preview, reloading or closing its window drops its backend future. A preview replacement waits for the retired
+future to release its workspace permit before starting.
 Table previews use `sql::table_preview_sql` to keep a filter inside its WHERE expression under every supported
 quoting mode, quote identifiers and bound server rows. `Execution::preview_table` holds a workspace-wide permit,
 uses the same read-only checks as the editor, and dispatches `Provider::preview`. Built-in preview execution has a
