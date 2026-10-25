@@ -22,7 +22,7 @@ trait Transport: Send + Sync {
 }
 
 async fn az_output(args: &[&str]) -> Result<std::process::Output> {
-    let mut command = crate::cloud_cli::command(crate::cloud_cli::Cli::Azure);
+    let mut command = crate::program::command(crate::program::Cli::Azure)?;
     command.args(args);
     crate::cloud_process::output(command).await.map_err(|error| {
         if error.code == ErrorCode::NotFound {

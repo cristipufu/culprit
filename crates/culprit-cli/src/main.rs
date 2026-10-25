@@ -4,6 +4,7 @@ mod locks;
 mod output;
 mod plan_cmd;
 mod share_cmd;
+mod ssh;
 mod timeline_cmd;
 mod update_cmd;
 mod waits_cmd;
@@ -308,6 +309,8 @@ struct DiscoverArgs {
 #[derive(Args)]
 struct AddArgs {
     name: String,
+    #[command(flatten)]
+    ssh: ssh::SshArgs,
     /// Connection string or host (postgres://…, mssql://…, Server=…;Database=…, jdbc:…, host=… dbname=…), or a SQLite
     /// file's path.
     #[arg(long)]
@@ -1109,6 +1112,7 @@ async fn conn(ws: &Workspace, command: ConnCommand, out: &Out) -> culprit_core::
                     EngineArg::Mysql => Engine::Mysql,
                     EngineArg::Sqlite => Engine::Sqlite,
                 }),
+                ssh: args.ssh.config(),
                 database: args.database,
                 user: args.user,
                 password,
@@ -1191,6 +1195,39 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[test]
+    fn ssh_connection_flags_parse_and_cannot_silently_drop_an_incomplete_route() {
+        let cli = Cli::try_parse_from([
+            "culprit",
+            "conn",
+            "add",
+            "shop",
+            "--url",
+            "postgres://app@db/shop",
+            "--ssh",
+            "reader@bastion",
+            "--ssh-port",
+            "2222",
+            "--ssh-key",
+            "key with spaces",
+        ])
+        .unwrap();
+        let Command::Conn(ConnCommand::Add(args)) = cli.command else { panic!("connection add") };
+        let ssh = args.ssh.config().unwrap();
+        assert_eq!(ssh.destination, "reader@bastion");
+        assert_eq!(ssh.port, Some(2222));
+        assert_eq!(ssh.identity_file.as_deref(), Some("key with spaces"));
+        for args in [vec!["--ssh-key", "key"], vec!["--ssh-port", "2222"], vec!["--ssh", "bastion", "--ssh-port", "0"]]
+        {
+            let mut command = vec!["culprit", "conn", "add", "shop", "--url", "postgres://app@db/shop"];
+            command.extend(args);
+            assert!(Cli::try_parse_from(command).is_err());
+        }
+        assert!(Cli::try_parse_from(["culprit", "conn", "set", "shop", "--ssh", "bastion"]).is_ok());
+        assert!(Cli::try_parse_from(["culprit", "conn", "set", "shop", "--no-ssh"]).is_ok());
+        assert!(Cli::try_parse_from(["culprit", "conn", "set", "shop", "--ssh", "bastion", "--no-ssh"]).is_err());
+    }
 
     #[test]
     fn saved_file_findings_apply_current_health_rules_without_rewriting_the_file() {

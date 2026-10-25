@@ -46,6 +46,7 @@ fn add_file(ws: &Workspace, name: &str, path: &Path) -> culprit_core::Result<cul
         user: None,
         password: None,
         password_env: None,
+        ssh: None,
         auth: None,
     })
 }

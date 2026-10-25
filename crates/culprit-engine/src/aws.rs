@@ -25,7 +25,7 @@ const INSTALL_HINT: &str = if cfg!(target_os = "macos") {
 
 /// Run the AWS CLI and return stdout, turning "not installed" and "not signed in" into actionable errors.
 pub(crate) async fn run(args: &[&str]) -> Result<Vec<u8>> {
-    let mut command = crate::cloud_cli::command(crate::cloud_cli::Cli::Aws);
+    let mut command = crate::program::command(crate::program::Cli::Aws)?;
     command.args(args).env("AWS_PAGER", "").env("AWS_CLI_AUTO_PROMPT", "off");
     let output = crate::cloud_process::output(command).await.map_err(|error| {
         if error.code == ErrorCode::NotFound {

@@ -538,6 +538,7 @@ mod tests {
             last_report: None,
             agent_access: Default::default(),
             query_log: None,
+            ssh: None,
         }
     }
 

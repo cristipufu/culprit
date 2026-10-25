@@ -21,6 +21,7 @@ pub(crate) struct Connections<'a> {
     pub secrets: &'a dyn SecretStore,
     pub entra: &'a entra::EntraAuth,
     pub providers: &'a [(Engine, ProviderFactory)],
+    pub ssh: &'a crate::ssh::Manager,
 }
 
 impl Connections<'_> {
@@ -70,6 +71,7 @@ impl Connections<'_> {
             last_report: reports::latest_summary(&self.paths.reports_dir(name), None),
             agent_access: stored.agent.unwrap_or_default(),
             query_log: stored.query_log.clone(),
+            ssh: stored.ssh.clone(),
         }
     }
 
@@ -154,6 +156,7 @@ impl Connections<'_> {
             password_env,
             password_saved,
             options: spec.options,
+            ssh: spec.ssh,
             agent: None,
             query_log: None,
             no_query_log: false,
@@ -193,6 +196,17 @@ impl Connections<'_> {
     /// anything that changes data.
     pub(crate) fn set_environment(&self, name: &str, environment: Environment) -> Result<ConnectionInfo> {
         self.store.update(name, |stored| stored.environment = environment)?;
+        self.connection(name)
+    }
+
+    pub(crate) fn set_ssh(&self, name: &str, ssh: Option<culprit_core::SshConfig>) -> Result<ConnectionInfo> {
+        self.store.try_update(name, |stored| {
+            let mut spec = stored.spec();
+            spec.ssh = ssh;
+            crate::ssh::validate_spec(&mut spec)?;
+            stored.ssh = spec.ssh;
+            Ok(())
+        })?;
         self.connection(name)
     }
 
@@ -287,6 +301,7 @@ impl Connections<'_> {
             password_env: None,
             password_saved: (auth == AuthKind::Password).then_some(false),
             options,
+            ssh: None,
             agent: None,
             query_log: None,
             no_query_log: false,
@@ -333,6 +348,7 @@ impl Connections<'_> {
             password_env: None,
             password_saved: (auth == AuthKind::Password).then_some(false),
             options,
+            ssh: None,
             agent: None,
             query_log: None,
             no_query_log: false,
@@ -406,15 +422,36 @@ impl Connections<'_> {
     /// Open a provider for a saved connection, resolving the password from the keychain or a fresh Entra token.
     pub(crate) async fn provider(&self, name: &str) -> Result<Box<dyn Provider>> {
         let stored = self.store.get(name)?;
+        self.provider_from_saved(name, &stored, stored.ssh.clone()).await
+    }
+
+    async fn provider_from_saved(
+        &self,
+        name: &str,
+        stored: &StoredConnection,
+        ssh: Option<culprit_core::SshConfig>,
+    ) -> Result<Box<dyn Provider>> {
         let mut spec = stored.spec();
+        spec.ssh = ssh;
+        self.ssh.attach(&mut spec)?;
         self.resolve_secrets(name, stored.password_env.as_deref(), &mut spec).await?;
         self.materialize_certificates(&mut spec)?;
         self.open_provider(&spec)
     }
 
+    pub(crate) async fn test_ssh(&self, name: &str, ssh: Option<culprit_core::SshConfig>) -> Result<ServerInfo> {
+        let stored = self.store.get(name)?;
+        let provider = self.provider_from_saved(name, &stored, ssh).await?;
+        self.forget_rejected(
+            name,
+            crate::operation::within(culprit_core::limits::OBSERVE_TIMEOUT, provider.probe()).await,
+        )
+    }
+
     /// Open a provider for an unsaved connection (used by "Test" before saving).
     pub(crate) async fn provider_for(&self, new: &NewConnection) -> Result<Box<dyn Provider>> {
         let mut spec = merge(new)?;
+        self.ssh.attach(&mut spec)?;
         spec.environment = new.environment;
         self.resolve_token(&mut spec).await?;
         self.materialize_certificates(&mut spec)?;
@@ -544,6 +581,8 @@ fn merge(new: &NewConnection) -> Result<ConnectionSpec> {
         spec.database = Some(absolute.to_string_lossy().into_owned());
     }
     spec.environment = new.environment;
+    spec.ssh = new.ssh.clone();
+    crate::ssh::validate_spec(&mut spec)?;
     Ok(spec)
 }
 

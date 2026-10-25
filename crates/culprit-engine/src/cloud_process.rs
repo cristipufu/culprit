@@ -2,29 +2,13 @@
 use std::process::{Output, Stdio};
 use std::time::Duration;
 
+use crate::process::OwnedChild;
 use culprit_core::{Error, ErrorCode, Result};
-#[cfg(windows)]
-use process_wrap::tokio::JobObject;
-#[cfg(unix)]
-use process_wrap::tokio::ProcessGroup;
-use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
 use tokio::{io::AsyncReadExt, process::Command};
 
 pub(crate) const MAX_OUTPUT: usize = 2 * 1024 * 1024;
 const MAX_STDERR: usize = 16 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(15);
-
-struct OwnedChild {
-    child: Box<dyn ChildWrapper>,
-    finished: bool,
-}
-impl Drop for OwnedChild {
-    fn drop(&mut self) {
-        if !self.finished {
-            let _ = self.child.start_kill();
-        }
-    }
-}
 
 async fn read(reader: impl tokio::io::AsyncRead + Unpin, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
@@ -47,13 +31,7 @@ pub(crate) async fn output(command: Command) -> Result<Output> {
 async fn within(mut command: Command, timeout: Duration) -> Result<Output> {
     tokio::time::timeout(timeout, async {
         command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut command = CommandWrap::from(command);
-        command.wrap(KillOnDrop);
-        #[cfg(unix)]
-        command.wrap(ProcessGroup::leader());
-        #[cfg(windows)]
-        command.wrap(JobObject);
-        let child = command.spawn().map_err(|error| {
+        let mut child = OwnedChild::spawn(command).map_err(|error| {
             Error::new(
                 if error.kind() == std::io::ErrorKind::NotFound {
                     ErrorCode::NotFound
@@ -63,7 +41,6 @@ async fn within(mut command: Command, timeout: Duration) -> Result<Output> {
                 "Could not start the cloud CLI",
             )
         })?;
-        let mut child = OwnedChild { child, finished: false };
         let stdout = child.child.stdout().take().expect("piped stdout");
         let stderr = child.child.stderr().take().expect("piped stderr");
         let result = tokio::try_join!(read(stdout, MAX_OUTPUT), read(stderr, MAX_STDERR), async {

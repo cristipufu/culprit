@@ -3,12 +3,14 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+use culprit_core::{Error, Result};
 use tokio::process::Command;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Cli {
     Azure,
     Aws,
+    Ssh,
 }
 
 #[derive(Clone, Copy)]
@@ -25,11 +27,13 @@ impl Cli {
             (Self::Aws, Platform::Windows) => &["aws.exe", "aws.cmd", "aws.bat"],
             (Self::Azure, _) => &["az"],
             (Self::Aws, _) => &["aws"],
+            (Self::Ssh, Platform::Windows) => &["ssh.exe"],
+            (Self::Ssh, _) => &["ssh"],
         }
     }
 }
 
-pub(crate) fn command(cli: Cli) -> Command {
+pub(crate) fn command(cli: Cli) -> Result<Command> {
     let platform = if cfg!(windows) {
         Platform::Windows
     } else if cfg!(target_os = "macos") {
@@ -38,7 +42,15 @@ pub(crate) fn command(cli: Cli) -> Command {
         Platform::Linux
     };
     let home = dirs::home_dir();
-    let extra = locations(cli, platform, home.as_deref(), |key| std::env::var_os(key));
+    let mut extra = locations(cli, platform, home.as_deref(), |key| std::env::var_os(key));
+    // ProxyCommand tools (for example AWS SSM) need the same GUI-safe child PATH as direct cloud calls.
+    for other in [Cli::Azure, Cli::Aws, Cli::Ssh] {
+        for path in locations(other, platform, home.as_deref(), |key| std::env::var_os(key)) {
+            if !extra.contains(&path) {
+                extra.push(path);
+            }
+        }
+    }
     let inherited = std::env::var_os("PATH");
     build(cli, platform, inherited.as_deref(), &extra)
 }
@@ -65,13 +77,30 @@ fn locations(
             paths.extend(["/snap/bin".into(), "/home/linuxbrew/.linuxbrew/bin".into()]);
         }
     } else {
+        for variable in ["SystemRoot", "WINDIR"] {
+            if let Some(root) = env(variable) {
+                let root = PathBuf::from(root);
+                paths.extend([root.join("System32"), root.join("System32/WindowsPowerShell/v1.0")]);
+            }
+        }
+        if matches!(cli, Cli::Ssh) {
+            for variable in ["SystemRoot", "WINDIR"] {
+                if let Some(root) = env(variable) {
+                    paths.push(PathBuf::from(root).join("System32").join("OpenSSH"));
+                }
+            }
+        }
         for variable in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
             if let Some(root) = env(variable) {
                 let root = PathBuf::from(root);
                 paths.push(match cli {
                     Cli::Azure => root.join("Microsoft SDKs").join("Azure").join("CLI2").join("wbin"),
                     Cli::Aws => root.join("Amazon").join("AWSCLIV2"),
+                    Cli::Ssh => root.join("OpenSSH"),
                 });
+                if matches!(cli, Cli::Aws) {
+                    paths.push(root.join("Amazon").join("SessionManagerPlugin").join("bin"));
+                }
             }
         }
         if let Some(root) = env("LOCALAPPDATA") {
@@ -114,9 +143,9 @@ fn executable(path: &Path) -> bool {
     true
 }
 
-fn build(cli: Cli, platform: Platform, inherited: Option<&OsStr>, extra: &[PathBuf]) -> Command {
+fn build(cli: Cli, platform: Platform, inherited: Option<&OsStr>, extra: &[PathBuf]) -> Result<Command> {
     let mut paths: Vec<PathBuf> =
-        inherited.into_iter().flat_map(std::env::split_paths).filter(|path| !path.as_os_str().is_empty()).collect();
+        inherited.into_iter().flat_map(std::env::split_paths).filter(|path| path.is_absolute()).collect();
     for path in extra {
         if !paths.contains(path) {
             paths.push(path.clone());
@@ -125,11 +154,19 @@ fn build(cli: Cli, platform: Platform, inherited: Option<&OsStr>, extra: &[PathB
     let names = cli.names(platform);
     let binary =
         paths.iter().flat_map(|dir| names.iter().map(move |name| dir.join(name))).find(|path| executable(path));
-    let mut command = Command::new(binary.unwrap_or_else(|| PathBuf::from(names[0])));
+    let binary = binary.ok_or_else(|| match cli {
+        Cli::Azure => Error::not_found("The Azure CLI was not found in PATH or standard install locations")
+            .with_hint("Install the Azure CLI and run az login"),
+        Cli::Aws => Error::not_found("The AWS CLI was not found in PATH or standard install locations")
+            .with_hint("Install AWS CLI v2 and sign in with aws login or aws sso login"),
+        Cli::Ssh => Error::not_found("Could not find the OpenSSH client")
+            .with_hint("Install OpenSSH Client on Windows, or the openssh client package on Linux; macOS includes ssh"),
+    })?;
+    let mut command = Command::new(binary);
     if let Ok(path) = std::env::join_paths(&paths) {
         command.env("PATH", path);
     }
-    command
+    Ok(command)
 }
 
 #[cfg(test)]
@@ -168,13 +205,38 @@ mod tests {
     }
 
     #[test]
+    fn windows_openssh_is_found_without_relying_on_the_gui_path() {
+        let temp = Temp::new();
+        let chosen = temp.cli("Windows/System32/OpenSSH", "ssh.exe");
+        let paths = locations(Cli::Ssh, Platform::Windows, None, |key| {
+            (key == "SystemRoot").then(|| temp.0.join("Windows").into_os_string())
+        });
+        assert_eq!(build(Cli::Ssh, Platform::Windows, None, &paths).unwrap().as_std().get_program(), chosen);
+    }
+
+    #[test]
+    fn relative_path_entries_and_missing_tools_cannot_fall_back_to_the_current_directory() {
+        let temp = Temp::new();
+        let inherited = std::env::join_paths([PathBuf::from("."), PathBuf::from("relative-tools")]).unwrap();
+        assert!(build(Cli::Ssh, Platform::Windows, Some(&inherited), &[]).is_err());
+        let chosen = temp.cli("absolute-tools", "ssh.exe");
+        assert_eq!(
+            build(Cli::Ssh, Platform::Windows, Some(&inherited), &[temp.0.join("absolute-tools")])
+                .unwrap()
+                .as_std()
+                .get_program(),
+            chosen
+        );
+    }
+
+    #[test]
     fn inherited_path_precedes_fallbacks_and_is_extended_only_for_the_child() {
         let temp = Temp::new();
         let chosen = temp.cli("custom", "az");
         temp.cli("fallback", "az");
         let inherited = std::env::join_paths([temp.0.join("custom")]).unwrap();
         let original = std::env::var_os("PATH");
-        let command = build(Cli::Azure, Platform::Linux, Some(&inherited), &[temp.0.join("fallback")]);
+        let command = build(Cli::Azure, Platform::Linux, Some(&inherited), &[temp.0.join("fallback")]).unwrap();
         assert_eq!(command.as_std().get_program(), chosen);
         assert_eq!(
             std::env::split_paths(&child_path(&command)).collect::<Vec<_>>(),
@@ -189,7 +251,7 @@ mod tests {
             let temp = Temp::new();
             let chosen = temp.cli(".local/bin", "aws");
             let paths = locations(Cli::Aws, platform, Some(&temp.0), |_| None);
-            let command = build(Cli::Aws, platform, None, &paths);
+            let command = build(Cli::Aws, platform, None, &paths).unwrap();
             assert_eq!(command.as_std().get_program(), chosen);
         }
     }
@@ -215,7 +277,7 @@ mod tests {
         };
         for (cli, expected) in [(Cli::Azure, az), (Cli::Aws, aws)] {
             let paths = locations(cli, Platform::Windows, None, env);
-            assert_eq!(build(cli, Platform::Windows, None, &paths).as_std().get_program(), expected);
+            assert_eq!(build(cli, Platform::Windows, None, &paths).unwrap().as_std().get_program(), expected);
         }
     }
 
@@ -226,7 +288,7 @@ mod tests {
         temp.cli("system", "az.cmd");
         let path = std::env::join_paths([temp.0.join("portable tools")]).unwrap();
         assert_eq!(
-            build(Cli::Azure, Platform::Windows, Some(&path), &[temp.0.join("system")]).as_std().get_program(),
+            build(Cli::Azure, Platform::Windows, Some(&path), &[temp.0.join("system")]).unwrap().as_std().get_program(),
             chosen
         );
     }
@@ -238,7 +300,7 @@ mod tests {
         let paths = locations(Cli::Aws, Platform::Linux, None, |key| {
             (key == "XDG_BIN_HOME").then(|| temp.0.join("xdg bin").into_os_string())
         });
-        assert_eq!(build(Cli::Aws, Platform::Linux, None, &paths).as_std().get_program(), aws);
+        assert_eq!(build(Cli::Aws, Platform::Linux, None, &paths).unwrap().as_std().get_program(), aws);
 
         for (cli, variable, dir, name) in [
             (Cli::Azure, "ProgramFiles(x86)", "Program Files (x86)/Microsoft SDKs/Azure/CLI2/wbin", "az.cmd"),
@@ -252,7 +314,7 @@ mod tests {
                         .into_os_string()
                 })
             });
-            assert_eq!(build(cli, Platform::Windows, None, &paths).as_std().get_program(), expected);
+            assert_eq!(build(cli, Platform::Windows, None, &paths).unwrap().as_std().get_program(), expected);
         }
     }
 
@@ -274,7 +336,7 @@ mod tests {
         std::fs::write(&path, script).unwrap();
         let mut paths = vec![path.parent().unwrap().to_owned()];
         paths.extend(locations(Cli::Azure, platform, None, |_| None));
-        let mut command = build(Cli::Azure, platform, None, &paths);
+        let mut command = build(Cli::Azure, platform, None, &paths).unwrap();
         command.args(["alpha beta", "next"]);
         let output = crate::cloud_process::output(command).await.unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
@@ -285,9 +347,9 @@ mod tests {
     fn a_new_install_is_found_without_restarting_or_loading_shell_profiles() {
         let temp = Temp::new();
         let paths = vec![temp.0.join("tools")];
-        assert_eq!(build(Cli::Azure, Platform::Linux, None, &paths).as_std().get_program(), "az");
+        assert!(build(Cli::Azure, Platform::Linux, None, &paths).is_err());
         let installed = temp.cli("tools", "az");
-        assert_eq!(build(Cli::Azure, Platform::Linux, None, &paths).as_std().get_program(), installed);
+        assert_eq!(build(Cli::Azure, Platform::Linux, None, &paths).unwrap().as_std().get_program(), installed);
     }
 
     #[cfg(unix)]
@@ -300,7 +362,7 @@ mod tests {
         std::fs::set_permissions(&invalid, std::fs::Permissions::from_mode(0o644)).unwrap();
         let path = std::env::join_paths([temp.0.join("bad")]).unwrap();
         assert_eq!(
-            build(Cli::Azure, Platform::Linux, Some(&path), &[temp.0.join("good")]).as_std().get_program(),
+            build(Cli::Azure, Platform::Linux, Some(&path), &[temp.0.join("good")]).unwrap().as_std().get_program(),
             chosen
         );
     }

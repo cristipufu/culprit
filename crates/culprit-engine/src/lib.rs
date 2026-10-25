@@ -4,7 +4,6 @@ pub mod aws;
 pub mod catalog;
 pub mod changes;
 pub mod cloud;
-mod cloud_cli;
 mod cloud_process;
 mod connection;
 pub mod connstr;
@@ -22,6 +21,8 @@ pub mod marks;
 mod operation;
 pub mod plans;
 mod private_fs;
+mod process;
+mod program;
 mod query_log;
 pub mod reading;
 pub mod registry;
@@ -31,6 +32,7 @@ pub mod saved;
 mod scan;
 pub mod secrets;
 mod share;
+mod ssh;
 pub mod store;
 pub mod trends;
 
@@ -45,6 +47,7 @@ use ts_rs::TS;
 
 pub use agent::{AgentAccess, ApprovalOutcome, ApprovalRequest, AuditEntry, AuditOutcome};
 pub use culprit_checks::{agent_brief, index_advice};
+pub use culprit_core::SshConfig;
 pub use discover::{Cloud, DiscoveredDatabase, DiscoveryResult};
 pub use import::{ImportCandidate, ImportSource};
 pub use marks::Mark;
@@ -74,6 +77,9 @@ pub struct ConnectionInfo {
     pub agent_access: AgentAccess,
     /// The application's query log scans read the statements from when the database keeps none (SQLite).
     pub query_log: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ssh: Option<SshConfig>,
 }
 
 /// A period on a connection's timeline. Everything is optional: by default the last 7 days.
@@ -149,6 +155,9 @@ pub struct NewConnection {
     /// Read the password from this environment variable at connect time instead of storing it.
     pub password_env: Option<String>,
     pub auth: Option<AuthKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ssh: Option<SshConfig>,
 }
 
 /// What a chosen database file is as a connection's input: its path when the extension says SQLite (`.db`, `.sqlite`,
@@ -187,6 +196,7 @@ pub struct Workspace {
     entra: entra::EntraAuth,
     extra_checks: Vec<Arc<dyn Check>>,
     providers: Vec<(Engine, ProviderFactory)>,
+    ssh: ssh::Manager,
 }
 
 impl Workspace {
@@ -224,6 +234,7 @@ impl Workspace {
             entra: entra::EntraAuth::default(),
             extra_checks: Vec::new(),
             providers: Vec::new(),
+            ssh: ssh::Manager::default(),
         }
     }
 
@@ -234,6 +245,7 @@ impl Workspace {
             secrets: self.secrets.as_ref(),
             entra: &self.entra,
             providers: &self.providers,
+            ssh: &self.ssh,
         }
     }
 
@@ -348,6 +360,16 @@ impl Workspace {
     /// anything that changes data.
     pub fn set_environment(&self, name: &str, environment: Environment) -> Result<ConnectionInfo> {
         self.connection_service().set_environment(name, environment)
+    }
+
+    /// Set or remove SSH routing without changing the database endpoint, authentication or stored credentials.
+    pub fn set_ssh(&self, name: &str, ssh: Option<SshConfig>) -> Result<ConnectionInfo> {
+        self.connection_service().set_ssh(name, ssh)
+    }
+
+    /// Test an SSH draft with the saved database credentials, without changing the saved route or scanning.
+    pub async fn test_ssh(&self, name: &str, ssh: Option<SshConfig>) -> Result<ServerInfo> {
+        self.connection_service().test_ssh(name, ssh).await
     }
 
     /// Rename (re-alias) a connection, carrying its keychain secret and report history along.

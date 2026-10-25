@@ -2,6 +2,7 @@
 import type { AuthKind } from "./AuthKind";
 import type { Engine } from "./Engine";
 import type { Environment } from "./Environment";
+import type { SshConfig } from "./SshConfig";
 
 /**
  * What the UI and CLI send to save a connection. `input` is anything `connstr::parse` understands; explicit fields win over it.
@@ -10,4 +11,4 @@ export type NewConnection = { name: string, input: string, environment: Environm
 /**
  * Read the password from this environment variable at connect time instead of storing it.
  */
-password_env: string | null, auth: AuthKind | null, };
+password_env: string | null, auth: AuthKind | null, ssh?: SshConfig, };

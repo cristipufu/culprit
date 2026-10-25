@@ -46,10 +46,15 @@ pub struct InitArgs {
 
 #[derive(Args)]
 #[command(
-    group = clap::ArgGroup::new("change").required(true).multiple(true).args(["agent", "env", "query_log", "no_query_log"])
+    group = clap::ArgGroup::new("change").required(true).multiple(true).args(["agent", "env", "query_log", "no_query_log", "ssh", "no_ssh"])
 )]
 pub struct SetArgs {
     pub name: String,
+    #[command(flatten)]
+    pub ssh: crate::ssh::SshArgs,
+    /// Stop using the saved SSH jump host; keep the database endpoint and authentication.
+    #[arg(long, conflicts_with = "ssh")]
+    pub no_ssh: bool,
     /// What coding agents may do through `culprit mcp`: off (hidden), stats (findings, statistics, schema, estimated
     /// plans; the default), query (also read-only statements, each approved in the desktop app).
     #[arg(long, value_enum)]
@@ -113,6 +118,13 @@ pub async fn mcp(ws: Workspace, args: McpArgs) -> Result<u8> {
 }
 
 pub fn set(ws: &Workspace, args: SetArgs, out: &Out) -> Result<u8> {
+    if args.no_ssh || args.ssh.ssh.is_some() {
+        let info = ws.set_ssh(&args.name, if args.no_ssh { None } else { args.ssh.config() })?;
+        out.done(&match info.ssh {
+            Some(ssh) => format!("{} uses SSH via {}", info.name, ssh.destination),
+            None => format!("{} connects without SSH forwarding", info.name),
+        });
+    }
     if let Some(env) = args.env {
         let info = ws.set_environment(&args.name, env.into())?;
         out.done(&format!("{} is now marked {}", info.name, format!("{:?}", info.environment).to_lowercase()));

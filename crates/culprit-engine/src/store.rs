@@ -30,6 +30,8 @@ pub struct StoredConnection {
     pub password_saved: Option<bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<culprit_core::SshConfig>,
     /// What coding agents may do with this connection (`culprit mcp`); `stats` when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<crate::agent::AgentAccess>,
@@ -53,7 +55,7 @@ impl StoredConnection {
             auth: self.auth,
             environment: self.environment,
             options: self.options.clone(),
-            ssh: None,
+            ssh: self.ssh.clone(),
             transport: None,
             password: None,
             token: None,
@@ -188,11 +190,18 @@ impl Store {
     }
 
     pub fn update(&self, name: &str, edit: impl FnOnce(&mut StoredConnection)) -> Result<()> {
+        self.try_update(name, |stored| {
+            edit(stored);
+            Ok(())
+        })
+    }
+
+    pub(crate) fn try_update(&self, name: &str, edit: impl FnOnce(&mut StoredConnection) -> Result<()>) -> Result<()> {
         let _lock = private_fs::lock(&self.file).map_err(|e| io_error(&self.file, e))?;
         let mut file = self.load()?;
         let stored =
             file.connections.get_mut(name).ok_or_else(|| Error::not_found(format!("No connection named '{name}'")))?;
-        edit(stored);
+        edit(stored)?;
         self.save(&file)
     }
 

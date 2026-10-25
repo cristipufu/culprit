@@ -829,7 +829,7 @@ async fn az_metrics(id: &str, metrics: &[&str], start: f64, end: f64, period: u3
         "--output",
         "json",
     ]);
-    let mut command = crate::cloud_cli::command(crate::cloud_cli::Cli::Azure);
+    let mut command = crate::program::command(crate::program::Cli::Azure)?;
     command.args(&args);
     crate::cloud_process::output(command).await.map_err(|error| {
         if error.code == ErrorCode::NotFound {
@@ -1047,6 +1047,7 @@ mod tests {
             last_report: None,
             agent_access: Default::default(),
             query_log: None,
+            ssh: None,
         }
     }
 

@@ -4,6 +4,7 @@ import type { AuthKind } from "./AuthKind";
 import type { Engine } from "./Engine";
 import type { Environment } from "./Environment";
 import type { ReportSummary } from "./ReportSummary";
+import type { SshConfig } from "./SshConfig";
 
 export type ConnectionInfo = { name: string, engine: Engine, environment: Environment, host: string, port: number | null, database: string | null, user: string | null, auth: AuthKind, 
 /**
@@ -17,4 +18,4 @@ agent_access: AgentAccess,
 /**
  * The application's query log scans read the statements from when the database keeps none (SQLite).
  */
-query_log: string | null, };
+query_log: string | null, ssh?: SshConfig, };

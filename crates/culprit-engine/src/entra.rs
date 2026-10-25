@@ -494,7 +494,7 @@ pub fn token_user(token: &str) -> Option<String> {
 
 /// A token from the Azure CLI's signed-in account (the CLI caches and refreshes it).
 pub async fn azure_cli_token(engine: Engine) -> Result<String> {
-    let mut command = crate::cloud_cli::command(crate::cloud_cli::Cli::Azure);
+    let mut command = crate::program::command(crate::program::Cli::Azure)?;
     command
         .args(["account", "get-access-token", "--resource", resource(engine), "--query", "accessToken"])
         .args(["--output", "tsv"]);

@@ -81,11 +81,36 @@ The generated `app/src/gen/discovery.json` keeps the demo's result limit aligned
 All Azure and AWS CLI calls, including Entra token acquisition and Azure Monitor reads, use `cloud_process.rs` for
 the subprocess bounds above and close stdin so a background CLI cannot wait for interactive input.
 
-Azure and AWS subprocesses share `cloud_cli.rs`, including authentication and metrics calls. Resolution respects the
+Azure, AWS and OpenSSH subprocesses share `program.rs`, including authentication and metrics calls. Resolution respects the
 inherited PATH first, then standard user and system install directories on macOS, Linux and Windows (including
 Homebrew, XDG user binaries, Windows installers and package-manager shims). Windows batch launchers use Rust's
 native argument escaping. Only the child's PATH is extended, so desktop launches work without loading shell startup
-files or mutating the application's environment. Custom install locations must be on the application's PATH.
+files or mutating the application's environment. Relative PATH entries are ignored; a missing executable is an error,
+never a lookup in the current directory. Custom install locations must be on the application's PATH.
+
+SSH routing lives in `ssh.rs`. `ConnectionSpec.host` and `port` keep the database's identity; the runtime-only
+`ConnectionTransport` supplies a dial address while retaining the route's owner. PostgreSQL/YugabyteDB use `hostaddr`,
+MySQL/MariaDB use resolved IPs, and SQL Server dials the forwarding address separately from its TLS configuration.
+Azure gateway redirects request another endpoint through the same route after the existing redirect checks.
+
+Culprit holds each loopback listener from allocation through teardown, avoiding a bind/rebind race. Each accepted
+database socket owns an OpenSSH `-W` child; an existing user-owned SSH master may be reused, but Culprit creates no
+background master. `process.rs` owns process groups on Unix and Job Objects on Windows, shared with cloud subprocesses.
+Closing a database socket or dropping the last provider kills its owned SSH children, including proxy descendants.
+Forwarding uses fixed buffers; stderr is limited to 16 KiB and mapped to curated errors before a driver receives EOF.
+Closing stderr cannot discard pending database bytes. Session tokens prevent retired SSH failures from replacing a
+new attempt's diagnosis. There are at most 16 live routes per workspace, 16 redirect targets per route, 8 sessions per
+route and 32 SSH sessions per workspace; excess sessions fail without accumulating waiting tasks.
+
+Only SSH destination, optional port and identity-file path are persisted. Known hosts must already be trusted;
+OpenSSH runs in batch mode, with agent/X11 forwarding and local commands disabled. Passwords and key passphrases are
+not collected by Culprit; encrypted keys use the configured SSH agent. Saved route tests reuse database credentials
+without changing the stored connection. Invalid route edits never persist, and unresolved routes never fall back to
+direct database connections. The protocol providers retain normal TLS and cloud-authentication protections.
+
+OpenSSH behavior: [`ssh -W`](https://man.openbsd.org/ssh#W),
+[`ssh_config`](https://man.openbsd.org/ssh_config). Windows requires the optional
+[OpenSSH Client](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse).
 
 Pagination contracts: [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-pagination.html),
 [Azure Resource Graph](https://learn.microsoft.com/en-us/azure/governance/resource-graph/concepts/work-with-data).

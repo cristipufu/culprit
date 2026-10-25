@@ -25,6 +25,7 @@ name = "all"
 path = "tests/all.rs"
 
 [dependencies]
+async-trait.workspace = true
 zeroize = "1.9.1"
 culprit-core.workspace = true
 culprit-checks.workspace = true
@@ -49,7 +50,6 @@ ts-rs.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]
-async-trait.workspace = true
 culprit-checks.workspace = true
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
