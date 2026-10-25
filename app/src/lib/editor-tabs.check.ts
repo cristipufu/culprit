@@ -57,6 +57,16 @@ for (const raw of ["{", "null", JSON.stringify({ version: 1, tabs: [] }), JSON.s
   opened.write(opened.initial);
   check(broken.getItem(editorScope(a)) === raw, "Malformed stored copies must remain available for recovery");
 }
+for (const raw of ["{", "x".repeat(3 * 1024 * 1024), JSON.stringify({ tabs: tooMany, active: tooMany[0]!.id }), JSON.stringify({ tabs: [{ ...first, title: "x".repeat(1025) }], active: first.id })]) {
+  const broken = new MemoryStorage(); broken.setItem("culprit.editor.tabs", raw);
+  for (const connection of [a, b]) {
+    const opened = new EditorTabStorage(connection, "-- Fresh", broken);
+    check(opened.error, "Unreadable legacy data must be reported");
+    check(opened.write(opened.initial) === null, "An unreadable global legacy workspace must not block saving new connection scopes");
+    check(new EditorTabStorage(connection, "", broken).initial.tabs[0]!.sql === "-- Fresh", "New scoped tabs must restore despite broken legacy data");
+    check(broken.getItem("culprit.editor.tabs") === raw, "Unreadable legacy data must remain available for recovery");
+  }
+}
 const missing = new MemoryStorage();
 missing.setItem(editorScope(a), JSON.stringify({ version: 1, tabs: [{ id: first.id, title: "Missing", saved: null }], active: first.id }));
 check(new EditorTabStorage(a, "", missing).error, "Missing SQL bodies must not silently restore blank text");
