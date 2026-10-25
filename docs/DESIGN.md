@@ -263,6 +263,12 @@ Keyboard: `j`/`k` move, `↵` opens, `c` copies the SQL, `o` opens the finding, 
 
 CodeMirror (loaded lazily). Run (⌘↵, read-only transaction), Explain (⌘E, estimated plan, safe everywhere), Explain Analyze (⌘⇧E, executes the query, needs confirmation on production). Pin a plan and run again to compare.
 
+Result grids show a bounded page, with row numbers and arrow-key cell navigation. Double-click, Enter or **Inspect**
+opens a right-side value inspector, with Value / Row views, column selection, previous/next row navigation and copy.
+JSON can switch between formatted and raw text without changing number literals or escapes. Plain text wraps;
+large values start with a bounded preview and expand on request, while copy retains the full value. The inspector
+keeps focus until Escape or Close returns it to the grid, and a new query result retires the old selection.
+
 ### Command palette (⌘K)
 
 Fuzzy search over views, findings, queries, tables, connections and actions (re-scan, switch connection, toggle theme, copy fix, check for updates, turn the daily update check on or off).
