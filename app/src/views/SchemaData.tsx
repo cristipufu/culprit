@@ -59,7 +59,7 @@ export function SchemaData({ report, table }: { report: Report; table: TableStat
         <input ref={input} aria-label="Quick filter" aria-describedby={help} value={filter} maxLength={16384} spellCheck={false} autoComplete="off"
           placeholder="status = 'open' AND amount > 100" onChange={(event) => setFilter(event.target.value)} />
         {filter && <button type="button" className="icon-btn" aria-label="Clear filter" disabled={busy} onClick={() => {
-          setFilter(""); input.current?.focus(); if (applied) void run(order, "");
+          setFilter(""); setError(null); input.current?.focus(); if (applied) void run(order, "");
         }}><X size={13} /></button>}
       </div>
       <button className="btn primary" type="submit" disabled={busy}>{busy ? <span className="spinner" /> : <Play size={12} />}
