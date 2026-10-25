@@ -795,7 +795,9 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
   // ── lifecycle ──────────────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!host.current) return;
-    const editor = new EditorView({ parent: host.current, state: stateFor(activeTab, actionKeys.current) });
+    const current = tabsRef.current;
+    const tab = current.tabs.find((tab) => tab.id === current.active) ?? current.tabs[0]!;
+    const editor = new EditorView({ parent: host.current, state: stateFor(tab, actionKeys.current) });
     view.current = editor;
     editor.focus();
     return () => {
@@ -839,7 +841,7 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
 
   // "Open in editor" from findings and queries: a new tab with that SQL, or the tab that already holds it.
   useEffect(() => {
-    if (!incoming || !view.current) return;
+    if (!incoming || getState().editorSql !== incoming || !view.current) return;
     const wanted = incoming.trim();
     const textOf = (tab: Tab) =>
       tab.id === tabsRef.current.active && view.current ? view.current.state.doc.toString() : (states.current.get(tab.id)?.doc.toString() ?? tab.sql);
@@ -851,7 +853,7 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
 
   // A saved query picked in the command palette.
   useEffect(() => {
-    if (!openSaved || saved === null) return;
+    if (!openSaved || getState().editorSaved !== openSaved || saved === null) return;
     const query = saved.find((q) => q.name === openSaved.name);
     setState({ editorSaved: null });
     if (query) openQuery(query, openSaved.run);
