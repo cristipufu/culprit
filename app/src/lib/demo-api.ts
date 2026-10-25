@@ -360,6 +360,15 @@ export async function demoApi(): Promise<Api> {
       connections = connections.map((c) => (c.name === name ? updated : c));
       return updated;
     },
+    setSsh: async (name, ssh) => {
+      const current = connections.find((c) => c.name === name);
+      if (!current) throw { code: "not_found", message: `No connection named '${name}'`, hint: null };
+      if (ssh && connectFacts(current.engine).file) throw { code: "invalid_input", message: "SQLite opens a local file and cannot use SSH forwarding", hint: null };
+      const updated = { ...current, ssh: ssh ?? undefined };
+      connections = connections.map((c) => c.name === name ? updated : c);
+      return updated;
+    },
+    testSsh: () => desktopOnly("Testing an SSH tunnel uses OpenSSH in the desktop app or CLI."),
     importCandidates: async (source) => {
       await new Promise((r) => setTimeout(r, 250));
       const sample = await importSample();
@@ -696,6 +705,7 @@ export async function demoApi(): Promise<Api> {
     },
     chooseQueryLog: () => unsupported(),
     chooseDatabaseFile: () => unsupported(),
+    chooseSshIdentity: () => desktopOnly("Choose an SSH identity file in the desktop app."),
     // `?demo-approval` shows a sample request so the approval dialog can be designed without an agent.
     pendingApprovals: async () => (demoApproval ? [demoApproval] : []),
     decideApproval: async () => {

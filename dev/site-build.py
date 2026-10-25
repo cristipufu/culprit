@@ -23,7 +23,7 @@ def documentation(root: Path, site: Path) -> str:
     if not providers or len({path for _, path in providers}) != len(providers):
         raise ValueError("Engine parity must list each provider once")
 
-    sources = ["README.md", "docs/guide.md", "docs/agents.md", "docs/parity.md"]
+    sources = ["README.md", "docs/guide.md", "docs/agents.md", "docs/parity.md", "docs/ssh.md"]
     provider_sources = ["docs/" + path for _, path in providers]
     sections = ["Connecting", "Permissions and setup", "Workload and plans", "Live activity and waits",
                 "Schema and indexes", "Limits and evidence", "Verification"]
@@ -69,7 +69,7 @@ def documentation(root: Path, site: Path) -> str:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(text)
         published[source] = text
-    full_sources = ["README.md", "docs/guide.md", "docs/parity.md"] + provider_sources + ["docs/agents.md", "docs/providers/coverage.md"]
+    full_sources = ["README.md", "docs/guide.md", "docs/parity.md"] + provider_sources + ["docs/ssh.md", "docs/agents.md", "docs/providers/coverage.md"]
     full = "# Culprit SQL Studio: full documentation\n\nSource: https://github.com/cristipufu/culprit-sql-studio · Website: https://culpritsql.com\n"
     for source in full_sources:
         full += "\n---\n\n" + published[source]

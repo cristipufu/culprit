@@ -8,6 +8,8 @@ import { connectFacts, ENGINES } from "../../lib/engines";
 import { LatestRequest } from "../../lib/requests";
 import { loadConnections, openConnection } from "../../lib/store";
 import { remember, remembered } from "./DiscoverPanel";
+import { SshFields } from "./SshFields";
+import { sshConfig, type SshDraft } from "../../lib/ssh";
 import { EnginePicker } from "./EnginePicker";
 
 const ENVIRONMENTS: Environment[] = ["production", "staging", "development", "local"];
@@ -46,6 +48,8 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
   const [environmentTouched, setEnvironmentTouched] = useState(false);
   const [user, setUser] = useState("");
   const [password, setPassword] = useState("");
+  const [ssh, setSsh] = useState<SshDraft | null>(null);
+  const form = useRef<HTMLFormElement>(null);
   const [test, setTest] = useState<TestState>({ status: "idle" });
   const field = useRef<HTMLInputElement>(null);
   const focusInput = useRef(engine !== null);
@@ -57,7 +61,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
     action.current.invalidate();
     setTest({ status: "idle" });
     return () => action.current.invalidate();
-  }, [input, engine, name, environment, user, password]);
+  }, [input, engine, name, environment, user, password, ssh]);
 
   useEffect(() => {
     if (!input.trim()) {
@@ -145,9 +149,11 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
     password: needsPassword && password ? password : null,
     password_env: null,
     auth: null,
+    ssh: facts?.file ? undefined : sshConfig(ssh) ?? undefined,
   });
 
   const onTest = async () => {
+    if (!form.current?.reportValidity()) return;
     const current = action.current.start();
     setTest({ status: "busy" });
     try {
@@ -159,10 +165,11 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
   };
 
   const onSave = async () => {
+    if (!form.current?.reportValidity()) return;
     const current = action.current.start();
-    const candidate = request();
     setTest({ status: "busy" });
     try {
+      const candidate = request();
       const client = await api();
       if (!current()) return;
       await client.testConnection(candidate);
@@ -181,6 +188,7 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
 
   return (
     <form
+      ref={form}
       className="new-conn"
       onPaste={onPaste}
       onSubmit={(e) => {
@@ -272,6 +280,9 @@ export function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; c
               <input id={`${ids}-password`} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Kept in the OS keychain" />
             </>
           )}
+          {!facts?.file && <><span /><SshFields value={ssh} disabled={test.status === "busy"} onChange={(value) => {
+            action.current.invalidate(); setSsh(value); setTest({ status: "idle" });
+          }} /></>}
           <span />
           <div className="new-conn-actions">
             <button type="submit" className="btn primary" disabled={!name || test.status === "busy"}>

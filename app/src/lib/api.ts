@@ -36,6 +36,7 @@ import type { Report } from "../gen/Report";
 import type { ResultSet } from "../gen/ResultSet";
 import type { SavedQuery } from "../gen/SavedQuery";
 import type { SaveQuery } from "../gen/SaveQuery";
+import type { SshConfig } from "../gen/SshConfig";
 import type { ServerInfo } from "../gen/ServerInfo";
 import type { WaitSample } from "../gen/WaitSample";
 import type { WaitsReport } from "../gen/WaitsReport";
@@ -65,6 +66,8 @@ export interface Api {
   discoverAzure(terms: string[], signal?: AbortSignal): Promise<DiscoveryResult>;
   discoverAws(terms: string[], regions: string[], signal?: AbortSignal): Promise<DiscoveryResult>;
   setPassword(name: string, password: string): Promise<ConnectionInfo>;
+  setSsh(name: string, ssh: SshConfig | null): Promise<ConnectionInfo>;
+  testSsh(name: string, ssh: SshConfig | null): Promise<ServerInfo>;
   addDiscovered(items: DiscoveredDatabase[]): Promise<ConnectionInfo[]>;
   importCandidates(source: ImportSource | null): Promise<ImportCandidate[]>;
   importConnections(items: ImportCandidate[]): Promise<ConnectionInfo[]>;
@@ -138,6 +141,7 @@ export interface Api {
   chooseQueryLog(name: string): Promise<ConnectionInfo | null>;
   /** Pick a SQLite file in the system's file dialog (desktop only): its path, for the new-connection input. */
   chooseDatabaseFile(): Promise<string | null>;
+  chooseSshIdentity(): Promise<string | null>;
   pendingApprovals(): Promise<ApprovalRequest[]>;
   decideApproval(id: string, hash: string, approved: boolean): Promise<void>;
   /** A newer published release, or null. Asked by the app itself at most once a day, or when the person checks. */
@@ -176,6 +180,8 @@ async function desktopApi(): Promise<Api> {
     discoverAzure: (terms, signal) => discover("discover_azure", { terms }, signal),
     discoverAws: (terms, regions, signal) => discover("discover_aws", { terms, regions }, signal),
     setPassword: (name, password) => invoke("set_password", { name, password }),
+    setSsh: (name, ssh) => invoke("set_ssh", { name, ssh }),
+    testSsh: (name, ssh) => invoke("test_ssh", { name, ssh }),
     addDiscovered: (items) => invoke("add_discovered", { items }),
     importCandidates: (source) => invoke("import_candidates", { source }),
     importConnections: (items) => invoke("import_connections", { items }),
@@ -231,6 +237,7 @@ async function desktopApi(): Promise<Api> {
     setQueryLog: (name, path) => invoke("set_query_log", { name, path }),
     chooseQueryLog: (name) => invoke("choose_query_log", { name }),
     chooseDatabaseFile: () => invoke("choose_database_file"),
+    chooseSshIdentity: () => invoke("choose_ssh_identity"),
     pendingApprovals: () => invoke("pending_approvals"),
     decideApproval: (id, hash, approved) => invoke("decide_approval", { id, hash, approved }),
     checkUpdate: () => invoke("check_update"),

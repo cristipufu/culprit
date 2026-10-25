@@ -339,3 +339,38 @@ async fn testing_a_draft_uses_saved_credentials_and_preserves_the_saved_route() 
     assert_eq!(std::fs::read(temp.0.join("connections.toml")).unwrap(), before);
     assert!(ws.connection("draft").unwrap().ssh.is_none());
 }
+
+/// An isolated OpenSSH server and PostgreSQL with a trusted, DNS-only `localhost` certificate are required.
+/// The test uses its own SSH configuration and known_hosts; it never changes the user's SSH files.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+#[ignore = "requires CULPRIT_SSH_LIVE_CONFIG, CULPRIT_SSH_LIVE_PG_PORT and CULPRIT_SSH_LIVE_CA"]
+async fn real_openssh_preserves_strict_tls_identity_and_rejects_a_mismatched_hostname() {
+    let config = std::env::var("CULPRIT_SSH_LIVE_CONFIG").unwrap();
+    let port = std::env::var("CULPRIT_SSH_LIVE_PG_PORT").unwrap();
+    let ca = std::env::var("CULPRIT_SSH_LIVE_CA").unwrap();
+    let temp = Temp::new();
+    let mut ws = crate::Workspace::open_in(&temp.0);
+    ws.ssh.factory = Arc::new(move |ssh, target| {
+        let mut command = crate::program::command(crate::program::Cli::Ssh)?;
+        command.args(["-F", &config]);
+        Ok(command::configure(command, ssh, target))
+    });
+    for (name, host) in [("valid", "localhost"), ("mismatch", "127.0.0.1")] {
+        ws.add_connection(crate::NewConnection {
+            name: name.into(),
+            input: format!("postgres://ssh_fixture@{host}:{port}/ssh_fixture?sslmode=verify-full&sslrootcert={ca}"),
+            password: Some("fixture-only-password".into()),
+            ssh: Some(ssh("fixture-bastion")),
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    let server = ws.probe("valid").await.unwrap();
+    assert_eq!(server.database, "ssh_fixture");
+    let result = ws.run_read("valid", "SELECT 42 AS answer", 10).await.unwrap();
+    assert_eq!(result.rows[0][0], serde_json::json!(42));
+    let error = ws.probe("mismatch").await.expect_err("The certificate only covers localhost, never its IP");
+    assert!(error.message.to_ascii_lowercase().contains("certificate"), "{error:?}");
+    assert_eq!(ws.connection("valid").unwrap().host, "localhost");
+}

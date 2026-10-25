@@ -81,6 +81,18 @@ Entra ID connections use your `az login`. Without the Azure CLI (or when it's si
 
 On non-production connections, Live can cancel a session's statement or end the session (`culprit live <conn> --cancel <id>` / `--kill <id>`). Production connections refuse both, in the CLI and the app.
 
+### SSH jump hosts
+
+Enable **SSH jump host** when adding a server connection, or open **SSH** on a saved connection's card. Enter a host such as `reader@bastion` or an alias from your OpenSSH configuration. The same settings work on connections added through Azure or AWS discovery. **Test connection** checks a draft with the saved database credentials before you save it.
+
+```sh
+culprit conn add shop --url 'postgres://app@db.internal:5432/shop' --ssh prod-bastion
+culprit conn set shop --ssh reader@bastion --ssh-port 2222 --ssh-key ~/.ssh/id_ed25519
+culprit conn set shop --no-ssh
+```
+
+Keep the real database hostname and port in the connection string. Culprit forwards the network connection while preserving that identity for certificate verification, AWS IAM, Entra ID and cloud metrics. It uses the system OpenSSH client, your SSH configuration and agent; host keys must already be trusted, and encrypted keys must be unlocked in the agent. See [SSH connections](ssh.md) for setup, supported authentication and lifecycle details.
+
 ### Plans: paste, compare
 
 The **Plans** view (`7`, also without a connection) draws any plan you paste (⌘V anywhere), drop or open: SQL Server .sqlplan or showplan XML, Postgres `EXPLAIN` as text or `FORMAT JSON` (psql output included), MySQL `EXPLAIN FORMAT=JSON` or `EXPLAIN ANALYZE`. **Compare** puts two plans side by side and says what changed in plain words ("Plan 9 scans orders where Plan 7 seeks ix_orders_customer"), with every changed, added or removed operator marked in both diagrams. On a query with several Query Store plans, **Compare** in the Queries view opens the fastest and the slowest plan; **Open in Plans** keeps any plan to save it (.sqlplan opens again in SSMS) or compare it with another environment's.

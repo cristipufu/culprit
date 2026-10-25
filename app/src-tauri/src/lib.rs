@@ -7,6 +7,7 @@ use culprit_core::{
     Drift, Error, ErrorCode, ExplainMode, LiveState, Plan, PlanDiff, Report, Result, ResultSet, ServerInfo,
     SessionAction, SnapshotOptions,
 };
+use culprit_engine::SshConfig;
 use culprit_engine::entra::{DeviceCodePrompt, SignInEvent};
 use culprit_engine::export::{ExportFile, ExportFormat, ExportOptions};
 use culprit_engine::{
@@ -47,6 +48,16 @@ fn parse_connection(input: String, engine: Option<culprit_core::Engine>) -> Resu
 #[tauri::command]
 async fn test_connection(ws: Ws<'_>, input: NewConnection) -> Result<ServerInfo> {
     ws.test_connection(&input).await
+}
+
+#[tauri::command]
+async fn test_ssh(ws: Ws<'_>, name: String, ssh: Option<SshConfig>) -> Result<ServerInfo> {
+    ws.test_ssh(&name, ssh).await
+}
+
+#[tauri::command]
+async fn set_ssh(ws: Ws<'_>, name: String, ssh: Option<SshConfig>) -> Result<ConnectionInfo> {
+    blocking_workspace(ws.inner().clone(), move |ws| ws.set_ssh(&name, ssh)).await
 }
 
 #[tauri::command]
@@ -577,6 +588,18 @@ async fn choose_database_file(app: AppHandle) -> Result<Option<String>> {
     Ok(Some(culprit_engine::database_file_input(&path)))
 }
 
+#[tauri::command]
+async fn choose_ssh_identity(app: AppHandle) -> Result<Option<String>> {
+    use tauri_plugin_dialog::DialogExt;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog().file().set_title("Choose an OpenSSH identity file").pick_file(move |picked| {
+        let _ = sender.send(picked);
+    });
+    let Some(picked) = receiver.await.ok().flatten() else { return Ok(None) };
+    let path = picked.into_path().map_err(|_| Error::invalid("That identity file cannot be read from here"))?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
 /// Choose the connection's query log in a native file dialog. Culprit opens the dialog itself, so the window never gets
 /// file system access: only the file the person picked reaches the workspace, which checks it holds statements before
 /// saving it. `None` when the dialog was cancelled.
@@ -760,6 +783,8 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
             connections,
             parse_connection,
             test_connection,
+            test_ssh,
+            set_ssh,
             add_connection,
             remove_connection,
             rename_connection,
@@ -816,6 +841,7 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
             set_query_log,
             choose_query_log,
             choose_database_file,
+            choose_ssh_identity,
             pending_approvals,
             decide_approval,
             interrupt_session,

@@ -1,5 +1,6 @@
 import { ArrowRight, Bot, Check, ChevronDown, Clock3, FileText, KeyRound, Pencil } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
+import { SshSetting } from "./SshSetting";
 import { EngineBadge } from "../../components/EngineBadge";
 import type { AgentAccess } from "../../gen/AgentAccess";
 import type { AuthKind } from "../../gen/AuthKind";
@@ -94,6 +95,7 @@ export function ConnectionCard({ connection: c }: { connection: ConnectionInfo }
         <span className="conn-tools">
           {c.auth === "password" && !c.has_secret && <SetPassword name={c.name} />}
           {(file || c.query_log) && <QueryLogSetting connection={c} />}
+          {!file && <SshSetting connection={c} />}
           <AgentAccessMenu connection={c} />
           <button type="button" className="btn ghost conn-rename" title={`Rename ${c.name}`} aria-label={`Rename ${c.name}`}
             onClick={() => { submitted.current = false; setAlias(c.name); setError(null); setEditing(true); }}>

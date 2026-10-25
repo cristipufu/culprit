@@ -219,7 +219,7 @@ Live sessions turn a wall of lock waits into one sentence and a tree: which sess
 | **Health signals** | Memory, compiles, connections, row locks, storage latency per file, replication lag and cloud limits, each graded with a one-line takeaway |
 | **SQL editor** | Tabs, autocomplete for schemas, tables and columns, saved queries, and estimated and measured plans. Reads run read-only; production changes ask first |
 | **Schema explorer** | Tables, sizes, indexes and how each index is used, plus drift between two environments (columns, indexes, foreign keys, triggers, check constraints and partition bounds) with the SQL to close the gap |
-| **Connections** | Paste any connection string, discover Azure and AWS databases with your existing CLI login, or import from Azure Data Studio, VS Code, DBeaver and DataGrip. Passwords stay in your OS keychain |
+| **Connections** | Paste any connection string, discover Azure and AWS databases with your existing CLI login, or import from Azure Data Studio, VS Code, DBeaver and DataGrip. Use an [SSH jump host](docs/ssh.md) for private databases. Passwords stay in your OS keychain |
 | **Keyboard first** | A command palette (⌘K) for every view, finding, query and action |
 
 ## Safe on production
